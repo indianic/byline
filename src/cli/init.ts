@@ -23,6 +23,7 @@ import {
   upsertEnvVars,
   writeSiteToConfig,
 } from './home-config.js';
+import { buildPersonaRecord, promptPersonaAnswers, writePersonaFile } from './persona-setup.js';
 import { requireTty } from './interactive.js';
 import { applyMigration, detectRepoConfig, planMigration } from './migrate.js';
 import { promptAndWriteEditorConfigs } from './register.js';
@@ -318,18 +319,51 @@ export async function runInit(_args: string[]): Promise<void> {
     }
   }
 
-  // --- 4. Author persona template ---
+  // --- 4. Author persona ---
+  // Asked BEFORE the "was anything else written?" gate below, and on purpose:
+  // answering these questions and getting a real persona file out is itself
+  // a real reason for ~/.byline/ to exist, same as adding a blog or an image
+  // key is — Finding 2's guard is "don't create the directory for NOTHING
+  // written," and a persona is not nothing. `writePersonaFile` only touches
+  // disk once a complete, schema-valid answer set exists (see
+  // `promptPersonaAnswers`), so a decline or an early skip still creates
+  // nothing, exactly like every other step here.
+  if (
+    await ask(
+      'Set up your author voice now? A persona makes drafts sound like you instead of generic AI output. (optional)',
+    )
+  ) {
+    const answers = await promptPersonaAnswers(clackPrompter);
+    if (answers) {
+      const record = buildPersonaRecord(answers);
+      const result = writePersonaFile(paths.personasDir, record);
+      if (result.alreadyExisted) {
+        info(`A persona named "${record.slug as string}" already exists at ${result.path} — left untouched.`);
+      } else {
+        section('author persona');
+        detail(`${result.path}`);
+        written.push(result.path);
+        info(
+          `Say "as ${answers.name}" and drafts use this voice. Edit ${result.path} any time — ` +
+            'the more you fill in, the more distinctive the writing gets.',
+        );
+      }
+    } else {
+      info('Skipped — set this up any time. See the template path below.');
+    }
+  }
+
   // Only once ~/.byline/ has (or already had) a real reason to exist —
   // otherwise this alone would create it (and so permanently shadow a
   // repo-local checkout, see Finding 2) for a session where the user declined
-  // every other step. `written.length > 0` covers anything written above;
-  // `existsSync(paths.home)` covers a user who already had the directory
-  // before this run.
+  // every other step. `written.length > 0` covers anything written above,
+  // including a persona from the step just above; `existsSync(paths.home)`
+  // covers a user who already had the directory before this run.
   if (written.length > 0 || existsSync(paths.home)) {
     const template = seedPersonaTemplate(paths.personasDir);
     if (template) {
-      section('author profile');
-      detail(`${template}   — copy it to <your-name>.yaml and fill it in to shape how drafts sound`);
+      section('persona template');
+      detail(`${template}   — copy it to <your-name>.yaml for a second persona, or start here if you skipped above`);
       written.push(template);
     }
   }
