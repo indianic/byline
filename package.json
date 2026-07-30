@@ -1,7 +1,7 @@
 {
   "name": "@indianic/byline",
-  "version": "0.9.0",
-  "description": "Turn an idea into a finished, published article in your own voice \u2014 an MCP server and CLI that researches, writes, illustrates and publishes to Ghost and WordPress from any AI tool.",
+  "version": "1.0.0",
+  "description": "Turn an idea into a finished, published article in your own voice — an MCP server and CLI that researches, writes, illustrates and publishes to Ghost and WordPress from any AI tool.",
   "type": "module",
   "publishConfig": {
     "registry": "https://npm.indianic.in/"
