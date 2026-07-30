@@ -426,8 +426,12 @@ draft: writing style, tone, communication style, storytelling approach, sentence
 structure, focus areas, research methodology, personality traits, bias tendency, how much
 risk they take in an opinion, cultural context, and their own free-text instructions.
 
-`byline init` seeds `~/.byline/personas/_template.yaml`. Copy it to `your-name.yaml` and
-fill it in — the filename must match the `slug` field inside. Add as many as you like:
+**`byline init` asks for it directly** — five questions (name, role, writing style and
+tone, years of experience, subject expertise), each skippable. Answering them writes a
+real, working persona; skipping goes straight to a template you fill in by hand. Either
+way, `init` prints the exact file path so you always know where to look. Add as many as
+you like — copy `~/.byline/personas/_template.yaml` to `your-name.yaml` and fill it in;
+the filename must match the `slug` field inside:
 
 ```
 ~/.byline/personas/
@@ -462,12 +466,18 @@ that touches the outside world:
 1. **`build_writing_brief`** produces a brief tailored to the target platform — because
    what survives publication differs between platforms, and the brief says so up front
    rather than letting the writer discover it afterwards.
-2. **Your AI tool writes the draft.** That part is not byline' job.
+2. **Your AI tool writes the draft.** That part is not byline's job.
 3. **`score_draft`** grades it — sentence-length variety, AI tells, whether claims carry
    evidence, whether the HTML will survive this platform's ingest.
 4. **`generate_image`** and **`upload_image`** create hero and inline images and put
    them in your blog's own media library. Gemini first, Grok as fallback; when it falls
    back it tells you it did and why.
+
+   **Images are on by default whenever an image key is configured** — you do not have
+   to ask for them. Say nothing about images and you still get a hero and an inline
+   photograph; say "no images" or "just the hero" or hand it your own image
+   instructions and that's what happens instead. Your instruction always wins over the
+   default. If no image key is set up, no image is attempted and none is expected.
 
    Images are **photographs, not AI art**, and the rules are fixed rather than improvised
    per article: every prompt must name the article's actual subject, in a real setting,
