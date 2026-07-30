@@ -1,0 +1,158 @@
+# Changelog
+
+All notable changes to this project are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
+project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [1.0.0] — 2026-07-30
+
+First public release. An MCP server and CLI that turns an idea into a finished,
+published article in the author's own voice — today to Ghost and WordPress, from any AI
+tool.
+
+Previously developed under the name `writeblogs`. The product is not blog-shaped: it
+takes someone's idea, writes it as them, and puts it where it belongs. Every destination
+has a byline.
+
+### Migrating from writeblogs
+
+Nothing breaks and nothing moves on its own.
+
+- `~/.writeblogs/` is still read if `~/.byline/` does not exist. `status` and `doctor`
+  report the path as `[legacy]` and point at `byline migrate`, which is the only thing
+  that relocates it — and only with `--yes`.
+- Every `BYLINE_*` environment variable falls back to its `WRITEBLOGS_*` predecessor,
+  and diagnostics name the variable you actually set.
+- Re-run `byline register --tools all` to repoint your AI tools at the new package.
+
+### Added
+
+**Publishing**
+
+- Ghost platform plugin — JWT auth, post create/update, image upload, tag and author
+  resolution. Verified against Ghost 6.44.
+- WordPress platform plugin — Application Password auth, post create/update, media
+  upload with alt text, exact-match tag resolution, `featured_media` support. Verified
+  against a live single-site install.
+- Write-back verification on every post write: the request is diffed against the
+  platform's own response, and any field the platform silently dropped is returned as a
+  warning rather than disappearing.
+- Per-platform `HtmlProfile`, driving both the writing brief and the draft scorer from
+  what each platform actually does to HTML on ingest. Ghost's is a constant; WordPress's
+  is resolved per authenticated user, since `unfiltered_html` changes the answer.
+
+**Writing**
+
+- `build_writing_brief` — persona-shaped, platform-aware briefs with a reproducible
+  seed. Refuses `mode: "news"` without supplied research, so an article about recent
+  events cannot be written from training data.
+- `score_draft` — scores sentence-length variety, AI tells, evidence, and whether the
+  HTML will survive the target platform's ingest.
+- Author personas as YAML, with a template seeded on first run.
+
+**Images**
+
+- Gemini image generation with an xAI/Grok fallback. When it falls back it reports that
+  it did, and why.
+- **A photographic contract** (`src/craft/image-style.ts`), applied server-side by
+  `generate_image` so it holds for any caller, not only one that used the writing brief.
+  Every prompt names the article's actual subject in a real setting; no text in the frame;
+  explicitly not an illustration, 3D render, vector art, or abstract technology
+  background. `style` defaults to `photoreal_people`, so the **hero image always contains
+  people** — it is the post card and the social share image. `style: 'diagram'` is the
+  deliberate escape.
+- People are asked to vary in age, ethnicity, and gender across images, appropriate to the
+  setting, rather than taking the image model's default.
+- A seeded `imageLook` dimension gives each article its own camera register, passed
+  through to `generate_image` so every image in one article matches.
+- When **every** provider refuses a prompt asking for people, one retry runs without them
+  and the result reports `people_dropped` with the providers' own reason. A provider that
+  broke rather than refused propagates as the failure it is — a 401 or a dead socket can
+  no longer be mistaken for a safety refusal.
+- `score_draft` accepts an optional `feature_image` and checks image presence and alt-text
+  quality, including alt text copy-pasted from the headline. Non-blocking, and explicit
+  that it cannot verify what an image depicts.
+
+**Configuration**
+
+- Config lives in `~/.byline/`. `config.yaml` holds only `${VAR}` references so it
+  stays shareable; every secret lives in `.env` at mode 600.
+- Per-field path resolution — `BYLINE_HOME`, `BYLINE_SITES`,
+  `BYLINE_PERSONAS`, `BYLINE_ENV` — with per-field provenance reported by
+  `status` and `doctor`.
+- A site whose environment variable is missing still loads. It is marked unusable and
+  reported, while every other site keeps working, so keys can be added one at a time.
+
+**CLI**
+
+- `byline init` — first-run wizard. Detects the AI tools actually installed, backs
+  up each config before merging, and walks credentials with a working Skip on every
+  prompt.
+- **Every credential is validated against the live platform before it is accepted**, and
+  the platform's own error is shown on failure with retry and skip offered.
+- `status`, `doctor` (`--offline`), `register` (`--tools`, `--scope`, `-i`), `migrate`
+  (`--yes`), `reset` (`--yes`), `update` / `upgrade`, `help`.
+- Node version guard as the literal first statement of the bin shim: an old runtime gets
+  one clear line, not `ERR_UNSUPPORTED_ESM_URL_SCHEME`.
+- TTY dispatch — a terminal gets help, a pipe gets the MCP server.
+- A top-level error boundary around every command, so no command can show a raw stack
+  trace. The stack is available via `BYLINE_DEBUG=1`.
+
+**MCP tools** (13)
+
+`health_check`, `list_sites`, `add_site`, `remove_site`, `list_personas`, `get_persona`,
+`list_authors`, `build_writing_brief`, `score_draft`, `generate_image`, `upload_image`,
+`create_post`, `update_post`.
+
+### Security
+
+- `healthCheck` on every platform gates on an endpoint that **requires authentication**.
+  Ghost's previously probed `GET /site/`, which needs none, so a fabricated-but-
+  well-formed key was reported valid — `init` accepted wrong keys and `doctor` stayed
+  green until the first `create_post`. Both platforms now carry fabricated-credential
+  regression tests, as unit tests and against their live installs.
+- Site short names are constrained to lowercase alphanumerics and hyphens by both
+  writers of `config.yaml`. Previously `add_site` accepted anything, so `my-blog` and
+  `my_blog` derived the same environment variable name and the second silently
+  overwrote the first's credential.
+- `reset` refuses to delete a home directory, an ancestor of one, an immediate child of
+  the filesystem root, or any directory containing `.git` or `package.json` — compared
+  by inode rather than by string, since a case-insensitive filesystem made string
+  comparison bypassable.
+- `migrate` copies and never moves, never overwrites (enforced with `COPYFILE_EXCL`, not
+  by ordering), and always lands `.env` at mode 600 regardless of the source's mode.
+- No credential value appears in any diagnostic output.
+
+### Changed since 0.x
+
+- Renamed `writeblogs` → `byline`, with a full compatibility path (see above).
+- `generate_image` takes the SUBJECT only and applies the photographic contract itself,
+  so the guarantee holds for any caller rather than only one that used the brief.
+- `score_draft` gained an optional `feature_image`, and `experience_markers` now fails an
+  article with no first-person voice — the signature of a draft written without the
+  brief, which is how a generic article reaches publication.
+- WordPress accepts a `<table>` summary block, so one article can satisfy both platforms.
+  Cross-posting was previously impossible: the same HTML scored `pass` on Ghost and
+  `blocked` on WordPress.
+- Both platforms now refuse HTML still containing `[[content_image]]`. WordPress
+  previously published the literal placeholder as visible text.
+- The CLI reports when a newer version is published, at most once a day, never on the
+  MCP path and never on `--version`.
+
+### Known limitations
+
+- **The restrictive WordPress path is unverified.** Every claim about an account without
+  `unfiltered_html`, and everything about multisite, is reasoned from WordPress's
+  documented KSES behaviour and has never been measured — only a single-site
+  administrator was available to probe. See `docs/WORDPRESS-NOTES.md`.
+- WordPress core has no field for injecting into `<head>`, so JSON-LD structured data
+  cannot be applied there. This is reported as a warning (`schema_injected: false`)
+  rather than silently dropped.
+- `npx -y @indianic/byline` cannot resolve until the package is published, and npx
+  does not fall back to a global install.
+
+[Unreleased]: https://github.com/indianic/byline/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/indianic/byline/releases/tag/v0.1.0

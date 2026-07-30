@@ -1,0 +1,23 @@
+.env
+.env.*
+!.env.example
+.runs/
+node_modules/
+dist/
+*.log
+.DS_Store
+.omc/
+.superpowers/
+
+# Real working config/personas — contains actual site URLs and author ids.
+# See config/sites.example.yaml and personas/_template.yaml for the tracked
+# templates. Every hand-written persona file is untracked by default, not just
+# the maintainer's — a fresh contributor's own persona file must not get
+# tracked by accident either.
+config/sites.yaml
+personas/*.yaml
+!personas/_template.yaml
+
+# Internal design/planning tree and session prompts — not part of the product.
+docs/superpowers/
+docs/2026-*.md

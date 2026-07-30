@@ -1,0 +1,32 @@
+slug: firstname-lastname
+name: Firstname Lastname
+gender: ""
+role: ""
+country: ""
+state: ""
+years_of_experience: 0
+language_written: English
+
+writing_style: ""
+tone_of_voice: ""
+communication_style: ""
+storytelling_style: ""
+sentence_structure: ""
+local_journalistic_style: ""
+cultural_influence: ""
+
+description: ""
+subject_expertise: ""
+industry_specialization: ""
+beats_or_focus_areas: ""
+
+personality_traits: ""
+political_leaning: neutral
+bias_tendency: ""
+risk_tolerance_in_opinions: medium
+influence_level: ""
+research_methodology: ""
+
+persona_specific_instructions_for_ai: ""
+
+platform_authors: {}

@@ -1,0 +1,26 @@
+# Each site needs three things: a slug (how you refer to it when publishing),
+# an admin API key (via ${ENV_VAR}, never inline), and an endpoint.
+#
+# `api_url` is the Ghost Admin API base. Leave it out and it is derived as
+# {url}/ghost/api/admin, which is right for a standard install. Set it when the
+# admin API lives on a different host or path than the public site — that is the
+# usual cause of a 404 on /site/ when the key itself is fine.
+
+default_site: personal
+
+sites:
+  personal:
+    platform: ghost
+    url: https://blog.example.com
+    api_url: https://blog.example.com/ghost/api/admin
+    admin_api_key: ${PERSONAL_GHOST_KEY}
+    default_author: your-persona-slug
+
+  # A second site, if you publish to more than one blog. Each site's key lives
+  # in its own .env variable, named however you like.
+  # other:
+  #   platform: ghost
+  #   url: https://other-blog.example.com
+  #   api_url: https://other-blog.example.com/ghost/api/admin
+  #   admin_api_key: ${OTHER_GHOST_KEY}
+  #   default_author: your-persona-slug

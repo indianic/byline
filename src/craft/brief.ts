@@ -1,0 +1,349 @@
+import type { Persona } from '../config/personas.js';
+import { dimensionsFor, type DimensionName } from './dimensions.js';
+import type { HtmlProfile } from './html-profile.js';
+
+export interface BriefInput {
+  persona: Persona;
+  topic: string;
+  mode: 'blog' | 'news';
+  research?: string;
+  wordCount?: number;
+  language?: string;
+  seed?: number;
+  profile: HtmlProfile;
+}
+
+/** Render the target platform's ingest rules as brief text. */
+function htmlRules(profile: HtmlProfile): string {
+  const preserved = [...profile.preserved].map((t) => `<${t}>`).join(' ');
+  const unwrapped = [...profile.unwrapped].map((t) => `<${t}>`).join(', ');
+  // No `?? 'table'` fallback: an empty `visualContainers` means no container is
+  // verified to keep its styling on this platform, and fabricating one would
+  // instruct the writer to use a tag never confirmed to survive ingest.
+  const container = profile.visualContainers[0];
+
+  // Verified-correct wording for a platform that keeps inline styles (Ghost):
+  // recommending a *styled* container is safe because the styling survives.
+  // On a platform whose profile has `inlineStyles: false`, that same sentence
+  // would tell the author to write `style=` attributes that get stripped on
+  // ingest — the exact thing `score_draft`'s platform_html check blocks — so
+  // the guidance is conditioned on what the platform actually keeps.
+  const visualGuidance = container
+    ? profile.inlineStyles
+      ? `Use a styled <${container}> for any visual block — that is the only
+  container that keeps its styling.`
+      : `${profile.label} strips \`style=\` attributes for this account, so any
+  visual block must be structural, not decorated with inline CSS. Use a plain
+  <${container}> for any visual block — the site theme, not inline styles,
+  supplies its appearance.`
+    : `${profile.label} has no container confirmed to survive ingest with any
+  styling, so write plain structural HTML for any visual block and let the
+  site theme supply its appearance.`;
+
+  // `label` (the display name, e.g. "Ghost") is used here, not `platform` (the
+  // lowercase machine id) — this text is read by the host model, and
+  // "wordpress unwraps them" reads as a typo where "WordPress unwraps them"
+  // reads as a platform name.
+  //
+  // A platform whose profile has an empty `unwrapped` set (WordPress, for an
+  // account holding unfiltered_html — measured 2026-07-29: nothing is unwrapped
+  // on ingest for that account) has no tag to warn against here. Emitting
+  // "NEVER use ${unwrapped}" with an empty list would read as "NEVER use ." —
+  // so that line is only included when there is something to name.
+  const neverUseLine =
+    profile.unwrapped.size > 0
+      ? `- NEVER use ${unwrapped}. ${profile.label} unwraps them on ingest: the text
+  survives but every style is silently lost, so a div-based card publishes as bare
+  unstyled text. ${visualGuidance}\n`
+      : `- ${visualGuidance}\n`;
+
+  // Honest per profile, not a blanket claim: a platform can resolve to more
+  // than one HtmlProfile (WordPress's permissive vs. restrictive capability
+  // states), and only some of those are actually backed by a live probe. This
+  // used to say "VERIFIED BY LIVE PROBE" unconditionally, including for a
+  // restrictive WordPress profile that was never measured against a real
+  // account lacking unfiltered_html.
+  const provenance = profile.verified
+    ? 'STRICT, VERIFIED BY LIVE PROBE'
+    : 'STRICT, UNVERIFIED — REASONED FROM DOCUMENTED PLATFORM BEHAVIOUR, NOT MEASURED';
+
+  return `=== HTML RULES (${profile.label.toUpperCase()} — ${provenance}) ===
+ALLOWED TAGS: ${preserved}
+${neverUseLine}- Every tag on a single line. No line breaks inside a tag.
+- No <br>. Use separate <p> tags.
+${profile.notes.map((n) => `- ${n}`).join('\n')}`;
+}
+
+export interface Brief {
+  brief: string;
+  seed: number;
+  choices: Partial<Record<DimensionName, number>>;
+}
+
+/** mulberry32 — small, fast, deterministic. Keeps briefs reproducible from a seed. */
+function rng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const or = (v: string, fallback: string): string => (v.trim() ? v : fallback);
+
+export function buildBrief(input: BriefInput): Brief {
+  const seed = input.seed ?? Math.floor(Math.random() * 2 ** 31);
+  const next = rng(seed);
+  const p = input.persona;
+  const words = input.wordCount ?? 800;
+  const language = input.language ?? p.language_written;
+
+  const dimensions = dimensionsFor(input.profile.inlineStyles);
+  const choices: Partial<Record<DimensionName, number>> = {};
+  const picked = {} as Record<DimensionName, string>;
+  for (const name of Object.keys(dimensions) as DimensionName[]) {
+    const options = dimensions[name];
+    const idx = Math.floor(next() * options.length);
+    choices[name] = idx;
+    picked[name] = options[idx]!;
+  }
+
+  const modeBlock =
+    input.mode === 'news'
+      ? `=== NEWS MODE ===
+Recency is the spine of this article. Lead with what changed in the last 30 days.
+Every substantive claim carries a date and a named source. Quote and cite the
+research below rather than generalising from it. If the research does not support
+a claim, cut the claim — do not invent a statistic.`
+      : `=== BLOG MODE ===
+This is an evergreen piece. Lead with a thesis or framework, not with news.
+First-hand experience carries more weight than recency. Any research below is
+supporting evidence, not the subject.`;
+
+  /**
+   * The exact `<figure>` the writer must swap `[[content_image]]` for.
+   *
+   * Styled only where inline styles actually survive ingest. On the restrictive
+   * WordPress path KSES strips `style=`, so instructing it there would train
+   * the writer to produce attributes the platform silently discards — the same
+   * mistake as asking Ghost for `target="_blank"`, and the reason the brief
+   * carries PLAIN_* variants of every other visual block. The sizing that stops
+   * an image overflowing its column then has to come from the theme, which is
+   * what themes do for an unstyled `<figure>` anyway.
+   */
+  const figureMarkup = input.profile.inlineStyles
+    ? `<figure style="margin:32px 0;"><img src="URL" alt="what is actually visible in the frame" style="width:100%;height:auto;border-radius:12px;display:block;"><figcaption style="font-size:14px;color:#6b7280;text-align:center;margin-top:10px;">One line of context.</figcaption></figure>
+
+The inline styles are not decoration. Without width:100%;height:auto an image wider
+than the content column overflows it — on WordPress it breaks straight out of the
+article container, and those styles are what stop it.
+
+Ghost is different and you do not need to do anything about it: it REBUILDS a
+<figure><img> into its own native image card, discarding these styles and applying
+its own sizing. Verified by read-back on 2026-07-30. Write the markup exactly as
+above either way — on Ghost it is harmlessly replaced, on WordPress it is what
+holds the image inside the column.`
+    : `<figure><img src="URL" alt="what is actually visible in the frame"><figcaption>One line of context.</figcaption></figure>
+
+No style attributes: this platform strips them from the stored HTML, so adding them
+here would produce markup the platform silently discards. The theme sizes the image.`;
+
+  const researchBlock = input.research
+    ? `=== RESEARCH SUPPLIED — GROUND THE ARTICLE IN THIS ===\n${input.research}`
+    : '=== NO RESEARCH SUPPLIED ===\nDo not fabricate statistics. Where you would cite a figure you do not have, write from experience instead.';
+
+  return {
+    seed,
+    choices,
+    brief: `You are ${p.name}, ${or(p.role, 'an industry expert')} with ${p.years_of_experience} years of experience in ${or(p.subject_expertise, or(p.description, 'your field'))}.
+
+YOUR TASK: Write a comprehensive, SEO-optimised article about: ${input.topic}
+
+CRITICAL REQUIREMENTS
+- Minimum length: ${words} words
+- Language: ${language}
+- Write in FIRST PERSON as ${p.name}
+- Location context: ${[p.state, p.country].filter(Boolean).join(', ') || 'global'}
+
+YOUR AUTHOR PROFILE
+- Writing style: ${or(p.writing_style, 'Professional')}
+- Tone of voice: ${or(p.tone_of_voice, 'Engaging')}
+- Communication style: ${or(p.communication_style, 'Clear')}
+- Storytelling approach: ${or(p.storytelling_style, 'Narrative-driven')}
+- Sentence structure: ${or(p.sentence_structure, 'Varied')}
+- Focus areas: ${or(p.beats_or_focus_areas, or(p.industry_specialization, 'industry insights'))}
+- Research methodology: ${or(p.research_methodology, 'Data-driven with first-hand experience')}
+- Personality traits: ${or(p.personality_traits, 'Professional, knowledgeable')}
+- Bias tendency: ${or(p.bias_tendency, 'none stated')}
+- Risk tolerance in opinions: ${or(p.risk_tolerance_in_opinions, 'medium')}
+- Cultural context: ${or(p.cultural_influence, or(p.local_journalistic_style, 'none stated'))}
+
+SPECIFIC AUTHOR INSTRUCTIONS
+${or(p.persona_specific_instructions_for_ai, 'Provide actionable takeaways grounded in real experience.')}
+
+${modeBlock}
+
+${researchBlock}
+
+=== HOOK — FOLLOW EXACTLY ===
+${picked.hook}
+
+=== STRUCTURE ARC — FOLLOW EXACTLY ===
+${picked.arc}
+
+=== NARRATIVE VOICE — APPLY THROUGHOUT ===
+${picked.voice}
+
+=== MICRO-STORY — PLACE AS INSTRUCTED ===
+${picked.story}
+
+=== [[content_image]] PLACEMENT — PLACE EXACTLY HERE ===
+${picked.imagePlacement}
+Leave the literal text [[content_image]] on its own, exactly once, while drafting.
+
+YOU replace it yourself before calling create_post — nothing does it for you, and
+both platforms REFUSE an article that still contains it. After upload_image returns
+the hosted URL, swap the placeholder for exactly this, filling in the url and alt:
+
+${figureMarkup}
+
+=== IMAGE STYLE — BOTH IMAGES ARE PHOTOGRAPHS ===
+This article's camera register, chosen from its seed:
+${picked.imageLook}
+Pass that line to generate_image verbatim as look:"..." on BOTH images, so the two match
+and the article stays reproducible from its seed. Omit it and the tool picks its own.
+
+Write each image prompt as a SUBJECT ONLY — what is happening and where. Do not write
+camera, lighting, or style words in the prompt itself: generate_image adds the register
+above plus the photographic rules for you, and repeating them fights its own instructions.
+
+Every prompt must name something specific from THIS article — the actual industry, task,
+setting, or moment you are writing about. A prompt that would fit any other article on any
+other topic is the failure this rule exists to prevent.
+
+- hero_image_prompt   → call generate_image with style:'photoreal_people'.
+                        MUST show people doing the work this article is about. The hero is
+                        the post card and the social share image, so it is the one everybody
+                        sees. Describe who they are and what they are mid-way through doing.
+- inline_image_prompt → call generate_image with style:'photoreal_scene'.
+                        A different moment, detail, or step from the same article — not a
+                        second angle on the hero.
+
+Never ask for text, logos, screens with readable words, or signage in either image.
+
+=== TABLE THEME — USE THESE EXACT COLOURS ===
+${picked.tableTheme}
+
+=== BLOCKQUOTE STYLE — USE EXACTLY ===
+${picked.blockquote}
+
+=== CONCLUSION AND CTA ===
+${picked.cta}
+
+=== LINKING RULES ===
+- 8 to 10 external links maximum.
+- Format: <a href="https://example.com" rel="noopener noreferrer">Anchor</a>
+${input.profile.keepsLinkTarget ? '' : `- Do NOT add a target attribute to any link. ${input.profile.label} strips it on ingest, so it is dead weight.\n`}- Link only the first mention of any brand or source.
+- Never leave a raw URL as plain text.
+- Spread links out; never cluster several in one paragraph.
+
+=== SUMMARY BLOCK — THE FIRST THING IN THE ARTICLE ===
+Before the opening paragraph, before any heading, emit this block using the exact
+skin below. It gives the reader the answer in five seconds and gives answer engines
+a clean passage to lift.
+${picked.summaryBlock}
+Rules for its content: the bolded first sentence must answer the article's core
+question completely on its own, with no pronouns pointing outside the block. Then
+3-4 bullets, each opening with a bolded 2-4 word label followed by a specific fact
+with a number or a named source. No bullet may be generic advice.
+
+=== CALLOUT PANEL — USE ONCE, MID-ARTICLE ===
+${picked.callout}
+Place it where a reader is most likely to make an expensive mistake. One panel only.
+
+=== AEO — ANSWER ENGINE OPTIMISATION ===
+Answer engines (Google AI Overviews, Perplexity, ChatGPT search) lift self-contained
+Q&A pairs. Structure for extraction:
+- Phrase at least TWO H2 or H3 headings as the exact question a reader would type.
+- Directly under each question heading, answer it completely in the first 40-60
+  words, in one paragraph, before any elaboration. Lead with the answer, not context.
+- Every answer paragraph must stand alone if quoted with no surrounding text. No
+  "as mentioned above", no "this means", no pronouns referring outside the paragraph.
+- Include one short definitional sentence of the form "X is Y" for the main concept.
+- Close the article with an H2 of "Frequently asked questions" containing 3 H3
+  question headings, each answered in 40-60 words.
+
+=== GEO — GENERATIVE ENGINE OPTIMISATION ===
+Generative engines cite what they can attribute and verify. Write to be quotable:
+- Attribute every statistic inline with source AND date: "According to Deloitte's
+  2024 study..." or "TCS reported in FY26...". A bare number is uncitable.
+- Prefer specific over round numbers. 3.4% is citable; "around 3%" is not.
+- Name entities in full on first use. Write the organisation, product, and person
+  names out so a model can resolve them without the surrounding page.
+- State the author's credential once, early, in the first person.
+- Give at least one claim that exists nowhere else — a first-hand observation,
+  a number from your own delivery work, a named trade-off you have lived.
+- Never assert a figure the research does not contain. An invented statistic that
+  gets cited is worse than no citation at all.
+
+=== SEO ===
+- Title: primary keyword near the start, 50-60 characters.
+- Meta description: 155-160 characters, primary keyword, subtle CTA.
+- H2 headings carry keywords naturally; H3 supports its H2. Never skip a level.
+- Primary keyword in the first paragraph, 1-2% density, LSI terms throughout.
+- Paragraphs of 2-4 sentences.
+- Reference the current year at least once.
+
+${htmlRules(input.profile)}
+
+=== EVIDENCE ===
+- Include real figures, percentages, or comparative data, at least one per 250 words.
+- One data table: benchmarks, tool comparison, case-study metrics, before/after, cost-benefit, or timeline.
+- Cite recognised sources and hyperlink them.
+- Include at least two concrete first-hand moments — a named scenario, a specific trade-off, a decision you regretted. Spread them; at least one after the midpoint.
+
+=== AVOID ===
+Never use: delve, landscape (figurative), transformative, seamless, robust, revolutionary, tapestry, testament, "it's not just X, it's Y", "in today's world", "in the ever-evolving".
+Vary sentence length deliberately — short sentences between longer ones.
+Do not end consecutive paragraphs with the same shape of summary clause.
+
+=== OUTPUT FORMAT ===
+Return ONLY a valid JSON object. No markdown, no code fences, no preamble.
+
+Social titles must NOT duplicate the SEO title — a social card competes for a
+click in a feed, a search title competes for a click in a result list. Write them
+differently on purpose.
+
+{
+  "article_title": "50-60 character SEO title, primary keyword near the start",
+  "meta_title": "50-60 chars — may equal article_title, or sharpen it for search",
+  "meta_description": "155-160 characters, primary keyword, subtle CTA",
+  "custom_excerpt": "1-2 sentences, max 300 chars, shown in listings and feeds",
+  "og_title": "up to 88 chars — Facebook/LinkedIn/WhatsApp, curiosity-led, NOT the SEO title",
+  "og_description": "up to 200 chars — the social hook, written to earn a click in a feed",
+  "twitter_title": "up to 70 chars — punchier and shorter than og_title",
+  "twitter_description": "up to 200 chars — sharpest framing, often the single most surprising number",
+  "html_content": "single-line ${input.profile.label}-compatible HTML, summary block first",
+  "word_count": 0,
+  "faq": [
+    {"question": "exact question a reader would type", "answer": "40-60 word self-contained answer"}
+  ],
+  "hero_image_prompt": "SUBJECT ONLY. People doing the specific work THIS article is about, and where. No camera or style words. Pass to generate_image with style:'photoreal_people'",
+  "inline_image_prompt": "SUBJECT ONLY. A different moment, detail, or step from THIS article. No camera or style words. Pass to generate_image with style:'photoreal_scene'",
+  "hero_image_alt": "what is actually visible in the frame — the people and what they are doing. Not a restatement of the article title",
+  "hero_image_caption": "one-line caption for the feature image",
+  "inline_image_alt": "what is actually visible in the frame. Not a restatement of the article title",
+  "inline_image_caption": "one-line caption",
+  "tags": ["tag1", "tag2"],
+  "primary_keyword": "main keyword",
+  "secondary_keywords": ["k1", "k2", "k3"]
+}
+
+The faq array must mirror the Frequently asked questions section in html_content
+exactly — same questions, same answers. It is used to build FAQPage structured
+data, and schema that disagrees with the visible page is a manual-action risk.`,
+  };
+}
