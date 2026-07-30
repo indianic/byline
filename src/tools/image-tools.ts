@@ -49,7 +49,7 @@ export function registerImageTools(server: McpServer, ctx: Context): void {
           .string()
           .optional()
           .describe(
-            "The camera register from build_writing_brief's IMAGE STYLE block, passed verbatim so every image in one article matches. Omitted, one is derived from the prompt.",
+            "The camera register from build_writing_brief's IMAGES block, passed verbatim so every image in one article matches. Omitted, one is derived from the prompt.",
           ),
         provider: z
           .enum(['gemini', 'grok'])

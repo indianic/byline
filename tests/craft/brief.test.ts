@@ -242,10 +242,51 @@ describe('image contract in the brief', () => {
     expect(DIMENSIONS.imageLook).toBe(IMAGE_LOOKS);
   });
 
-  it('carries an IMAGE STYLE block naming the look that was picked', () => {
+  it('states images are on by default and names the look that was picked', () => {
     const b = buildBrief({ ...base, seed: 11 });
-    expect(b.brief).toContain('IMAGE STYLE');
+    expect(b.brief).toMatch(/ON BY DEFAULT/);
     expect(IMAGE_LOOKS.some((look) => b.brief.includes(look))).toBe(true);
+  });
+
+  // Found in real use: an agent with a working image key still often skipped
+  // calling generate_image, because the old wording only said HOW to write
+  // an image prompt, never that doing so was the default outcome unless the
+  // user said otherwise. This is the phrasing that closes that gap, and it
+  // is only honest to promise when a provider is actually configured.
+  it('frames images as the default, overridable only by the user\'s own instruction', () => {
+    const text = buildBrief({ ...base, seed: 11, imageProviders: ['gemini'] }).brief;
+    expect(text).toMatch(/BY DEFAULT/);
+    // \s+ rather than a literal space: the source wraps this phrase across a
+    // line for readability, which embeds a real newline in the string.
+    expect(text).toMatch(/unless\s+the\s+user\s+explicitly\s+said/i);
+    expect(text).toMatch(/user's instruction always overrides/i);
+  });
+
+  it('does not ask for images at all when no provider is configured', () => {
+    const text = buildBrief({ ...base, seed: 11, imageProviders: [] }).brief;
+    // The instruction NOT to write the placeholder legitimately names it —
+    // "do not write [[content_image]]" has to say the string to forbid it.
+    // What must be absent is any instruction to PLACE one.
+    expect(text).not.toMatch(/Place the \[\[content_image\]\] placeholder/);
+    expect(text).not.toMatch(/Leave the literal text \[\[content_image\]\]/);
+    expect(text).not.toMatch(/photoreal_people/);
+    expect(text).not.toMatch(/generate_image with style/);
+    // The JSON contract itself must not ask for image prompts nothing will
+    // ever call generate_image with.
+    expect(text).not.toContain('hero_image_prompt');
+    expect(text).not.toContain('inline_image_prompt');
+    expect(text).toMatch(/no image provider is configured/i);
+    expect(text).toMatch(/publishes with NO/i);
+  });
+
+  it('omitting imageProviders assumes a provider exists, so every existing test above keeps its old meaning', () => {
+    // BriefInput.imageProviders is optional specifically so the 30+ call
+    // sites in this file that predate the field keep testing the image
+    // content they were written to test, without every one of them having to
+    // learn about provider configuration just to compile.
+    const withField = buildBrief({ ...base, seed: 11, imageProviders: ['gemini'] }).brief;
+    const omitted = buildBrief({ ...base, seed: 11 }).brief;
+    expect(omitted).toBe(withField);
   });
 
   it('tells the writer the hero image must contain people, and which style to pass', () => {

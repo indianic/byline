@@ -163,7 +163,26 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
           ...(authors ? { authors } : {}),
         });
 
-        const warnings = [...localWarnings, ...(result.warnings ?? [])];
+        // Images are the default the moment a provider key exists — the
+        // writing brief instructs generate_image + upload_image for exactly
+        // this reason. Nothing here can FORCE the calling agent to do that;
+        // an MCP server only ever responds to tool calls, it cannot demand
+        // one. This is the observable half of the fix: a post that reaches
+        // create_post with a working image key configured and no
+        // feature_image gets a named, non-blocking nudge instead of shipping
+        // with no signal that a default was skipped. Appended AFTER the
+        // platform's own warnings, never mixed into `localWarnings` above,
+        // so it can never shift the index of a warning about something the
+        // platform itself did.
+        const imageNudge =
+          !a.feature_image && ctx.setup.imageProviders.length > 0
+            ? [
+                `No feature_image was set, but an image provider (${ctx.setup.imageProviders.join(', ')}) is configured. ` +
+                  'By default every article gets a hero image: call generate_image then upload_image, and pass the ' +
+                  'result as feature_image — unless the user explicitly asked to skip images or supplied their own.',
+              ]
+            : [];
+        const warnings = [...localWarnings, ...(result.warnings ?? []), ...imageNudge];
         // Derived from what actually happened, not from whether the JSON-LD was
         // BUILT. WordPress core cannot accept codeinjection_head at all — its
         // adapter reports that as a warning naming the field

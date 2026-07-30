@@ -1242,6 +1242,10 @@ describe('create_post', () => {
       title: 'T',
       html: '<p>x</p>',
       author: 'jane-doe',
+      // This test is about author resolution, not images — pass one so the
+      // fixture's configured image provider (see makeContext) doesn't add
+      // its own "no feature_image" nudge and muddy the assertion below.
+      feature_image: 'https://img/hero.png',
     });
     expect(r.ok).toBe(true);
     expect(r.warnings).toBeUndefined();
@@ -1276,6 +1280,9 @@ describe('create_post', () => {
       html: '<p>x</p>',
       author: '2f88554eddb5d9c28bf29a5f',
       schema: false,
+      // Author resolution is what this test checks; feature_image side-steps
+      // the fixture's configured image provider adding its own nudge.
+      feature_image: 'https://img/hero.png',
     });
     expect(body.posts[0].authors).toEqual([{ id: '2f88554eddb5d9c28bf29a5f' }]);
     expect(r.ok).toBe(true);
@@ -1342,6 +1349,10 @@ platform_authors:
       html: '<p>x</p>',
       author: 'no-site-author',
       schema: false,
+      // Isolates this test to the one warning it's actually about — without
+      // this, the fixture's configured image provider would add a second
+      // warning and break the exact toHaveLength(1) below.
+      feature_image: 'https://img/hero.png',
     });
 
     expect(r.ok).toBe(true);
@@ -1351,6 +1362,81 @@ platform_authors:
     expect(r.warnings[0]).toContain('no-site-author');
     expect(r.warnings[0]).toContain('"personal"');
     expect(r.warnings[0]).toContain('platform_authors');
+  });
+});
+
+// Real user report: an image provider was configured and working, but
+// articles kept publishing with no hero image. Nothing in the MCP protocol
+// lets a server FORCE the calling agent to call generate_image before
+// create_post — the brief can instruct it, but the only code-level lever
+// left is to name the gap when it happens, loudly enough to notice, without
+// blocking the publish (a false positive here — an article that genuinely
+// doesn't want an image — must not become a hard failure).
+describe('create_post — nudges toward the default image, does not enforce it', () => {
+  /** Echoes the post back, exactly what create_post needs to succeed quietly. */
+  function stubQuietCreate() {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: string, i: RequestInit = {}) => {
+        const body = JSON.parse(String(i.body));
+        return new Response(
+          JSON.stringify({ posts: [{ ...body.posts[0], id: 'p1', url: 'https://u', status: 'draft' }] }),
+          { status: 201 },
+        );
+      }),
+    );
+  }
+
+  it('warns when an image provider is configured and no feature_image was set', async () => {
+    stubQuietCreate();
+    const r = await call('create_post', { site: 'personal', title: 'T', html: '<p>x</p>', schema: false });
+    expect(r.ok).toBe(true);
+    expect(r.warnings?.some((w: string) => w.includes('feature_image') && w.includes('gemini'))).toBe(true);
+  });
+
+  it('does not warn once feature_image is set', async () => {
+    stubQuietCreate();
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      schema: false,
+      feature_image: 'https://img/hero.png',
+    });
+    expect(r.warnings).toBeUndefined();
+  });
+
+  it('does not warn when no image provider is configured — there is no default to nudge toward', async () => {
+    stubQuietCreate();
+    const ctx = makeContext();
+    ctx.setup = { ...ctx.setup, imageProviders: [] };
+    const r = await callWith(ctx, 'create_post', { site: 'personal', title: 'T', html: '<p>x</p>', schema: false });
+    expect(r.warnings).toBeUndefined();
+  });
+
+  it('appends the nudge AFTER the platform\'s own warnings, never shifting their index', async () => {
+    // A dropped custom_excerpt already produces warnings[0] elsewhere in this
+    // file. This proves adding the nudge cannot silently move that index —
+    // the excerpt warning must stay first even when both fire together.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ posts: [{ id: 'p1', url: 'u', status: 'draft', title: 'T', custom_excerpt: null }] }),
+            { status: 201 },
+          ),
+      ),
+    );
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      custom_excerpt: 'dropped',
+      schema: false,
+    });
+    expect(r.warnings?.[0]).toContain('custom_excerpt');
+    expect(r.warnings?.some((w: string) => w.includes('feature_image'))).toBe(true);
   });
 });
 

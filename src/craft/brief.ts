@@ -11,6 +11,23 @@ export interface BriefInput {
   language?: string;
   seed?: number;
   profile: HtmlProfile;
+  /**
+   * Image providers whose key is actually configured, e.g. `['gemini']` —
+   * pass `ctx.setup.imageProviders` straight through. This is what lets the
+   * brief tell the truth about images instead of always assuming a provider
+   * exists: when this is empty, instructing generate_image is worse than
+   * useless — the call would simply fail with SETUP_INCOMPLETE, and asking
+   * the writer to leave a `[[content_image]]` placeholder that nothing will
+   * ever replace runs straight into `create_post`'s refusal to publish one.
+   *
+   * Optional, defaulting to "assume configured" (`undefined`, not `[]`) —
+   * every REAL caller (`build_writing_brief`) always passes this, so the
+   * only place it is omitted is a test that predates this field and is
+   * exercising something else entirely. Erring toward the richer branch
+   * keeps every such test's existing assertions about the image content
+   * unchanged; a caller that means "no provider" has to say so with `[]`.
+   */
+  imageProviders?: readonly string[];
 }
 
 /** Render the target platform's ingest rules as brief text. */
@@ -94,6 +111,14 @@ function rng(seed: number): () => number {
 
 const or = (v: string, fallback: string): string => (v.trim() ? v : fallback);
 
+/**
+ * `undefined` (the field omitted) assumes a provider IS configured — see
+ * `BriefInput.imageProviders`'s doc comment for why. Only an explicit `[]`
+ * means "no provider".
+ */
+const hasImageProvider = (imageProviders: readonly string[] | undefined): boolean =>
+  imageProviders === undefined || imageProviders.length > 0;
+
 export function buildBrief(input: BriefInput): Brief {
   const seed = input.seed ?? Math.floor(Math.random() * 2 ** 31);
   const next = rng(seed);
@@ -151,6 +176,86 @@ holds the image inside the column.`
 No style attributes: this platform strips them from the stored HTML, so adding them
 here would produce markup the platform silently discards. The theme sizes the image.`;
 
+  /**
+   * Whether this article gets images at all, and what the writer must do
+   * about it — conditioned on whether a provider is actually configured
+   * rather than always assuming one, which used to send `generate_image`
+   * calls to a machine with no key straight into `SETUP_INCOMPLETE`, and
+   * left the writer instructed to leave a `[[content_image]]` placeholder
+   * that nothing would ever replace.
+   *
+   * The "ON BY DEFAULT" framing is deliberate: it is the difference between
+   * an instruction the writer can silently forget and one that states the
+   * default outcome plus its one legitimate exception. The user's own
+   * instructions about images always override this — that is said outright,
+   * not left implied, because a default that cannot be overridden is not a
+   * default, it is a rule with a hole in it.
+   */
+  const imageSection = hasImageProvider(input.imageProviders)
+    ? `=== IMAGES — ON BY DEFAULT ===
+An image provider is configured for this account, so this article gets a hero image
+and an inline image BY DEFAULT — generate and upload both after writing, unless the
+user explicitly said to skip images, write text only, or gave you a different image
+instruction to follow instead. The user's instruction always overrides this default.
+
+${picked.imagePlacement}
+Leave the literal text [[content_image]] on its own, exactly once, while drafting.
+
+YOU replace it yourself before calling create_post — nothing does it for you, and
+both platforms REFUSE an article that still contains it. After upload_image returns
+the hosted URL, swap the placeholder for exactly this, filling in the url and alt:
+
+${figureMarkup}
+
+This article's camera register, chosen from its seed:
+${picked.imageLook}
+Pass that line to generate_image verbatim as look:"..." on BOTH images, so the two match
+and the article stays reproducible from its seed. Omit it and the tool picks its own.
+
+Write each image prompt as a SUBJECT ONLY — what is happening and where. Do not write
+camera, lighting, or style words in the prompt itself: generate_image adds the register
+above plus the photographic rules for you, and repeating them fights its own instructions.
+
+Every prompt must name something specific from THIS article — the actual industry, task,
+setting, or moment you are writing about. A prompt that would fit any other article on any
+other topic is the failure this rule exists to prevent.
+
+- hero_image_prompt   → call generate_image with style:'photoreal_people', then
+                        upload_image, then pass the resulting URL to create_post as
+                        feature_image. MUST show people doing the work this article
+                        is about. The hero is the post card and the social share
+                        image, so it is the one everybody sees. Describe who they
+                        are and what they are mid-way through doing.
+- inline_image_prompt → call generate_image with style:'photoreal_scene', then
+                        upload_image, then use the URL in the [[content_image]]
+                        figure above. A different moment, detail, or step from the
+                        same article — not a second angle on the hero.
+
+Never ask for text, logos, screens with readable words, or signage in either image.`
+    : `=== IMAGES ===
+No image provider is configured for this account, so this article publishes with NO
+images. Do NOT write a [[content_image]] placeholder anywhere — nothing will ever
+replace it, and both platforms refuse an article that still contains one when it is
+published. Do not call generate_image; it will fail with SETUP_INCOMPLETE. If the
+user wants images, tell them to add a Gemini or xAI key with \`byline init\`, then
+build the brief again.`;
+
+  // The JSON contract's image fields, present only when the writer was
+  // actually told to produce images. Leaving them in unconditionally used to
+  // ask for hero_image_prompt/inline_image_prompt even on a machine the
+  // "no provider configured" branch above just told NOT to call
+  // generate_image — asking for a prompt nothing will ever use is the same
+  // kind of dead instruction the IMAGES section itself exists to remove.
+  const imageJsonFields = hasImageProvider(input.imageProviders)
+    ? `  "hero_image_prompt": "SUBJECT ONLY. People doing the specific work THIS article is about, and where. No camera or style words. Pass to generate_image with style:'photoreal_people'",
+  "inline_image_prompt": "SUBJECT ONLY. A different moment, detail, or step from THIS article. No camera or style words. Pass to generate_image with style:'photoreal_scene'",
+  "hero_image_alt": "what is actually visible in the frame — the people and what they are doing. Not a restatement of the article title",
+  "hero_image_caption": "one-line caption for the feature image",
+  "inline_image_alt": "what is actually visible in the frame. Not a restatement of the article title",
+  "inline_image_caption": "one-line caption",
+`
+    : '';
+
   const researchBlock = input.research
     ? `=== RESEARCH SUPPLIED — GROUND THE ARTICLE IN THIS ===\n${input.research}`
     : '=== NO RESEARCH SUPPLIED ===\nDo not fabricate statistics. Where you would cite a figure you do not have, write from experience instead.';
@@ -200,39 +305,7 @@ ${picked.voice}
 === MICRO-STORY — PLACE AS INSTRUCTED ===
 ${picked.story}
 
-=== [[content_image]] PLACEMENT — PLACE EXACTLY HERE ===
-${picked.imagePlacement}
-Leave the literal text [[content_image]] on its own, exactly once, while drafting.
-
-YOU replace it yourself before calling create_post — nothing does it for you, and
-both platforms REFUSE an article that still contains it. After upload_image returns
-the hosted URL, swap the placeholder for exactly this, filling in the url and alt:
-
-${figureMarkup}
-
-=== IMAGE STYLE — BOTH IMAGES ARE PHOTOGRAPHS ===
-This article's camera register, chosen from its seed:
-${picked.imageLook}
-Pass that line to generate_image verbatim as look:"..." on BOTH images, so the two match
-and the article stays reproducible from its seed. Omit it and the tool picks its own.
-
-Write each image prompt as a SUBJECT ONLY — what is happening and where. Do not write
-camera, lighting, or style words in the prompt itself: generate_image adds the register
-above plus the photographic rules for you, and repeating them fights its own instructions.
-
-Every prompt must name something specific from THIS article — the actual industry, task,
-setting, or moment you are writing about. A prompt that would fit any other article on any
-other topic is the failure this rule exists to prevent.
-
-- hero_image_prompt   → call generate_image with style:'photoreal_people'.
-                        MUST show people doing the work this article is about. The hero is
-                        the post card and the social share image, so it is the one everybody
-                        sees. Describe who they are and what they are mid-way through doing.
-- inline_image_prompt → call generate_image with style:'photoreal_scene'.
-                        A different moment, detail, or step from the same article — not a
-                        second angle on the hero.
-
-Never ask for text, logos, screens with readable words, or signage in either image.
+${imageSection}
 
 === TABLE THEME — USE THESE EXACT COLOURS ===
 ${picked.tableTheme}
@@ -331,13 +404,7 @@ differently on purpose.
   "faq": [
     {"question": "exact question a reader would type", "answer": "40-60 word self-contained answer"}
   ],
-  "hero_image_prompt": "SUBJECT ONLY. People doing the specific work THIS article is about, and where. No camera or style words. Pass to generate_image with style:'photoreal_people'",
-  "inline_image_prompt": "SUBJECT ONLY. A different moment, detail, or step from THIS article. No camera or style words. Pass to generate_image with style:'photoreal_scene'",
-  "hero_image_alt": "what is actually visible in the frame — the people and what they are doing. Not a restatement of the article title",
-  "hero_image_caption": "one-line caption for the feature image",
-  "inline_image_alt": "what is actually visible in the frame. Not a restatement of the article title",
-  "inline_image_caption": "one-line caption",
-  "tags": ["tag1", "tag2"],
+${imageJsonFields}  "tags": ["tag1", "tag2"],
   "primary_keyword": "main keyword",
   "secondary_keywords": ["k1", "k2", "k3"]
 }

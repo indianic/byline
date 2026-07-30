@@ -92,6 +92,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
             topic: a.topic,
             mode: a.mode,
             profile,
+            imageProviders: ctx.setup.imageProviders,
             ...(a.research !== undefined ? { research: a.research } : {}),
             ...(a.word_count !== undefined ? { wordCount: a.word_count } : {}),
             ...(a.language !== undefined ? { language: a.language } : {}),
