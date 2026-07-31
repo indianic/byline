@@ -2,7 +2,7 @@ import { intro, outro } from '@clack/prompts';
 import { loadContext } from '../context.js';
 import { checkEnvPermissions } from '../config/dotenv.js';
 import { makeAdapter } from '../plugins/registry.js';
-import { defaultChain } from '../plugins/images/index.js';
+import { providerFamilies } from '../plugins/providers.js';
 import { getPackageVersion } from '../version.js';
 import { collectStatus } from './status.js';
 import { attention, check, detail, section } from './tree.js';
@@ -138,40 +138,56 @@ export async function runDoctor(args: string[]): Promise<void> {
     if (r.fix) attention(r.fix);
   }
 
-  // --- live image provider probes ---
-  section('image generation');
+  // --- live provider probes, one section per family ---
+  //
+  // No family is named here. The section heading and the wording for a skipped
+  // provider both come off the family descriptor, because the old copy — "the
+  // second provider is a fallback most users skip" — is true for images and
+  // false for research.
   const providerRows: Row[] = [];
-  if (offline) {
-    detail('skipped (--offline)');
-  } else {
-    for (const provider of defaultChain(ctx.env)) {
+  for (const family of providerFamilies()) {
+    section(family.label);
+    if (offline) {
+      detail('skipped (--offline)');
+      continue;
+    }
+    const familyRows: Row[] = [];
+    for (const provider of family.providers(ctx.env)) {
       if (!provider.configured()) {
-        // Not a failure: the second provider is a fallback most users skip.
-        detail(`${provider.name.padEnd(9)} not configured (${provider.credential.name} unset) — ${provider.credential.help}`);
+        detail(
+          `${provider.name.padEnd(9)} not configured (${provider.credential.name} unset) — ${family.unconfiguredNote}. ${provider.credential.help}`,
+        );
         continue;
       }
       try {
         const health = await provider.healthCheck();
-        providerRows.push({
+        familyRows.push({
           ok: health.ok,
           text: `${provider.name} — ${health.detail}`,
-          ...(health.ok ? {} : { fix: `Replace ${provider.credential.name} in ${ctx.paths.envFile}. ${provider.credential.help}` }),
+          ...(health.ok
+            ? {}
+            : { fix: `Replace ${provider.credential.name} in ${ctx.paths.envFile}. ${provider.credential.help}` }),
         });
       } catch (e) {
-        providerRows.push({
+        familyRows.push({
           ok: false,
           text: provider.name,
           fix: `${e instanceof Error ? e.message : String(e)}\nReplace ${provider.credential.name} in ${ctx.paths.envFile}. ${provider.credential.help}`,
         });
       }
     }
-    for (const r of providerRows) {
+    for (const r of familyRows) {
       check(r.ok, r.text);
       if (r.fix) attention(r.fix);
     }
-    if (providerRows.length === 0 && status.imageProviders.every((p) => !p.configured)) {
-      attention('No image provider is configured, so `generate_image` will refuse. Run `byline init` to add a key.');
-    }
+    providerRows.push(...familyRows);
+  }
+  // `generate_image` specifically refuses with no image provider — a
+  // targeted warning keyed off `status.imageProviders` (already
+  // images-specific by name, computed in status.ts), not off a family id
+  // branch here.
+  if (!offline && status.imageProviders.every((p) => !p.configured)) {
+    attention('No image provider is configured, so `generate_image` will refuse. Run `byline init` to add a key.');
   }
 
   // --- registrations ---

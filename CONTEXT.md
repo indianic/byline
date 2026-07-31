@@ -65,10 +65,12 @@ src/
     editor-config.ts       5 AI tools, JSON + Codex TOML merge, backup before write
     status.ts doctor.ts migrate.ts reset.ts register.ts update.ts
     tree.ts                the shared output vocabulary (◆ ◇ ▲ ■ ●)
-  tools/                   the 13 MCP tools — schemas and handlers
+  tools/                   the 14 MCP tools — schemas and handlers
   plugins/
     platforms/             ghost/ and wordpress/, each a self-contained folder
     images/                gemini/ and grok/, with fallback
+    research/              brave/ and tavily/, EITHER/OR — no fallback
+    providers.ts           the provider FAMILIES the CLI walks — images, research
     registry.ts            the one place a plugin is wired in
   craft/                   brief.ts, score.ts, html-profile.ts — the writing logic
   config/                  paths.ts, dotenv.ts, sites.ts, personas.ts, site-block.ts
@@ -120,6 +122,68 @@ Three defects in that contract were found by **generating an image and looking a
 none by a test: the subject spliced in without a terminator so it ran into the next
 clause; the brief displaying a camera register the tool would then ignore; and every
 person coming back as the same demographic because nothing said otherwise.
+
+### Research: either/or, and no fallback
+
+`src/plugins/research/` mirrors `images/` — same `CredentialField`, same `configured()`,
+`withKey()`, `healthCheck()` — with one deliberate difference: **there is no chain.**
+
+The image providers fall back Gemini→Grok because both return the same shape — a PNG,
+substitutable without the caller noticing. Brave returns ranked snippets and Tavily returns
+a synthesis plus sources: two different shapes, so substituting one for the other would
+silently change what the writer receives, not merely which vendor served it.
+`selectProvider()` picks exactly one, resolved from configuration alone *before* any
+request, which is what makes the rule enforceable: no runtime failure is visible from the
+point where the choice is made. A named provider whose key is unset is refused, and a
+search that throws is rethrown, never retried against the other.
+
+An article has exactly one research origin — a BYOR `research` string or provider
+`findings`, never both. `BriefInput` is a union so `tsc` refuses both, and the tool handler
+refuses them again because MCP input is runtime data. Merging them would make provenance
+unanswerable, which would leave `score_draft`'s `citation_provenance` check nothing solid
+to check against.
+
+**Be exact about what is checked, everywhere it is stated.** A result with no findings in
+it is refused in any mode. In **news mode only**, at least one finding must carry a
+readable date inside the window the result declares (plus `DATE_GRACE_MS`, a fixed six
+hours, for provider timestamp coarseness) — and that window is the caller's own
+claim about what was requested, since it arrives inside the payload; existence and
+datedness are checkable outright, the window only relative to that claim. Findings that
+are undated or out of window are accepted and marked individually on the brief, not
+rejected one at a time, because an article legitimately cites background alongside its
+breaking sources. Blog mode applies no recency check at all. A pasted `research` string is
+checked for substance only, and every place it surfaces says so: **trusted, not verified.**
+The old guard was satisfied by any non-empty string, which made the stated promise a speed
+bump — and three separate overclaims about this boundary had to be walked back during the
+phase that built it, so `one rule, one definition` applies to the prose here as much as to
+`SLUG_PATTERN`.
+
+`citation_provenance` is the only check in the project that speaks to provenance rather
+than shape, and its limits are part of its definition: it compares absolute `http(s)` URLs
+in `<a href>` against the findings' URLs, it is advisory rather than blocking (a writer
+legitimately links a homepage no search returned), it reports "not evaluated" when no
+findings are passed, and it says nothing about whether a source supports the claim made
+from it.
+
+`src/plugins/providers.ts` is the one place a provider *family* is registered. Adding one
+is a single entry there — no edit anywhere under `src/cli/` is needed for `init`, `doctor`,
+and `status` to pick it up, including the "unconfigured" wording, which comes off each
+family's own descriptor rather than being written per family (images' `unconfiguredNote`
+reads "not a failure — the second image provider is a fallback most users skip"; research's
+says there is no fallback at all — substituting one provider for the other is false for one
+of the two, so the wording cannot be shared).
+
+The one bounded exception: `status.ts` also emits a legacy `imageProviders` field — the
+pre-family output shape, filtered from the family list by `f.id === 'images'` and kept
+verbatim so nothing already reading it breaks, with the family-generic `providers` array
+added beside it for every new consumer. `doctor.ts`'s "no image provider configured"
+warning is keyed off that same field. `imageProviders` is frozen to `images` by definition;
+no other family will ever populate it, and it is not a platform- or provider-specific
+branch reintroduced into `src/cli/` — it is one legacy field named for the one family it
+was built before families existed.
+
+Measured API behaviour lives in `docs/RESEARCH-NOTES.md`, including the registry order and
+the measurement that decided it.
 
 ### `HtmlProfile`
 
@@ -236,7 +300,8 @@ npm run build                                     # tsc
 RUN_INTEGRATION=1 npx vitest run tests/integration/   # live APIs
 ```
 
-**435 unit tests is the floor, not the target.** Integration tests are excluded from the
+**The unit-test count is a floor, not a target, and the number itself is stated in
+`CLAUDE.md` and nowhere else — it has already gone stale in two files at once.** Integration tests are excluded from the
 run entirely unless `RUN_INTEGRATION=1` is set, so CI needs no secrets. They are
 self-cleaning — create, read back, assert, delete — and skip themselves with a named
 reason when the config has no site by the expected slug, which is the normal case for
@@ -262,12 +327,14 @@ Two things worth knowing before writing tests here:
 |---|---|
 | `docs/GHOST-NOTES.md` | Every verified Ghost behaviour, each paired with the code it forced |
 | `docs/WORDPRESS-NOTES.md` | The same for WordPress, with the `unfiltered_html` rule stated first |
+| `docs/RESEARCH-NOTES.md` | Measured Brave and Tavily behaviour, and the recency table that set the registry order |
 | `docs/ADDING-A-PLATFORM.md` | The extension checklist, written from actually adding WordPress |
 | `src/plugins/platforms/*/README.md` | Per-platform setup, quirks, and how each was verified |
 | `docs/CLI.md` | Every command and flag |
+| `CLAUDE.md` | The short, rule-shaped version of this file, loaded into every session |
 
-**Every line in the two NOTES files is traceable to a real request against a real
-install.** Not to documentation, not to memory. Do not widen a claim in them without
+**Every line in the three NOTES files is traceable to a real request against a real
+install or API.** Not to documentation, not to memory. Do not widen a claim in them without
 another probe that proves the change — and when a probe corrects one, correct the file.
 `GHOST-NOTES.md` itself once documented the false claim that `/site/` "proves the signed
 JWT is actually valid," written from reasoning and never probed. That sentence is how

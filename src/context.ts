@@ -4,6 +4,7 @@ import { checkEnvPermissions, loadEnvFile } from './config/dotenv.js';
 import { resolvePaths, type Paths } from './config/paths.js';
 import { ToolError } from './errors.js';
 import { defaultChain } from './plugins/images/index.js';
+import { researchProviders } from './plugins/research/index.js';
 import type { SetupState } from './setup.js';
 
 export interface Context {
@@ -38,6 +39,17 @@ export interface Context {
  */
 function configuredImageProviders(env: NodeJS.ProcessEnv): string[] {
   return defaultChain(env)
+    .filter((p) => p.configured())
+    .map((p) => p.name);
+}
+
+/**
+ * Mirrors `configuredImageProviders`: asks each provider whether it is
+ * configured rather than listing env var names here a second time, so a new
+ * provider cannot be added to the family without appearing in `status`.
+ */
+function configuredResearchProviders(env: NodeJS.ProcessEnv): string[] {
+  return researchProviders(env)
     .filter((p) => p.configured())
     .map((p) => p.name);
 }
@@ -84,6 +96,7 @@ export function buildSetupState(
     usableSiteCount: usable.length,
     personaCount: personas.size,
     imageProviders: configuredImageProviders(env),
+    researchProviders: configuredResearchProviders(env),
     problems,
     siteProblems,
   };

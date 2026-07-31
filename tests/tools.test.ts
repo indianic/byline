@@ -11,6 +11,8 @@ import { type Context, loadContext } from '../src/context.js';
 import { buildServer } from '../src/index.js';
 import type { PlatformPlugin } from '../src/plugins/platforms/types.js';
 import { PLATFORM_PLUGINS } from '../src/plugins/registry.js';
+import { TavilyResearch } from '../src/plugins/research/tavily/index.js';
+import * as windowModule from '../src/plugins/research/window.js';
 import { FAKE_ADMIN_KEY, FAKE_KEY_SECRET } from './fixtures/keys.js';
 
 const SITES = `
@@ -162,7 +164,7 @@ async function callWith(ctx: Context, name: string, args: Record<string, unknown
 }
 
 describe('tool registration', () => {
-  it('exposes all thirteen tools', async () => {
+  it('exposes all fourteen tools', async () => {
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'add_site',
@@ -175,6 +177,7 @@ describe('tool registration', () => {
       'list_personas',
       'list_sites',
       'remove_site',
+      'research_topic',
       'score_draft',
       'update_post',
       'upload_image',
@@ -895,7 +898,7 @@ describe('build_writing_brief research gate', () => {
     });
     expect(r.ok).toBe(false);
     expect(r.code).toBe('RESEARCH_REQUIRED');
-    expect(r.message).toContain('last30days');
+    expect(r.message).toContain('cannot be written from training data');
   });
 
   it('refuses news mode with only whitespace research', async () => {
@@ -908,12 +911,15 @@ describe('build_writing_brief research gate', () => {
     expect(r.code).toBe('RESEARCH_REQUIRED');
   });
 
-  it('allows news mode once research is supplied', async () => {
+  it('allows news mode once substantial research is supplied', async () => {
     const r = await call('build_writing_brief', {
       persona: 'jane-doe',
       topic: 'AI',
       mode: 'news',
-      research: 'TCS revenue per employee rose 3.4% in FY26.',
+      // 200-char minimum for a BYOR string (substance is the only thing that
+      // can honestly be checked about a hand-pasted string) — see the
+      // RESEARCH_THIN guard in src/tools/craft-tools.ts.
+      research: 'TCS revenue per employee rose 3.4% in FY26. '.repeat(5),
     });
     expect(r.ok).toBe(true);
     expect(r.brief).toContain('TCS revenue per employee rose 3.4%');
@@ -962,6 +968,7 @@ describe('create_post metadata', () => {
       twitter_description: 'X description',
       feature_image: 'https://img/hero.png',
       feature_image_caption: 'Caption',
+      images: 'hero',
     });
     const p = body.posts[0];
     expect(p.custom_excerpt).toBe('Listing blurb');
@@ -983,6 +990,7 @@ describe('create_post metadata', () => {
       title: 'T',
       html: '<p>x</p>',
       feature_image: 'https://img/hero.png',
+      images: 'hero',
     });
     expect(body.posts[0].og_image).toBe('https://img/hero.png');
     expect(body.posts[0].twitter_image).toBe('https://img/hero.png');
@@ -999,6 +1007,7 @@ describe('create_post metadata', () => {
       html: '<p>x</p>',
       meta_description: 'D',
       faq: [{ question: 'Q1?', answer: 'A1' }],
+      images: 'none',
     });
     const head = body.posts[0].codeinjection_head as string;
     expect(head).toContain('application/ld+json');
@@ -1017,6 +1026,7 @@ describe('create_post metadata', () => {
       title: 'T',
       html: '<p>x</p>',
       schema: false,
+      images: 'none',
     });
     expect('codeinjection_head' in body.posts[0]).toBe(false);
     expect(r.schema_injected).toBe(false);
@@ -1049,6 +1059,7 @@ describe('create_post metadata', () => {
       html: '<p>x</p>',
       meta_description: 'D',
       schema: true,
+      images: 'none',
     });
     expect(r.ok).toBe(true);
     expect(r.schema_injected).toBe(false);
@@ -1074,6 +1085,7 @@ describe('create_post metadata', () => {
       html: '<p>x</p>',
       custom_excerpt: 'dropped',
       schema: false,
+      images: 'none',
     });
     expect(r.warnings?.[0]).toContain('custom_excerpt');
   });
@@ -1173,6 +1185,8 @@ describe('create_post', () => {
       title: 'T',
       html: '<p>x</p>',
       author: 'jane-doe',
+      // This test is about author resolution, not images.
+      images: 'none',
     });
     expect(body.posts[0].authors).toEqual([{ id: 'author-1' }]);
     expect(body.posts[0].status).toBe('published');
@@ -1191,7 +1205,7 @@ describe('create_post', () => {
         );
       }),
     );
-    await call('create_post', { site: 'personal', title: 'T', html: '<p>x</p>' });
+    await call('create_post', { site: 'personal', title: 'T', html: '<p>x</p>', images: 'none' });
     expect(body.posts[0].status).toBe('published');
   });
 
@@ -1205,7 +1219,12 @@ describe('create_post', () => {
           }),
       ),
     );
-    const r = await call('create_post', { site: 'personal', title: 'T', html: '<p>x</p>' });
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      images: 'none',
+    });
     expect(r.ok).toBe(false);
     expect(r.status).toBe(422);
     expect(r.message).toContain('Validation failed on posts');
@@ -1242,10 +1261,11 @@ describe('create_post', () => {
       title: 'T',
       html: '<p>x</p>',
       author: 'jane-doe',
-      // This test is about author resolution, not images — pass one so the
-      // fixture's configured image provider (see makeContext) doesn't add
-      // its own "no feature_image" nudge and muddy the assertion below.
+      // This test is about author resolution, not images — pass a hero and
+      // opt out of the inline requirement so the images gate doesn't muddy
+      // the assertion below.
       feature_image: 'https://img/hero.png',
+      images: 'hero',
     });
     expect(r.ok).toBe(true);
     expect(r.warnings).toBeUndefined();
@@ -1280,9 +1300,11 @@ describe('create_post', () => {
       html: '<p>x</p>',
       author: '2f88554eddb5d9c28bf29a5f',
       schema: false,
-      // Author resolution is what this test checks; feature_image side-steps
-      // the fixture's configured image provider adding its own nudge.
+      // Author resolution is what this test checks; feature_image plus
+      // images: "hero" side-steps the fixture's configured image provider's
+      // enforcement gate.
       feature_image: 'https://img/hero.png',
+      images: 'hero',
     });
     expect(body.posts[0].authors).toEqual([{ id: '2f88554eddb5d9c28bf29a5f' }]);
     expect(r.ok).toBe(true);
@@ -1350,9 +1372,10 @@ platform_authors:
       author: 'no-site-author',
       schema: false,
       // Isolates this test to the one warning it's actually about — without
-      // this, the fixture's configured image provider would add a second
-      // warning and break the exact toHaveLength(1) below.
+      // this, the fixture's configured image provider would refuse the
+      // request and break the assertions below.
       feature_image: 'https://img/hero.png',
+      images: 'hero',
     });
 
     expect(r.ok).toBe(true);
@@ -1365,14 +1388,21 @@ platform_authors:
   });
 });
 
-// Real user report: an image provider was configured and working, but
-// articles kept publishing with no hero image. Nothing in the MCP protocol
-// lets a server FORCE the calling agent to call generate_image before
-// create_post — the brief can instruct it, but the only code-level lever
-// left is to name the gap when it happens, loudly enough to notice, without
-// blocking the publish (a false positive here — an article that genuinely
-// doesn't want an image — must not become a hard failure).
-describe('create_post — nudges toward the default image, does not enforce it', () => {
+// Real user report: an image provider was configured and working, but an
+// agent read the brief's images-on-by-default section, got the OLD
+// non-blocking "no feature_image" nudge from create_post, and still
+// published with no hero image and a stock photo standing in for a
+// generated inline image — recording the nudge as "expected". A warning an
+// agent can shrug off is not a guard. `images` (default "both") now makes
+// the product's stated default an enforced contract: refuse to publish when
+// the selected state's required image(s) are missing, UNLESS no image
+// provider is configured at all — in which case the caller cannot comply,
+// so nothing is enforced (see the last describe block below).
+describe('create_post — enforces the default image contract (images: "both" | "hero" | "inline" | "none")', () => {
+  const HERO = 'https://img/hero.png';
+  const INLINE_HTML = '<p>x</p><figure><img src="https://img/inline.png" alt="a"></figure>';
+  const NO_IMAGE_HTML = '<p>x</p>';
+
   /** Echoes the post back, exactly what create_post needs to succeed quietly. */
   function stubQuietCreate() {
     vi.stubGlobal(
@@ -1387,37 +1417,144 @@ describe('create_post — nudges toward the default image, does not enforce it',
     );
   }
 
-  it('warns when an image provider is configured and no feature_image was set', async () => {
-    stubQuietCreate();
-    const r = await call('create_post', { site: 'personal', title: 'T', html: '<p>x</p>', schema: false });
-    expect(r.ok).toBe(true);
-    expect(r.warnings?.some((w: string) => w.includes('feature_image') && w.includes('gemini'))).toBe(true);
-  });
-
-  it('does not warn once feature_image is set', async () => {
+  it('refuses images: "both" (the default) when neither a hero nor an inline image is present', async () => {
     stubQuietCreate();
     const r = await call('create_post', {
       site: 'personal',
       title: 'T',
-      html: '<p>x</p>',
+      html: NO_IMAGE_HTML,
       schema: false,
-      feature_image: 'https://img/hero.png',
     });
-    expect(r.warnings).toBeUndefined();
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('IMAGES_REQUIRED');
+    expect(r.message).toContain('feature_image');
+    expect(r.message).toContain('<img');
+    // Names the fix as a sequence and the opt-out, so a caller who genuinely
+    // wants no image is not stuck.
+    expect(r.hint).toContain('generate_image');
+    expect(r.hint).toContain('upload_image');
+    expect(r.hint).toContain('images: "none"');
   });
 
-  it('does not warn when no image provider is configured — there is no default to nudge toward', async () => {
+  it('defaults to "both" when images is omitted entirely — not just when passed explicitly', async () => {
     stubQuietCreate();
-    const ctx = makeContext();
-    ctx.setup = { ...ctx.setup, imageProviders: [] };
-    const r = await callWith(ctx, 'create_post', { site: 'personal', title: 'T', html: '<p>x</p>', schema: false });
-    expect(r.warnings).toBeUndefined();
+    const r = await call('create_post', { site: 'personal', title: 'T', html: NO_IMAGE_HTML, schema: false });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('IMAGES_REQUIRED');
   });
 
-  it('appends the nudge AFTER the platform\'s own warnings, never shifting their index', async () => {
+  it('refuses images: "both" when only the hero is missing (inline present)', async () => {
+    stubQuietCreate();
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: INLINE_HTML,
+      schema: false,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('HERO_IMAGE_REQUIRED');
+    expect(r.message).toContain('feature_image');
+    expect(r.hint).toContain('images: "none"');
+  });
+
+  it('refuses images: "both" when only the inline image is missing (hero present)', async () => {
+    stubQuietCreate();
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: NO_IMAGE_HTML,
+      feature_image: HERO,
+      schema: false,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('INLINE_IMAGE_REQUIRED');
+    expect(r.message).toContain('<img');
+    expect(r.hint).toContain('images: "none"');
+  });
+
+  it('publishes images: "both" when both a hero and an inline image are present', async () => {
+    stubQuietCreate();
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: INLINE_HTML,
+      feature_image: HERO,
+      schema: false,
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('refuses images: "hero" when feature_image is missing, even with an inline image present', async () => {
+    stubQuietCreate();
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: INLINE_HTML,
+      images: 'hero',
+      schema: false,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('HERO_IMAGE_REQUIRED');
+    expect(r.hint).toContain('images: "none"');
+  });
+
+  it('publishes images: "hero" with only a feature_image, no inline image required', async () => {
+    stubQuietCreate();
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: NO_IMAGE_HTML,
+      feature_image: HERO,
+      images: 'hero',
+      schema: false,
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('refuses images: "inline" when there is no inline <img>, even with feature_image present', async () => {
+    stubQuietCreate();
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: NO_IMAGE_HTML,
+      feature_image: HERO,
+      images: 'inline',
+      schema: false,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('INLINE_IMAGE_REQUIRED');
+    expect(r.hint).toContain('images: "none"');
+  });
+
+  it('publishes images: "inline" with only an inline image, no feature_image required', async () => {
+    stubQuietCreate();
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: INLINE_HTML,
+      images: 'inline',
+      schema: false,
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('never refuses images: "none", even with neither a hero nor an inline image', async () => {
+    stubQuietCreate();
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: NO_IMAGE_HTML,
+      images: 'none',
+      schema: false,
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('does not add the old non-blocking nudge anywhere — the enforcement above replaced it', async () => {
     // A dropped custom_excerpt already produces warnings[0] elsewhere in this
-    // file. This proves adding the nudge cannot silently move that index —
-    // the excerpt warning must stay first even when both fire together.
+    // file. With both images present (so the gate passes) and the excerpt
+    // dropped by the platform, the only warning present must be about the
+    // excerpt — there is no second "no feature_image" warning left to emit.
     vi.stubGlobal(
       'fetch',
       vi.fn(
@@ -1431,12 +1568,37 @@ describe('create_post — nudges toward the default image, does not enforce it',
     const r = await call('create_post', {
       site: 'personal',
       title: 'T',
-      html: '<p>x</p>',
+      html: INLINE_HTML,
+      feature_image: HERO,
       custom_excerpt: 'dropped',
       schema: false,
     });
-    expect(r.warnings?.[0]).toContain('custom_excerpt');
-    expect(r.warnings?.some((w: string) => w.includes('feature_image'))).toBe(true);
+    expect(r.warnings).toEqual([expect.stringContaining('custom_excerpt')]);
+  });
+});
+
+describe('create_post — image enforcement only applies when an image provider is configured', () => {
+  it('publishes images: "both" with no images at all when no image provider is configured', async () => {
+    const ctx = makeContext();
+    ctx.setup = { ...ctx.setup, imageProviders: [] };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: string, i: RequestInit = {}) => {
+        const body = JSON.parse(String(i.body));
+        return new Response(
+          JSON.stringify({ posts: [{ ...body.posts[0], id: 'p1', url: 'https://u', status: 'draft' }] }),
+          { status: 201 },
+        );
+      }),
+    );
+    const r = await callWith(ctx, 'create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      schema: false,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toBeUndefined();
   });
 });
 
@@ -1483,6 +1645,8 @@ describe('create_post — schema_injected reflects outcome, not intent (LEAK 1)'
       status: 'draft',
       schema: true,
       meta_description: 'D',
+      // This test is about schema_injected, not images.
+      images: 'none',
     });
 
     expect(r.ok).toBe(true);
@@ -1539,6 +1703,9 @@ describe('create_post — feature_image_id reaches WordPress (C3)', () => {
       // native id, both surviving zod parsing.
       feature_image: 'https://wp.example.com/hero.png',
       feature_image_id: '77',
+      // This test is about feature_image_id forwarding, not the inline image;
+      // a hero is already supplied above.
+      images: 'hero',
     });
 
     expect(r.ok).toBe(true);
@@ -1598,6 +1765,28 @@ describe('health_check', () => {
     const r = await call('health_check');
     expect(r.sites[0].ok).toBe(false);
     expect(Array.isArray(r.images)).toBe(true);
+  });
+
+  // Task 6: `health_check`'s handler calls `researchHealth()` alongside
+  // `imageHealth()` and folds the result into the response under `research`.
+  // Before this, only `providerFamilies()` in isolation was tested — nothing
+  // proved the MCP tool layer actually surfaces the research probe, the same
+  // "wired up but never asserted end to end" gap the images field would have
+  // had if `Array.isArray(r.images)` above were the only images assertion.
+  it('carries a research field alongside images, with one result per research provider', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('nope', { status: 500 })),
+    );
+    const r = await call('health_check');
+    expect(Array.isArray(r.research)).toBe(true);
+    const names = (r.research as Array<{ provider: string }>).map((p) => p.provider).sort();
+    expect(names).toEqual(['brave', 'tavily']);
+    // Neither BRAVE_API_KEY nor TAVILY_API_KEY is set in this fixture
+    // context, and an unconfigured provider's healthCheck() returns ok:false
+    // without touching the network — so this holds even though `fetch` is
+    // stubbed to fail every call.
+    expect((r.research as Array<{ ok: boolean }>).every((p) => p.ok === false)).toBe(true);
   });
 });
 
@@ -1754,5 +1943,491 @@ describe('generate_image — the people contract', () => {
     expect(seen[0]).not.toMatch(/^Photograph\./);
     expect(seen[0]).not.toMatch(/one or two people/i);
     expect(seen[0]).toContain('boxes connected left to right');
+  });
+});
+
+// Task 7 review (Finding 1): the original research_topic tests never called
+// research_topic. Two hand-rolled a fake `server.registerTool` stub instead of
+// using this file's real harness, and two called `research()` from
+// src/plugins/research/index.ts directly, skipping src/tools/research-tools.ts
+// entirely. Nothing proved `ctx.env` was actually plumbed through, that the
+// zod defaults for `window`/`max_results` survived the MCP SDK's argument
+// parsing, or that the error codes actually reached a real client — exactly
+// the class of gap that let `feature_image_id` ship doing nothing for four
+// phases (see the C3 describe block above). These go through `call`/`callWith`
+// like every other tool in this file, with the network stubbed at `fetch`.
+describe('research_topic', () => {
+  // BRAVE_API_KEY / TAVILY_API_KEY must never be ambiently set for these
+  // tests — that is what makes "ctx.env, not process.env" a meaningful claim
+  // rather than a coincidence of whatever is in the shell running the suite.
+  const savedEnv = {
+    BRAVE_API_KEY: process.env.BRAVE_API_KEY,
+    TAVILY_API_KEY: process.env.TAVILY_API_KEY,
+    BYLINE_RESEARCH_PROVIDER: process.env.BYLINE_RESEARCH_PROVIDER,
+    WRITEBLOGS_RESEARCH_PROVIDER: process.env.WRITEBLOGS_RESEARCH_PROVIDER,
+  };
+
+  beforeEach(() => {
+    delete process.env.BRAVE_API_KEY;
+    delete process.env.TAVILY_API_KEY;
+    delete process.env.BYLINE_RESEARCH_PROVIDER;
+    delete process.env.WRITEBLOGS_RESEARCH_PROVIDER;
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete (process.env as Record<string, string | undefined>)[k];
+      else process.env[k] = v;
+    }
+    vi.restoreAllMocks();
+  });
+
+  /** A fresh, sites-less context — research_topic touches no site. */
+  function researchContext(env: Record<string, string> = {}): Context {
+    const home = mkdtempSync(join(tmpdir(), 'wb-research-'));
+    return loadContext({ BYLINE_HOME: home, ...env } as NodeJS.ProcessEnv);
+  }
+
+  const braveResponse = (results: unknown[]) => new Response(JSON.stringify({ results }), { status: 200 });
+  const tavilyResponse = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+
+  it('honours a key present in ctx.env (and absent from process.env)', async () => {
+    const ctx = researchContext({ TAVILY_API_KEY: 'fake-tavily-key' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => tavilyResponse({ results: [{ url: 'https://a.test/1', title: 'A', content: 's' }] })),
+    );
+
+    const r = await callWith(ctx, 'research_topic', { topic: 'quantum batteries' });
+
+    expect(r.ok).toBe(true);
+    expect(r.provider).toBe('tavily');
+  });
+
+  it('refuses with RESEARCH_NOT_CONFIGURED when nothing is configured', async () => {
+    const ctx = researchContext();
+    const r = await callWith(ctx, 'research_topic', { topic: 'quantum batteries' });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('RESEARCH_NOT_CONFIGURED');
+  });
+
+  // The defaults are declared with zod's `.default(...)` in the inputSchema —
+  // exactly the layer that silently stripped `feature_image_id` before. Spying
+  // on the real TavilyResearch.prototype.search (still calling through to the
+  // stubbed fetch) captures precisely what the adapter received: if a default
+  // were dropped, `window`/`maxResults` would arrive `undefined` here, not
+  // merely render oddly downstream.
+  it('applies the zod defaults for window and max_results all the way to the provider', async () => {
+    const ctx = researchContext({ TAVILY_API_KEY: 'fake-tavily-key' });
+    vi.stubGlobal('fetch', vi.fn(async () => tavilyResponse({ results: [] })));
+    const searchSpy = vi.spyOn(TavilyResearch.prototype, 'search');
+
+    const r = await callWith(ctx, 'research_topic', { topic: 'quantum batteries' });
+
+    expect(r.ok).toBe(true);
+    expect(searchSpy).toHaveBeenCalledWith('quantum batteries', { window: 'week', maxResults: 10 });
+  });
+
+  // THE no-fallback rule: naming a provider with no key must refuse, never
+  // silently return the other (configured) provider's results.
+  it('refuses RESEARCH_PROVIDER_UNCONFIGURED for a named-but-unconfigured provider, and never falls back', async () => {
+    const ctx = researchContext({ BRAVE_API_KEY: 'fake-brave-key' }); // tavily has no key
+    const fetchMock = vi.fn(async () =>
+      braveResponse([{ url: 'https://brave.test/1', title: 'Should never be returned' }]),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await callWith(ctx, 'research_topic', { topic: 'quantum batteries', provider: 'tavily' });
+
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('RESEARCH_PROVIDER_UNCONFIGURED');
+    // The configured provider (brave) must never have been consulted.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(r)).not.toContain('brave.test');
+  });
+
+  it('returns findings plus selectedBy on the happy path, in the provider\'s own order', async () => {
+    const ctx = researchContext({ BRAVE_API_KEY: 'fake-brave-key', TAVILY_API_KEY: 'fake-tavily-key' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        braveResponse([
+          { url: 'https://c.test/3', title: 'Third', description: 'c', page_age: '2026-07-30T01:00:00' },
+          { url: 'https://a.test/1', title: 'First', description: 'a', page_age: '2026-07-30T02:00:00' },
+          { url: 'https://b.test/2', title: 'Second', description: 'b', page_age: '2026-07-30T03:00:00' },
+        ]),
+      ),
+    );
+
+    const r = await callWith(ctx, 'research_topic', { topic: 'quantum batteries' });
+
+    expect(r.ok).toBe(true);
+    // Both configured, no provider/env pin: registry order picks brave.
+    expect(r.provider).toBe('brave');
+    expect(r.selectedBy).toBe('registry-order');
+    // Unsorted, unfiltered — exactly the order the provider returned.
+    expect((r.findings as Array<{ url: string }>).map((f) => f.url)).toEqual([
+      'https://c.test/3',
+      'https://a.test/1',
+      'https://b.test/2',
+    ]);
+  });
+});
+
+// Task 8. `findings` on build_writing_brief. THE feature_image_id regression
+// this guards against: a field added to BriefInput and to buildBrief does
+// nothing at all if the zod inputSchema does not declare it — the MCP SDK
+// strips any key the input schema doesn't declare, before the handler ever
+// runs. That shipped, typechecked, built, and passed every adapter unit test
+// for four phases because those tests called the adapter directly with the
+// field already present, never through a real client. These tests go through
+// `call`/`callWith` — a real MCP client round-trip — for exactly that reason.
+describe('build_writing_brief research origin', () => {
+  const findings = {
+    provider: 'tavily',
+    query: 'cricket',
+    window: 'day' as const,
+    answer: 'India won by 4 wickets.',
+    selectedBy: 'sole-configured' as const,
+    findings: [
+      {
+        url: 'https://a.test/report',
+        title: 'India win',
+        snippet: 'India chased 214 with 4 wickets in hand.',
+        publishedAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+        relevance: null,
+        provider: 'tavily',
+      },
+    ],
+  };
+
+  it('lets findings survive the tool layer and reach the brief', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      findings,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.researchOrigin).toBe('provider');
+    // The findings' actual content reached the brief text, not just a count.
+    expect(r.brief).toContain('https://a.test/report');
+    expect(r.brief).toContain('India chased 214');
+  });
+
+  it("marks Tavily's synthesis as orientation only, never citable", async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      findings,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.brief).toContain('India won by 4 wickets.');
+    expect(r.brief.toLowerCase()).toContain('not citable');
+  });
+
+  it('refuses both research and findings, naming which to drop', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      research: 'x'.repeat(300),
+      findings,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('RESEARCH_CONFLICT');
+  });
+
+  it('refuses news mode with neither', async () => {
+    const r = await call('build_writing_brief', { persona: 'jane-doe', topic: 'cricket', mode: 'news' });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('RESEARCH_REQUIRED');
+  });
+
+  it('refuses findings with an empty findings array', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      findings: { ...findings, findings: [] },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('RESEARCH_EMPTY');
+  });
+
+  it('refuses findings where every publishedAt is null', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      findings: { ...findings, findings: [{ ...findings.findings[0], publishedAt: null }] },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('RESEARCH_UNDATED');
+  });
+
+  it('refuses findings whose only dates fall outside the window', async () => {
+    const old = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      findings: { ...findings, findings: [{ ...findings.findings[0], publishedAt: old }] },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('RESEARCH_STALE');
+  });
+
+  it('refuses a BYOR string too thin to be research', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      research: 'AI is growing fast',
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('RESEARCH_THIN');
+  });
+
+  // The chosen BYOR strength: substance only. A URL-less string is ACCEPTED,
+  // because legitimate notes (a customer call, a paywalled report) have no
+  // public URL — but the result says plainly it was trusted, not checked.
+  it('accepts a substantial BYOR string with no URLs, and says it is trusted not checked', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      research: 'Notes from a call with the head coach on 30 July. '.repeat(8),
+    });
+    expect(r.ok).toBe(true);
+    expect(r.researchOrigin).toBe('byor');
+    expect(r.brief).toContain('TRUSTED, NOT VERIFIED');
+    expect((r.warnings as string[]).join(' ')).toContain('0 source URLs');
+  });
+
+  it('still needs no research at all in blog mode', async () => {
+    const r = await call('build_writing_brief', { persona: 'jane-doe', topic: 'evergreen', mode: 'blog' });
+    expect(r.ok).toBe(true);
+    expect(r.researchOrigin).toBe('none');
+  });
+
+  // An empty findings array is never useful research. Gated behind news mode it
+  // let blog mode render "GROUND THE ARTICLE IN THIS", a non-citable synthesis,
+  // and an empty "CITE THESE" list, with researchOrigin: "provider" and zero
+  // sources behind the article. Reachable by the ordinary flow: research
+  // returns nothing and the topic is evergreen.
+  it('refuses an empty findings array in blog mode too', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'blog',
+      findings: { ...findings, findings: [] },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('RESEARCH_EMPTY');
+  });
+
+  // The grace is 6 hours at every window, not one whole day. `maxAgeDays + 1`
+  // doubled the day window: a 47-hour-old source passed `window: 'day'`.
+  it('refuses a two-day-old source under a one-day window', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      findings: {
+        ...findings,
+        findings: [
+          {
+            ...findings.findings[0],
+            publishedAt: new Date(Date.now() - 47 * 3600 * 1000).toISOString(),
+          },
+        ],
+      },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('RESEARCH_STALE');
+  });
+
+  it('still accepts a source just past the window edge, within the coarse-timestamp grace', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      findings: {
+        ...findings,
+        findings: [
+          {
+            ...findings.findings[0],
+            publishedAt: new Date(Date.now() - 27 * 3600 * 1000).toISOString(),
+          },
+        ],
+      },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('treats a far-future publishedAt as undated rather than fresh', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      findings: {
+        ...findings,
+        findings: [{ ...findings.findings[0], publishedAt: '2099-01-01T00:00:00.000Z' }],
+      },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('RESEARCH_UNDATED');
+  });
+
+  it('treats an unparseable publishedAt as undated, and never quotes it as a date', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      findings: {
+        ...findings,
+        findings: [{ ...findings.findings[0], publishedAt: 'yesterday-ish' }],
+      },
+    });
+    expect(r.ok).toBe(false);
+    // Not RESEARCH_STALE with `Newest: yesterday-ish` — it was never a date.
+    expect(r.code).toBe('RESEARCH_UNDATED');
+    expect(JSON.stringify(r)).not.toContain('Newest');
+  });
+
+  // The guard passes on ONE in-window finding, on purpose — an article may cite
+  // background alongside its breaking sources. What must not happen is the rest
+  // being rendered as though they had passed too.
+  it('accepts a mixed-age set but marks and warns about the stale one', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      findings: {
+        ...findings,
+        findings: [
+          findings.findings[0],
+          {
+            url: 'https://old.test/x',
+            title: 'Old',
+            snippet: 'Background from three months ago.',
+            publishedAt: new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString(),
+            relevance: null,
+            provider: 'tavily',
+          },
+        ],
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.brief).toContain('OUTSIDE the day window');
+    expect(r.brief).toContain('2 source(s), 2 dated, 1 inside the day window');
+    expect((r.warnings as string[]).join(' ')).toContain('1 of 2 sources fall outside the day window');
+  });
+
+  // Follow-up review N1: `tallyWindow` defaults `now` to `Date.now()` when
+  // omitted, and both the guard here and `buildBrief` used to call it without
+  // passing one — each capturing its OWN clock reading, sub-millisecond apart.
+  // Measured: with `publishedAt` exactly at the cutoff, 2 of 500 requests had
+  // the guard accept while the brief's rendered header then reported the
+  // source OUTSIDE the window it had just been admitted into.
+  //
+  // Racing the real clock to reproduce that (2-in-500) is neither reliable
+  // nor "deterministic" as required. Mocking global `Date.now()` isn't a
+  // clean substitute either: the MCP SDK itself calls `Date.now()` (request
+  // timing in `shared/protocol.js`) before either of ours runs, so a simple
+  // call-count-based mock cannot reliably target "the guard's call" and "the
+  // brief's call" specifically. What IS fully deterministic, and exactly
+  // what "thread a single now through one request" means at the call sites,
+  // is that `tallyWindow` — the sole freshness authority both the guard
+  // (`craft-tools.ts`) and the renderer (`brief.ts`) defer to — is invoked
+  // TWICE per news-mode `findings` request, and BOTH invocations must carry
+  // the SAME explicit `now`, not each defaulting its own. Spying on the
+  // actual exported function pins exactly that, with no clock involved:
+  // reverting to two independent `Date.now()` calls means at least one
+  // invocation is missing the third argument entirely (`undefined`, not a
+  // number), which fails the very first assertion below.
+  it('threads one explicit `now` through both the guard and the brief for a single request', async () => {
+    const spy = vi.spyOn(windowModule, 'tallyWindow');
+    try {
+      const r = await call('build_writing_brief', {
+        persona: 'jane-doe',
+        topic: 'cricket',
+        mode: 'news',
+        findings,
+      });
+      expect(r.ok).toBe(true);
+      // One call from the guard, one from buildBrief.
+      expect(spy).toHaveBeenCalledTimes(2);
+      const nows = spy.mock.calls.map((args) => args[2]);
+      expect(nows[0]).toBeTypeOf('number');
+      expect(nows[1]).toBeTypeOf('number');
+      // The same instant both times — not two clock readings sub-milliseconds
+      // apart.
+      expect(nows[0]).toBe(nows[1]);
+      // Deterministic consequence of the same inputs: the guard's tally and
+      // the brief's tally must be the identical verdict, not merely two
+      // verdicts that happen to agree this run.
+      expect(spy.mock.results[0]!.value).toEqual(spy.mock.results[1]!.value);
+      // And the observable agreement this whole module exists to guarantee:
+      // the guard admitted the finding as in-window, and the brief's header
+      // says the same thing rather than re-judging it as outside.
+      expect(r.brief).toContain('1 source(s), 1 dated, 1 inside the day window');
+      expect(r.brief).not.toContain('OUTSIDE the day window');
+      expect(r.warnings).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // Task 9 builds the citation cross-check. Until it lands, nothing may promise
+  // it — not the description, and not a warning the host model relays.
+  it('never promises a score_draft cross-check in the URL-less BYOR warning', async () => {
+    const r = await call('build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'cricket',
+      mode: 'news',
+      research: 'Notes from a call with the head coach on 30 July. '.repeat(8),
+    });
+    expect(r.ok).toBe(true);
+    expect((r.warnings as string[]).join(' ')).toContain('cannot be attributed inline');
+    expect(JSON.stringify(r)).not.toContain('cross-check');
+  });
+});
+
+// Task 9: `findings` must be declared in score_draft's zod inputSchema, or the
+// MCP SDK silently strips it and the citation_provenance check reports "not
+// evaluated" forever while every unit test (which calls scoreDraft directly,
+// bypassing zod) still passes. feature_image_id shipped exactly that way —
+// added to the type and the adapter, absent from the tool schema — for four
+// phases. This test goes through the real MCP client/server transport, not a
+// direct function call, so it is the one that would have caught it.
+describe('score_draft findings survive the tool layer', () => {
+  it('lets score_draft findings survive the tool layer and enable the check', async () => {
+    const r = await call('score_draft', {
+      html: '<p><a href="https://invented.test/x" rel="noopener noreferrer">x</a></p>',
+      findings: [
+        { url: 'https://a.test/r', title: 'A', snippet: 's', publishedAt: null, relevance: null, provider: 'tavily' },
+      ],
+    });
+    const check = r.checks.find((c: { name: string }) => c.name === 'citation_provenance');
+    expect(check.detail).not.toContain('not evaluated');
+    expect(check.findings.join(' ')).toContain('https://invented.test/x');
+  });
+
+  // An empty findings array is a real research_topic outcome (a caller who
+  // threads the field through unconditionally can produce one), and through
+  // the real zod schema `[]` is wire-valid where `undefined` would be
+  // omitted entirely — so this exercises a path the direct-function-call
+  // tests in tests/craft/score.test.ts cannot.
+  it('reports not evaluated for an empty findings array through the tool layer', async () => {
+    const r = await call('score_draft', {
+      html: '<p><a href="https://x.test/" rel="noopener noreferrer">x</a></p>',
+      findings: [],
+    });
+    const check = r.checks.find((c: { name: string }) => c.name === 'citation_provenance');
+    expect(check.detail).toContain('not evaluated');
+    expect(check.ok).toBe(true);
   });
 });

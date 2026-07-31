@@ -19,5 +19,10 @@ personas/*.yaml
 !personas/_template.yaml
 
 # Internal design/planning tree and session prompts — not part of the product.
+# Load-bearing on `main`: this is the release tree, and these files carry
+# personal identifiers. The working branch force-adds them and therefore does
+# not need the rule; `main` does. Do not drop these lines when syncing a
+# release across.
 docs/superpowers/
 docs/2026-*.md
+.superpowers/

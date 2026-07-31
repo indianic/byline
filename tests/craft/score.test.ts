@@ -469,3 +469,120 @@ describe('one article must satisfy both platforms', () => {
     expect(buildProfile(false).visualContainers).toEqual(['table']);
   });
 });
+
+describe('citation_provenance', () => {
+  const findings = [
+    { url: 'https://a.test/report', title: 'A', snippet: 's', publishedAt: null, provider: 'tavily' },
+    { url: 'https://b.test/data', title: 'B', snippet: 's', publishedAt: null, provider: 'tavily' },
+  ];
+  const check = (html: string, f?: typeof findings) =>
+    scoreDraft(html, GHOST_HTML_PROFILE, undefined, f).checks.find((c) => c.name === 'citation_provenance')!;
+
+  it('reports not evaluated when no findings are passed, rather than passing silently', () => {
+    const c = check('<p><a href="https://x.test/" rel="noopener noreferrer">x</a></p>');
+    expect(c.detail).toContain('not evaluated');
+    expect(c.blocking).toBe(false);
+  });
+
+  it('passes when every cited URL is in the research set', () => {
+    const c = check(
+      '<p><a href="https://a.test/report" rel="noopener noreferrer">r</a> and <a href="https://b.test/data" rel="noopener noreferrer">d</a></p>',
+      findings,
+    );
+    expect(c.ok).toBe(true);
+  });
+
+  it('names a cited URL that is absent from the research set', () => {
+    const c = check('<p><a href="https://invented.test/x" rel="noopener noreferrer">x</a></p>', findings);
+    expect(c.ok).toBe(false);
+    expect(c.findings.join(' ')).toContain('https://invented.test/x');
+  });
+
+  it('ignores utm parameters, a trailing slash, and host case when matching', () => {
+    // A raw `&` between query params is invalid HTML — correctly-written
+    // markup uses `&amp;` here. Using `&amp;` is the load-bearing part of
+    // this test: it goes red if entity decoding is dropped.
+    const c = check(
+      '<p><a href="https://A.TEST/report/?utm_source=x&amp;utm_campaign=y" rel="noopener noreferrer">r</a> <a href="https://b.test/data" rel="noopener noreferrer">d</a></p>',
+      findings,
+    );
+    expect(c.ok).toBe(true);
+  });
+
+  it('ignores a leading www. and http vs https when matching', () => {
+    const c = check(
+      '<p><a href="https://www.a.test/report" rel="noopener noreferrer">r</a> <a href="http://b.test/data" rel="noopener noreferrer">d</a></p>',
+      findings,
+    );
+    expect(c.ok).toBe(true);
+  });
+
+  it('accepts a single-quoted href', () => {
+    const c = check("<p><a href='https://a.test/report' rel='noopener noreferrer'>r</a></p>", findings);
+    expect(c.findings.join(' ')).not.toContain('https://a.test/report');
+  });
+
+  it('captures a double-quoted href containing an apostrophe, rather than skipping the anchor', () => {
+    // A `(["'])...\1` backreference pattern would stop at the apostrophe and
+    // fail to find the closing `"`, dropping the whole anchor — reported as
+    // "0 cited URL(s)" instead of naming the invented URL.
+    const c = check(
+      '<p><a href="https://invented.test/report\'s-sequel" rel="noopener noreferrer">x</a></p>',
+      findings,
+    );
+    expect(c.detail).toContain('1 cited URL(s)');
+    expect(c.ok).toBe(false);
+    expect(c.findings.join(' ')).toContain("https://invented.test/report's-sequel");
+  });
+
+  it('ignores query-parameter order when matching', () => {
+    const reordered = [
+      { url: 'https://a.test/report?a=1&b=2', title: 'A', snippet: 's', publishedAt: null, provider: 'tavily' },
+    ];
+    const c = check(
+      '<p><a href="https://a.test/report?b=2&amp;a=1" rel="noopener noreferrer">r</a></p>',
+      reordered,
+    );
+    expect(c.ok).toBe(true);
+  });
+
+  it('counts a duplicated citation once on each side of the detail sentence', () => {
+    const invented = check(
+      '<p><a href="https://invented.test/x" rel="noopener noreferrer">x</a> <a href="https://invented.test/x" rel="noopener noreferrer">x again</a></p>',
+      findings,
+    );
+    expect(invented.detail).toContain('1 cited URL(s)');
+    expect(invented.detail).toContain('0 traceable');
+
+    const real = check(
+      '<p><a href="https://a.test/report" rel="noopener noreferrer">r</a> <a href="https://a.test/report" rel="noopener noreferrer">r again</a></p>',
+      findings,
+    );
+    expect(real.detail).toContain('1 cited URL(s)');
+    expect(real.detail).toContain('1 traceable');
+  });
+
+  it('reports research sources the draft never cited, informationally', () => {
+    const c = check('<p><a href="https://a.test/report" rel="noopener noreferrer">r</a></p>', findings);
+    expect(c.findings.join(' ')).toContain('https://b.test/data');
+  });
+
+  it('reports not evaluated for an empty findings array, not "0 traceable"', () => {
+    const c = check('<p><a href="https://x.test/" rel="noopener noreferrer">x</a></p>', []);
+    expect(c.detail).toContain('not evaluated');
+    expect(c.ok).toBe(true);
+  });
+
+  // Advisory, never blocking: a writer legitimately links a homepage or a
+  // definition page that no search returned, and blocking would forbid every
+  // non-research link.
+  it('is advisory, so an uncited-source draft is not blocked', () => {
+    const card = scoreDraft(
+      '<p><a href="https://invented.test/x" rel="noopener noreferrer">x</a></p>',
+      GHOST_HTML_PROFILE,
+      undefined,
+      findings,
+    );
+    expect(card.checks.find((c) => c.name === 'citation_provenance')!.blocking).toBe(false);
+  });
+});

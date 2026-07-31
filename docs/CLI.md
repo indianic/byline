@@ -56,7 +56,11 @@ The first-run wizard. Requires a terminal. Steps, in order:
    platform's fields in order. Every prompt can be skipped with an empty Enter. Each
    credential is **validated against the live platform before being accepted**, and the
    platform's own error is shown on failure with a retry/skip choice.
-4. **Offers image provider keys** (Gemini, then Grok), validated the same way.
+4. **Offers each provider family in turn** — image generation (Gemini, then Grok), then
+   research (Brave, then Tavily) — each with its own yes/no question, defaulting to No,
+   and each key validated the same way. Both families are optional; declining either
+   leaves a fully working install. Families come from `src/plugins/providers.ts`, so
+   `init` names none of them itself.
 5. **Seeds the persona template** and prints every file it wrote.
 6. **Closes with a copy-pasteable sentence** to type at your AI tool.
 
@@ -76,8 +80,9 @@ refused, and adding a blog does not move `default_site` off one you already had.
 **Flags:** none. Never fails, never gated — it works with no config at all.
 
 Reports, in order: the four resolved paths with **per-field provenance**; configured
-blogs; author personas; image providers; AI tool registrations with their **scope** and
-file; and any config problems, each with its fix.
+blogs; author personas; one section per provider family (image generation, then research);
+AI tool registrations with their **scope** and file; and any config problems, each with
+its fix.
 
 ```
 ◆  paths   (base resolved from: home)
@@ -88,6 +93,14 @@ file; and any config problems, each with its fix.
 │
 ◆  blogs
 ◇  myblog       ghost      https://blog.example.com
+│
+◆  image generation
+◇  gemini    key set
+■  grok      XAI_API_KEY not set
+│
+◆  research
+◇  brave     key set
+■  tavily    TAVILY_API_KEY not set
 │
 ◆  AI tools
 ◇  Claude Code   registered [global] — /Users/you/.claude.json
@@ -109,9 +122,16 @@ made `register --scope project` look like it had done nothing.
 
 **Flags:** `--offline` — skip every network probe, for a fast config-only run.
 
-Everything `status` reports, plus a live probe of every blog and image provider, plus
-the Node version and a check that `.env` is still owner-only. Every failure prints its
-own fix line.
+Everything `status` reports, plus a live probe of every blog and of every provider in
+every family — image generation **and** research — plus the Node version and a check that
+`.env` is still owner-only. Every failure prints its own fix line.
+
+An **unconfigured research provider is not a failure.** Research is optional, one provider
+is enough, and Byline never substitutes the other one for a missing key — so the row reads
+as a note with the click-path to the key, not an error. That wording comes off the family
+descriptor rather than being written per family: the image family's note reads "not a
+failure — the second image provider is a fallback most users skip", which is false for
+research, where there is no fallback.
 
 **Exit code 1** when any check fails, 0 otherwise. What counts as failure was settled
 deliberately:
@@ -122,7 +142,9 @@ deliberately:
 | Zero AI tools registered | **yes** — nothing can call it |
 | One tool unregistered among several | no — a Cursor-only setup is a working setup |
 | No image provider configured | no — posts work fine without generated images |
+| No research provider configured | no — research is optional, and BYOR research still satisfies news mode |
 | A blog's credential rejected | **yes** |
+| A configured image or research key rejected by its API | **yes** — a key that is present and wrong is worse than one that is absent |
 
 `doctor` never throws. Every probe is wrapped; a provider that raises is reported, not
 propagated.
@@ -268,6 +290,9 @@ Exit code 1 for an unknown command.
 | `BYLINE_PERSONAS` | Override the personas directory alone. |
 | `BYLINE_ENV` | Override the `.env` path alone. |
 | `BYLINE_DEBUG` | Set to anything truthy to print the full stack trace on an unexpected error. |
+| `BRAVE_API_KEY` | Brave Search API key. Optional — research is optional. |
+| `TAVILY_API_KEY` | Tavily API key. Optional — research is optional. |
+| `BYLINE_RESEARCH_PROVIDER` | `brave` or `tavily` — the default when both are configured. Falls back to `WRITEBLOGS_RESEARCH_PROVIDER`. Naming a provider whose key is unset is refused, never redirected to the other one. |
 | `RUN_INTEGRATION` | Set to `1` to include `tests/integration/**` in the test run. Unset, they are excluded entirely. |
 
 Each `BYLINE_*` path override is reported separately by `status` and `doctor`, so

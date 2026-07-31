@@ -14,6 +14,8 @@ export interface SetupState {
   personaCount: number;
   /** Image providers whose API key is present. */
   imageProviders: string[];
+  /** Research providers whose API key is present. */
+  researchProviders: string[];
   /** Human-readable reasons setup is incomplete. Surfaced verbatim by doctor. */
   problems: string[];
   /** Subset of `problems` about sites specifically: a site's unset key. Config load

@@ -136,6 +136,40 @@ describe('loadContext', () => {
       expect(loadContext(env).setup.imageProviders).toEqual(['gemini', 'grok']);
     });
   });
+
+  // Task 6: `researchProviders` mirrors `imageProviders` — derived from each
+  // research provider's own `configured()` rather than a second hardcoded
+  // list of env var names in this file. Before this, only
+  // `providerFamilies()` in isolation (tests/plugins/providers.test.ts) was
+  // covered; nothing asserted `ctx.setup.researchProviders` itself, which is
+  // the field `requireSetup` and any future research gate would actually
+  // read.
+  describe('researchProviders', () => {
+    it('lists no providers when neither key is set', () => {
+      const home = mkdtempSync(join(tmpdir(), 'wb-ctx-resnone-'));
+      const env = { BYLINE_HOME: home } as NodeJS.ProcessEnv;
+      delete env.BRAVE_API_KEY;
+      delete env.TAVILY_API_KEY;
+      expect(loadContext(env).setup.researchProviders).toEqual([]);
+    });
+
+    it('lists brave when only BRAVE_API_KEY is set', () => {
+      const home = mkdtempSync(join(tmpdir(), 'wb-ctx-resbrave-'));
+      const env = { BYLINE_HOME: home, BRAVE_API_KEY: 'b-key' } as NodeJS.ProcessEnv;
+      delete env.TAVILY_API_KEY;
+      expect(loadContext(env).setup.researchProviders).toEqual(['brave']);
+    });
+
+    it('lists both when both keys are set', () => {
+      const home = mkdtempSync(join(tmpdir(), 'wb-ctx-resboth-'));
+      const env = {
+        BYLINE_HOME: home,
+        BRAVE_API_KEY: 'b-key',
+        TAVILY_API_KEY: 't-key',
+      } as NodeJS.ProcessEnv;
+      expect(loadContext(env).setup.researchProviders).toEqual(['brave', 'tavily']);
+    });
+  });
 });
 
 // Deliberately last in the file: it can only detect the damage after this

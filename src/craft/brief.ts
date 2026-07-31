@@ -1,12 +1,13 @@
 import type { Persona } from '../config/personas.js';
+import type { ResearchResult } from '../plugins/research/types.js';
+import { tallyWindow } from '../plugins/research/window.js';
 import { dimensionsFor, type DimensionName } from './dimensions.js';
 import type { HtmlProfile } from './html-profile.js';
 
-export interface BriefInput {
+interface BriefBase {
   persona: Persona;
   topic: string;
   mode: 'blog' | 'news';
-  research?: string;
   wordCount?: number;
   language?: string;
   seed?: number;
@@ -28,7 +29,42 @@ export interface BriefInput {
    * unchanged; a caller that means "no provider" has to say so with `[]`.
    */
   imageProviders?: readonly string[];
+  /**
+   * The instant to judge every finding's freshness against, as epoch ms.
+   *
+   * Optional, defaulting to `Date.now()` when omitted — so the 40-plus
+   * existing `buildBrief` call sites (tests, and any caller that has no
+   * reason to care) keep compiling and behaving unchanged. The one caller
+   * that DOES care, `build_writing_brief` in `craft-tools.ts`, computes one
+   * `Date.now()` for the whole request and passes it here AND to the guard's
+   * own `tallyWindow` call — so both judge the same findings against the
+   * same instant. Without that, each call defaults its own `now`
+   * independently, and the guard's verdict and this brief's rendered header
+   * can disagree at the millisecond the cutoff falls on (measured: 2 of 500
+   * requests with `publishedAt` exactly at the cutoff). That disagreement is
+   * exactly what `window.ts` — the sole freshness authority both call sites
+   * defer to — exists to make impossible.
+   */
+  now?: number;
 }
+
+/**
+ * One article, one research origin.
+ *
+ * A union rather than two optional fields, so `tsc` refuses a caller that
+ * supplies both. Blending them makes provenance unanswerable: you cannot tell
+ * which claim came from where, so `citation_provenance` has nothing solid to
+ * check against and a later correction cannot be traced to a source.
+ *
+ * The runtime refusal in `craft-tools.ts` is NOT redundant with this — MCP
+ * input is runtime data and no type can constrain it.
+ */
+type ResearchOrigin =
+  | { research: string; findings?: never }
+  | { findings: ResearchResult; research?: never }
+  | { research?: never; findings?: never };
+
+export type BriefInput = BriefBase & ResearchOrigin;
 
 /** Render the target platform's ingest rules as brief text. */
 function htmlRules(profile: HtmlProfile): string {
@@ -95,6 +131,10 @@ export interface Brief {
   brief: string;
   seed: number;
   choices: Partial<Record<DimensionName, number>>;
+  /** Which origin grounded this article. Recorded so a correction can be traced. */
+  researchOrigin: 'provider' | 'byor' | 'none';
+  /** Non-fatal. Names what the research cannot support, without refusing it. */
+  warnings: string[];
 }
 
 /** mulberry32 — small, fast, deterministic. Keeps briefs reproducible from a seed. */
@@ -256,13 +296,108 @@ build the brief again.`;
 `
     : '';
 
-  const researchBlock = input.research
-    ? `=== RESEARCH SUPPLIED — GROUND THE ARTICLE IN THIS ===\n${input.research}`
-    : '=== NO RESEARCH SUPPLIED ===\nDo not fabricate statistics. Where you would cite a figure you do not have, write from experience instead.';
+  const warnings: string[] = [];
+  let researchOrigin: Brief['researchOrigin'] = 'none';
+  let researchBlock: string;
+
+  if (input.findings) {
+    researchOrigin = 'provider';
+    const f = input.findings;
+    // Sources keep the PROVIDER's order, not date order. Neither provider sorts
+    // newest-first (measured), and its ranking is by relevance — which is the
+    // only defence against a provider backfilling off-topic filler that happens
+    // to carry today's date. Re-sorting by date would put that filler first.
+    // Every finding's date is judged against the window the result declares,
+    // and the verdict is written next to that finding. The guard upstream only
+    // requires ONE finding to be in-window — so without this, every other
+    // source is rendered identically under a header naming that window, and a
+    // ninety-day-old article reads exactly like a four-minute-old one.
+    const tally = tallyWindow(f.findings, f.window, input.now ?? Date.now());
+    const sources = f.findings
+      .map((x, i) => {
+        const v = tally.verdicts[i]!;
+        // The absence of a usable date is stated where the date would go, not
+        // by omitting the line — an omitted line reads as an oversight, and a
+        // string `Date.parse` cannot read is not a date however date-shaped.
+        const date =
+          v.kind === 'in-window'
+            ? x.publishedAt!
+            : v.kind === 'out-of-window'
+              ? `${x.publishedAt!} — OUTSIDE the ${f.window} window this research asked for; older than it looks, do not present it as recent`
+              : v.why === 'missing'
+                ? `NO DATE GIVEN by ${x.provider} — do not assert when this happened`
+                : v.why === 'unparseable'
+                  ? `NO USABLE DATE: ${x.provider} gave "${x.publishedAt}", which is not a readable date — do not assert when this happened`
+                  : `NO USABLE DATE: ${x.provider} gave "${x.publishedAt}", which is in the future — do not assert when this happened`;
+        // Surfaced so the writer can discount a fresh-but-irrelevant result.
+        // Not gated on anywhere: no threshold has been measured.
+        const rel =
+          x.relevance === null ? '' : `\n    relevance ${x.relevance.toFixed(2)} (${x.provider}'s own score)`;
+        return `[${i + 1}] ${x.title}\n    ${x.url}\n    ${date}${rel}\n    ${x.snippet}`;
+      })
+      .join('\n\n');
+
+    // The synthesis is rendered because the user is paying for it, and labelled
+    // NOT CITABLE because it carries no URL of its own — `citation_provenance`
+    // can verify nothing lifted from it. Cite the numbered sources instead.
+    const synthesis = f.answer
+      ? `\n--- ${f.provider}'s SYNTHESIS — ORIENTATION ONLY, NOT CITABLE ---\n${f.answer}\n\nUse this to orient yourself. Do NOT cite it and do NOT quote it: it has no URL,\nso nothing in it can be attributed. Every claim you publish must trace to one of\nthe numbered sources below.\n`
+      : '';
+
+    // The header counts what is actually inside the window, not just what
+    // carries a date. Reporting "N source(s), N dated" under a header naming
+    // the window implied all N were fresh.
+    researchBlock = `=== RESEARCH SUPPLIED — GROUND THE ARTICLE IN THIS ===
+ORIGIN: ${f.provider}, ${f.window} window, ${f.findings.length} source(s), ${tally.dated} dated, ${tally.inWindow} inside the ${f.window} window. Selected by: ${f.selectedBy}.
+${synthesis}
+--- SOURCES — CITE THESE, BY URL ---
+A recent date does NOT mean a source is about this topic. Search providers pad a
+narrow date window with whatever they have, so a result stamped today can be
+entirely unrelated (measured: a tablet unboxing video returned for a stock-market
+query, dated today). Read each source before you lean on it, and drop any that is
+not actually about ${input.topic}. Do not cite a source you would not defend.
+
+${sources}`;
+
+    if (tally.undated > 0) {
+      warnings.push(
+        `${tally.undated} of ${f.findings.length} sources carry no usable publication date — do not assert when those events happened.`,
+      );
+    }
+    if (tally.outOfWindow > 0) {
+      warnings.push(
+        `${tally.outOfWindow} of ${f.findings.length} sources fall outside the ${f.window} window this research asked for — they are marked in the brief; do not present them as recent.`,
+      );
+    }
+  } else if (input.research) {
+    researchOrigin = 'byor';
+    const urls = input.research.match(/https?:\/\/\S+/g) ?? [];
+    researchBlock = `=== RESEARCH SUPPLIED — GROUND THE ARTICLE IN THIS ===
+ORIGIN: supplied by the caller — TRUSTED, NOT VERIFIED BY BYLINE. Byline did not
+fetch this, cannot confirm it is recent, and cannot confirm the text matches any
+source it names. Treat every figure in it as the caller's claim, and do not add
+figures of your own.
+
+${input.research}`;
+    if (urls.length === 0) {
+      warnings.push(
+        // States only what is true today. The earlier wording ("score_draft
+        // cannot cross-check any citation") entailed that it WOULD cross-check
+        // given URLs; it takes no findings at all, so that promised a
+        // verification the user would not get.
+        'The supplied research contains 0 source URLs. Claims from it cannot be attributed inline, and the GEO guidance below will be impossible to satisfy for those claims.',
+      );
+    }
+  } else {
+    researchBlock =
+      '=== NO RESEARCH SUPPLIED ===\nDo not fabricate statistics. Where you would cite a figure you do not have, write from experience instead.';
+  }
 
   return {
     seed,
     choices,
+    researchOrigin,
+    warnings,
     brief: `You are ${p.name}, ${or(p.role, 'an industry expert')} with ${p.years_of_experience} years of experience in ${or(p.subject_expertise, or(p.description, 'your field'))}.
 
 YOUR TASK: Write a comprehensive, SEO-optimised article about: ${input.topic}

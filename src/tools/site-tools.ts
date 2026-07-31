@@ -10,6 +10,7 @@ import { buildSetupState, type Context } from '../context.js';
 import { ToolError, ok } from '../errors.js';
 import { imageHealth } from '../plugins/images/index.js';
 import { PLATFORM_IDS, getPlugin, makeAdapter } from '../plugins/registry.js';
+import { researchHealth } from '../plugins/research/index.js';
 import { adapterFor, handler } from './shared.js';
 
 type RawSitesConfig = { default_site?: string; sites: Record<string, unknown> };
@@ -86,7 +87,7 @@ export function registerSiteTools(server: McpServer, ctx: Context): void {
     {
       title: 'Health check',
       description:
-        'Probe every configured blog plus every image provider. Returns per-API ok/fail with the real error. Run this first when anything fails.',
+        'Probe every configured blog plus every image and research provider. Returns per-API ok/fail with the real error. Run this first when anything fails.',
       inputSchema: {},
     },
     handler('health_check', async () => {
@@ -103,6 +104,7 @@ export function registerSiteTools(server: McpServer, ctx: Context): void {
         config_file: ctx.paths.configFile,
         sites,
         images: await imageHealth(),
+        research: await researchHealth(),
         ...(ctx.setup.problems.length > 0 ? { problems: ctx.setup.problems } : {}),
       });
     }),

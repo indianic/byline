@@ -148,4 +148,51 @@ describe('runDoctor exit code', () => {
     expect(output).toContain('no AI tool registered');
     expect(output).toContain('byline register --tools all');
   });
+
+  // Task 6: doctor walks `providerFamilies()` and prints one section per
+  // family, headed by `family.label`, with `family.unconfiguredNote` in the
+  // line for any provider with no key. Nothing before this asserted the
+  // research section (Brave + Tavily) actually renders, or that its wording
+  // is the research note and not the images one carried over by copy-paste.
+  //
+  // The images note promises a fallback ("the second image provider is a
+  // fallback most users skip"); the research note deliberately does not,
+  // because Byline never substitutes one research provider for the other. A
+  // test that would still pass with the two notes swapped has not tested
+  // anything, so this asserts on the exact line for the unconfigured
+  // provider, not just "the output contains the word research somewhere".
+  it('prints a research section headed by the family label, using the research (non-fallback) unconfigured note', async () => {
+    writeUsableSite();
+    registerAFakeTool();
+    // Not --offline: exercises the real provider loop. Neither BRAVE_API_KEY
+    // nor TAVILY_API_KEY is set (beforeEach only clears the image keys, so
+    // clear these explicitly), so both research providers report
+    // "not configured" without ever reaching healthCheck() or the network —
+    // no live key or fetch needed for this assertion.
+    delete process.env.BRAVE_API_KEY;
+    delete process.env.TAVILY_API_KEY;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ site: { title: 'x', version: '6.44' } }), { status: 200 })),
+    );
+    await runDoctor([]);
+    const output = written.join('');
+
+    // The research family's own section heading, not folded into images'.
+    expect(output).toContain('◆  research');
+
+    // The unconfigured line for Brave carries the RESEARCH note, scoped to
+    // that one line so a family-agnostic renderer (or the two notes swapped)
+    // cannot pass this by accident via the images section's own wording
+    // appearing elsewhere in the full output.
+    const braveLine = written.find((w) => w.includes('BRAVE_API_KEY unset'));
+    expect(braveLine).toBeDefined();
+    expect(braveLine).toContain('research is optional, and one provider is enough');
+    expect(braveLine).not.toContain('fallback most users skip');
+
+    const tavilyLine = written.find((w) => w.includes('TAVILY_API_KEY unset'));
+    expect(tavilyLine).toBeDefined();
+    expect(tavilyLine).toContain('research is optional, and one provider is enough');
+    expect(tavilyLine).not.toContain('fallback most users skip');
+  });
 });

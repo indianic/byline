@@ -86,8 +86,9 @@ the chat. They can write you a blog post, but they cannot put it on your blog.
 
 MCP is the standard that fixes that. An **MCP server** is a small program that runs on
 your own machine and hands your AI tool a set of things it is allowed to do. byline
-hands it thirteen: look up your blogs, check they are reachable, build a writing brief,
-score a draft, generate and upload images, create and update posts.
+hands it fourteen: look up your blogs, check they are reachable, build a writing brief,
+score a draft, generate and upload images, create and update posts, and — only if you
+configure a key for it — fetch dated, citable research on a topic.
 
 Two consequences worth knowing:
 
@@ -389,6 +390,119 @@ images.
 
 ---
 
+## Research (optional — you probably do not need this)
+
+**Byline works without a research key, and most people should leave it that way.** If the
+agent you are talking to already has web access, use it: search however you like, paste
+what you find as `research` (at least 200 characters), and news mode is satisfied.
+Evergreen posts (`mode: "blog"`) need no research at all, and `byline init` never requires
+a research key to finish.
+
+A research provider buys two things that path cannot give you:
+
+- **Recency you can check.** A finding carries a `publishedAt` where the provider gives one
+  — it can be absent, which is exactly what `RESEARCH_UNDATED` catches — and news mode
+  refuses a set where nothing is recent enough, rather than trusting whatever the model
+  recalls.
+- **Checkable provenance.** Every finding arrives with its URL and, where the provider
+  gives one, its publication date — so `score_draft` can afterwards tell you which of the
+  URLs your draft links were actually in that research.
+
+### What Byline checks, and what it simply trusts
+
+This distinction is the whole point of the feature, so it is worth being exact about.
+
+**Provider `findings` are checked.** Byline refuses a result with no findings in it at
+all, in any mode. In **news mode only**, it additionally requires at least one finding
+carrying a readable publication date inside the window the result declares — allowing six
+hours' grace, because providers round timestamps to the hour and a publisher's date is
+often the article's rather than its last update. If nothing is dated you are told so; if
+everything dated is older than the window, you are told the newest date it found.
+Individual findings that are undated or out of window are **accepted, not rejected one by
+one**: an article legitimately cites background alongside its breaking sources. Each is
+marked as such next to its own entry on the brief, and counted in a warning.
+**Blog mode applies no recency check at all.**
+
+**A `research` string you paste is trusted, not verified.** In news mode it is checked for
+one thing — substance, currently 200 characters — and nothing else. Byline did not fetch
+it, **cannot confirm it is recent, and cannot confirm the text matches any source it
+names.** The brief says so on its face — the research block is headed `ORIGIN: supplied by
+the caller — TRUSTED, NOT VERIFIED BY BYLINE` — so the writer treats every figure in it as
+your claim rather than a measured fact. That is not a criticism of the path; it is the
+honest description of it.
+
+**`score_draft`'s `citation_provenance` check is advisory.** Pass the research `findings`
+to it and it compares the absolute `http(s)` URLs in your draft's `<a href>` links against
+the findings' URLs, then reports which cited URLs were not in the research and which
+research sources went uncited. It never blocks — a writer legitimately links a homepage or
+a definition no search returned. Pass no findings and it reports **"not evaluated"** rather
+than passing, because a silent pass would read as "the citations were verified" when
+nothing was. And note what it does *not* do: it checks where a URL came from, never
+whether the page at that URL says what your article claims it says.
+
+### One article, one origin
+
+Pass `research` **or** `findings`, never both. Supplying both is refused, naming which to
+drop. Merging them would make provenance unanswerable — you could not tell which claim
+came from where, so nothing could be cross-checked and a later correction could not be
+traced to a source.
+
+### Brave or Tavily — pick one, there is no fallback
+
+They do not return the same kind of thing:
+
+| | Returns | Use when |
+|---|---|---|
+| **Tavily** | A synthesized answer plus dated sources | You want orientation as well as sources |
+| **Brave** | Ranked results with snippets, no synthesis | You want the raw result list |
+
+Byline **never** substitutes one for the other. Naming a provider whose key is missing is
+refused, not redirected, and a failed search is reported rather than retried against the
+other one. An automatic fallback would silently change what the writer receives —
+sometimes a summary, sometimes a list.
+
+```bash
+byline init          # offers both; configure either or both, or neither
+```
+
+```
+BRAVE_API_KEY=BSA…
+TAVILY_API_KEY=tvly-…
+BYLINE_RESEARCH_PROVIDER=tavily   # optional: the default when both are configured
+```
+
+With both configured and no default pinned, registry order decides — and that order was
+set by measuring which provider dates a minutes-old event more reliably. On one live query
+inside one two-minute window, Brave's freshest result was ~55 minutes old and Tavily's
+freshest on-topic dated result was ~4h39m, so **Brave is registered first**. That is a
+measurement, not a preference; Tavily's snippets are richer and its synthesis is a
+capability Brave lacks. The full table is in
+**[docs/RESEARCH-NOTES.md](docs/RESEARCH-NOTES.md)**.
+
+**Where to get each key**
+
+- **Brave** — `brave.com/search/api` → subscribe to the free *Data for Search* plan → API
+  Keys → Add API key (<https://api-dashboard.search.brave.com/app/keys>).
+- **Tavily** — `tavily.com` → sign up → API Keys (<https://app.tavily.com>). The free tier
+  gives 1,000 credits a month and needs no card.
+
+Neither key is a failure to be missing. `byline doctor` reports an unconfigured research
+provider as a note, not an error.
+
+### What it looks like in practice
+
+```
+Write about last night's match for personal.
+```
+
+The agent decides whether the topic turns on recent events, calls `research_topic`, passes
+the whole result to `build_writing_brief` as `findings`, and passes the findings again to
+`score_draft` so citations can be traced. Both tool descriptions **tell it to ask you**
+rather than guess when it is unclear whether you mean the live event or the history —
+that is an instruction to the agent, which is as far as an MCP server's reach goes.
+
+---
+
 ## Using it
 
 Talk to your AI tool in plain English. It figures out which tool to call.
@@ -416,7 +530,9 @@ every configured site and tells you which ones authenticate.
 
 **News articles always need real research.** If you ask for a piece about recent events,
 the brief tool refuses to proceed on the model's training data alone — you have to give
-it actual research. Evergreen posts have no such requirement.
+it actual research, either as your own notes or from a research provider. Evergreen posts
+have no such requirement, and neither path needs a key you do not already have. See
+[Research](#research-optional--you-probably-do-not-need-this).
 
 ### Author personas (optional)
 
@@ -533,13 +649,13 @@ images.
 
 ```bash
 byline status    # what is configured, and where every file lives
-byline doctor    # probe every blog and image provider; print a fix per failure
+byline doctor    # probe every blog, image and research provider; print a fix per failure
 ```
 
 `doctor` on a healthy install:
 
 ```
-┌  byline — doctor (v0.1.0)
+┌  byline — doctor (v1.1.0)
 │
 ◆  environment
 ◇  Node v22.23.1
@@ -549,6 +665,12 @@ byline doctor    # probe every blog and image provider; print a fix per failure
 │
 ◆  blogs
 ◇  myblog (ghost) — Example Blog (Ghost 6.44.1)
+│
+◆  image generation
+◇  gemini — gemini-2.5-flash-image reachable
+│
+◆  research
+◇  brave — Brave Search reachable, key accepted
 │
 ◆  AI tools
 ◇  Claude Code   /Users/you/.claude.json [global]
@@ -582,6 +704,9 @@ with the fix that actually resolved it.
 | WordPress: `schema_injected: false` | WordPress core has **no field for injecting into `<head>`**. | Not a failure — an honest warning. The JSON-LD was not silently dropped; you were told. Use an SEO plugin's own fields if you need it. |
 | WordPress: the wrong tag gets applied | WordPress's tag search is a **substring** match — searching `AI` also returns `AI Ethics`. | Handled: byline requires an exact, case-insensitive match before reusing a tag, and creates a new one otherwise. |
 | WordPress: styles stripped even though it worked before | Your account may lack `unfiltered_html` — role-dependent, and on multisite only Super Admins hold it. | Publish from an account that holds it. **Note: this path is unverified — see above.** |
+| `RESEARCH_PROVIDER_UNCONFIGURED` on a provider you named | That provider's key is unset. Byline will not quietly use the other one — they return different shapes. | Set that key, or name the one you did configure, or drop the research provider and paste your own notes as `research`. |
+| `RESEARCH_CONFLICT` — both `research` and `findings` | An article has exactly one research origin. | Drop whichever you did not mean. The error names both. |
+| `RESEARCH_STALE` or `RESEARCH_UNDATED` in news mode | Not one provider finding carries a readable date inside the window asked for — often the event is not indexed yet. | Widen the window, try the other provider, or write it as `mode: "blog"`. |
 | `doctor` says "not registered" but it clearly works | The registration is **project-scoped**, not global. | Not a problem. `status` and `doctor` now report which scope they found. |
 | `npx -y @indianic/byline` → `E404` | npm has not been told where the `@indianic` scope lives. | Add the one `.npmrc` line from [Install](#install). No login is needed. |
 | The AI tool does not see byline | Its MCP config is read at startup. | Restart the tool. Then `byline status` to confirm it is registered. |
@@ -637,7 +762,9 @@ all, `byline reset --yes`.
 | **[CONTRIBUTING.md](CONTRIBUTING.md)** | How to work on this |
 | **[docs/GHOST-NOTES.md](docs/GHOST-NOTES.md)** | Verified Ghost behaviour, and why each one matters |
 | **[docs/WORDPRESS-NOTES.md](docs/WORDPRESS-NOTES.md)** | The same for WordPress, with the unverified parts marked |
+| **[docs/RESEARCH-NOTES.md](docs/RESEARCH-NOTES.md)** | Measured Brave and Tavily behaviour, and the recency table that set the registry order |
 | **[docs/ADDING-A-PLATFORM.md](docs/ADDING-A-PLATFORM.md)** | Adding a third platform, written from actually doing it |
+| **[CLAUDE.md](CLAUDE.md)** | The rules for changing this repository, and what each one cost |
 | **[CHANGELOG.md](CHANGELOG.md)** | Release history |
 
 ## License

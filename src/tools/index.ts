@@ -5,6 +5,7 @@ import { registerCraftTools } from './craft-tools.js';
 import { registerImageTools } from './image-tools.js';
 import { registerPersonaTools } from './persona-tools.js';
 import { registerPostTools } from './post-tools.js';
+import { registerResearchTools } from './research-tools.js';
 import { registerSiteTools } from './site-tools.js';
 
 /**
@@ -15,6 +16,7 @@ import { registerSiteTools } from './site-tools.js';
 export function registerAllTools(server: McpServer, ctx: Context): void {
   registerSiteTools(server, ctx);
   registerPersonaTools(server, ctx);
+  registerResearchTools(server, ctx); // research precedes the brief it feeds
   registerCraftTools(server, ctx);
   registerImageTools(server, ctx);
   registerPostTools(server, ctx);

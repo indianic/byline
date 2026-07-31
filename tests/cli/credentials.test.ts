@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   collectCredentialValues,
-  collectImageProviderKeys,
+  collectProviderKeys,
   collectSite,
   type Prompter,
 } from '../../src/cli/credentials.js';
@@ -10,7 +10,7 @@ import { ghostPlugin } from '../../src/plugins/platforms/ghost/plugin.js';
 import { wordpressPlugin } from '../../src/plugins/platforms/wordpress/plugin.js';
 import type { HealthResult, PlatformPlugin } from '../../src/plugins/platforms/types.js';
 import type { SiteConfig } from '../../src/config/sites.js';
-import type { ImageProvider } from '../../src/plugins/images/types.js';
+import type { KeyedProvider, ProviderFamily } from '../../src/plugins/provider.js';
 
 /** A Prompter that replays scripted answers and records what it was asked. */
 function scripted(answers: Array<string | null>, choices: Array<string | null> = []) {
@@ -163,25 +163,36 @@ describe('collectSite', () => {
   });
 });
 
-describe('collectImageProviderKeys', () => {
-  // No `as ImageProvider` cast: the cast used to hide whether this double
+describe('collectProviderKeys', () => {
+  // No `as KeyedProvider` cast: the cast used to hide whether this double
   // actually satisfies the interface, which is the entire point of a double.
-  const provider = (name: string, envVar: string, key = ''): ImageProvider => ({
+  const provider = (name: string, envVar: string, key = ''): KeyedProvider => ({
     name,
     credential: { name: envVar, label: `${name} key`, secret: true, example: 'x', help: 'Somewhere in the console.' },
     configured: () => key.length > 0,
     withKey: (k: string) => provider(name, envVar, k),
     healthCheck: async () => ({ provider: name, ok: true, detail: 'ok' }),
-    generate: async () => ({ data: Buffer.alloc(0), mime: 'image/png' }),
   });
+
+  // No `as ProviderFamily` cast either, for the same reason.
+  const family = (providers: readonly KeyedProvider[], id: ProviderFamily['id'] = 'images'): ProviderFamily => ({
+    id,
+    label: `${id} family`,
+    initPrompt: `Set up ${id}?`,
+    unconfiguredNote: 'skipped',
+    providers: () => providers,
+  });
+
+  const alwaysYes = async () => true;
 
   it('keys the result by each provider’s declared env var name', async () => {
     const { prompter } = scripted(['a-key', 'b-key']);
     const probe = async () => ({ ok: true, detail: 'reachable' });
-    const keys = await collectImageProviderKeys(
-      [provider('alpha', 'ALPHA_API_KEY'), provider('beta', 'BETA_API_KEY')],
+    const keys = await collectProviderKeys(
+      [family([provider('alpha', 'ALPHA_API_KEY'), provider('beta', 'BETA_API_KEY')])],
       prompter,
       probe,
+      alwaysYes,
     );
     expect(keys).toEqual({ ALPHA_API_KEY: 'a-key', BETA_API_KEY: 'b-key' });
   });
@@ -189,10 +200,11 @@ describe('collectImageProviderKeys', () => {
   it('skipping one provider still collects the next', async () => {
     const { prompter } = scripted([null, 'b-key']);
     const probe = async () => ({ ok: true, detail: 'reachable' });
-    const keys = await collectImageProviderKeys(
-      [provider('alpha', 'ALPHA_API_KEY'), provider('beta', 'BETA_API_KEY')],
+    const keys = await collectProviderKeys(
+      [family([provider('alpha', 'ALPHA_API_KEY'), provider('beta', 'BETA_API_KEY')])],
       prompter,
       probe,
+      alwaysYes,
     );
     expect(keys).toEqual({ BETA_API_KEY: 'b-key' });
   });
@@ -200,8 +212,36 @@ describe('collectImageProviderKeys', () => {
   it('does not keep a key the provider rejected', async () => {
     const { prompter, problems } = scripted(['bad'], ['skip']);
     const probe = async () => ({ ok: false, detail: 'API key not valid' });
-    const keys = await collectImageProviderKeys([provider('alpha', 'ALPHA_API_KEY')], prompter, probe);
+    const keys = await collectProviderKeys([family([provider('alpha', 'ALPHA_API_KEY')])], prompter, probe, alwaysYes);
     expect(keys).toEqual({});
     expect(problems.join('\n')).toContain('API key not valid');
+  });
+
+  it('skips an entire family without prompting when ask() declines it', async () => {
+    const { prompter, asked } = scripted([]);
+    const probe = async () => ({ ok: true, detail: 'reachable' });
+    const keys = await collectProviderKeys(
+      [family([provider('alpha', 'ALPHA_API_KEY')])],
+      prompter,
+      probe,
+      async () => false,
+    );
+    expect(keys).toEqual({});
+    expect(asked).toHaveLength(0);
+  });
+
+  it('asks each family independently, so declining one still walks the next', async () => {
+    const { prompter } = scripted(['b-key']);
+    const probe = async () => ({ ok: true, detail: 'reachable' });
+    const keys = await collectProviderKeys(
+      [
+        family([provider('alpha', 'ALPHA_API_KEY')], 'images'),
+        family([provider('beta', 'BETA_API_KEY')], 'research'),
+      ],
+      prompter,
+      probe,
+      async (q) => q === 'Set up research?',
+    );
+    expect(keys).toEqual({ BETA_API_KEY: 'b-key' });
   });
 });

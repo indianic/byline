@@ -24,8 +24,9 @@ npm run build        # tsc
 npm test             # vitest run — unit only
 ```
 
-**The test count must not fall below 435.** It is a floor, not a target. If a change
-reduces it, say why in the commit message.
+**The test count must not fall below the floor stated in `CLAUDE.md`.** It is a floor,
+not a target. If a change reduces it, say why in the commit message. The number lives in
+one file on purpose — it has already been stale in two places at once.
 
 Note that `npm run typecheck` covers `src/**/*` only — `tsconfig.json` sets
 `rootDir: src`, so test files are not typechecked by any script. A test double can cast

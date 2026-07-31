@@ -7,6 +7,68 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-31
+
+`package.json` stays at 1.1.0 until release: `npmnic publish --minor` bumps it to 1.2.0
+itself.
+
+### Added
+
+- **Research providers — Brave Search and Tavily, optional and either/or.** A new
+  `research_topic` tool returns citable findings, dated where the provider gives one, so an
+  article can be written about an event minutes old. Configure with `byline init`; pin a
+  default with `BYLINE_RESEARCH_PROVIDER` (falling back to `WRITEBLOGS_RESEARCH_PROVIDER`).
+- `build_writing_brief` accepts `findings` alongside `research`. **Supplying both is
+  refused** — one article has one research origin.
+- `score_draft` gains `citation_provenance`: pass the research `findings` and it compares
+  the absolute `http(s)` URLs the draft links against them, reporting which cited URLs
+  were not in the research and which sources went uncited. **Advisory, never blocking**,
+  and it reports "not evaluated" rather than passing when no findings are given.
+- `docs/RESEARCH-NOTES.md` — measured API behaviour for both providers, every line
+  traceable to a real request.
+- `CLAUDE.md` at the repo root.
+
+### Breaking
+
+- **`create_post` now enforces the images-by-default contract instead of only nudging
+  toward it.** A new `images` parameter (`"both" | "hero" | "inline" | "none"`, default
+  `"both"`) is enforced whenever an image provider is configured: the default refuses to
+  publish unless `feature_image` is set AND `html` contains a real inline `<img ...src=...>`.
+  The previous behaviour — a non-blocking warning that a caller could read and ignore — let
+  a real post ship with no hero image and a stock photo standing in for a generated inline
+  image; the warning was recorded as "expected" and nothing stopped the publish. **Opt out
+  explicitly** by passing `images: "none"` (skip both), `images: "hero"` (hero only, no
+  inline required), or `images: "inline"` (inline only, no hero required). Refusal is a
+  `ToolError` with code `IMAGES_REQUIRED`, `HERO_IMAGE_REQUIRED`, or `INLINE_IMAGE_REQUIRED`,
+  naming exactly which image is missing and how to fix it. **Unaffected when no image
+  provider is configured** — the caller cannot comply in that case, so nothing is enforced,
+  matching the pre-existing gate the old nudge used. `update_post` is untouched: it patches
+  an existing post, and demanding images there would wrongly block a caller fixing a typo.
+
+### Changed
+
+- **News mode's research guard now checks something.** It was satisfied by any non-empty
+  string. Provider findings are now checked to exist, and — in news mode — that at least
+  one is dated and inside the window the result declares, allowing six hours' grace for
+  provider timestamp coarseness; findings that are undated or out of window are accepted
+  and marked on the brief rather than rejected one by one. A
+  hand-supplied `research` string is checked for substance only, and the error, the brief,
+  the tool descriptions, and the README all say plainly that it is **trusted, not
+  verified**: Byline did not fetch it and cannot confirm it is recent or that its text
+  matches any source it names. Blog mode applies no recency check at all.
+- `byline init`, `doctor`, and `status` walk provider *families*, so registering one is a
+  single entry in `src/plugins/providers.ts` with no change under `src/cli/`. An
+  unconfigured research provider is reported as a note, not a failure.
+
+### Notes
+
+- **Research is entirely optional.** `blog` mode needs none, BYOR still works with no key
+  configured, and no key is required to install or run `byline init`.
+- **There is no fallback between Brave and Tavily.** They return different shapes — Brave
+  ranked snippets, Tavily a synthesis plus sources — so substituting one would silently
+  change what the writer receives. Registry order is Brave first, decided by measurement:
+  see the recency table in `docs/RESEARCH-NOTES.md`.
+
 ## [1.1.0] - 2026-07-30
 
 ### Added

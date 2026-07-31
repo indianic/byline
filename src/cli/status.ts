@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { intro, outro } from '@clack/prompts';
 import { type Context, loadContext } from '../context.js';
-import { defaultChain } from '../plugins/images/index.js';
+import { providerFamilies } from '../plugins/providers.js';
 import { EDITORS, SERVER_KEY, type EditorTarget } from './editor-config.js';
 import { attention, check, detail, section } from './tree.js';
 
@@ -26,6 +26,12 @@ export interface StatusData {
   sites: Array<{ slug: string; platform: string; url: string; usable: boolean; reason?: string }>;
   personas: string[];
   imageProviders: Array<{ name: string; configured: boolean; envVar: string }>;
+  /** Every provider family, additive to `imageProviders` — see `collectStatus`. */
+  providers: Array<{
+    family: string;
+    label: string;
+    providers: Array<{ name: string; configured: boolean; envVar: string }>;
+  }>;
   registrations: Array<{ label: string; file: string; registered: boolean; scope?: 'global' | 'project' }>;
   problems: string[];
 }
@@ -131,10 +137,28 @@ export function collectStatus(
       ...(s.unavailable ? { reason: s.unavailable } : {}),
     })),
     personas: [...ctx.personas.keys()].sort(),
-    imageProviders: defaultChain(ctx.env).map((provider) => ({
-      name: provider.name,
-      configured: provider.configured(),
-      envVar: provider.credential.name,
+    // `imageProviders` is consumed output — kept exactly as it was so nothing
+    // reading this field breaks. `providers` below is the additive, family-
+    // generic replacement every NEW consumer should read instead.
+    imageProviders: providerFamilies()
+      .filter((f) => f.id === 'images')
+      .flatMap((f) => f.providers(ctx.env))
+      .map((provider) => ({
+        name: provider.name,
+        configured: provider.configured(),
+        envVar: provider.credential.name,
+      })),
+    // Walked through the family descriptor, one entry per family, with no
+    // family named here — this is what makes registering a new family in
+    // `src/plugins/providers.ts` show up in `status` for free.
+    providers: providerFamilies().map((family) => ({
+      family: family.id,
+      label: family.label,
+      providers: family.providers(ctx.env).map((provider) => ({
+        name: provider.name,
+        configured: provider.configured(),
+        envVar: provider.credential.name,
+      })),
     })),
     registrations: EDITORS.map((e) => {
       const reg = findRegistration(e, cwd, home);
@@ -168,9 +192,14 @@ export async function runStatus(_args: string[]): Promise<void> {
   section('authors');
   detail(data.personas.length > 0 ? data.personas.join(', ') : 'none — add a persona file to the personas directory');
 
-  section('image generation');
-  for (const provider of data.imageProviders) {
-    check(provider.configured, `${provider.name.padEnd(9)} ${provider.configured ? 'key set' : `${provider.envVar} not set`}`);
+  // One section per family, heading taken from the family descriptor — no
+  // family is named here, so a new family registered in
+  // `src/plugins/providers.ts` shows up in this output for free.
+  for (const family of data.providers) {
+    section(family.label);
+    for (const provider of family.providers) {
+      check(provider.configured, `${provider.name.padEnd(9)} ${provider.configured ? 'key set' : `${provider.envVar} not set`}`);
+    }
   }
 
   section('AI tools');

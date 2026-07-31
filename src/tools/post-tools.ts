@@ -5,7 +5,8 @@ import { getPersona } from '../config/personas.js';
 import { getSite } from '../config/sites.js';
 import type { Context } from '../context.js';
 import { buildArticleSchema } from '../craft/schema.js';
-import { ok } from '../errors.js';
+import { hasInlineImage } from '../craft/score.js';
+import { ToolError, ok } from '../errors.js';
 import { getPlugin, makeAdapter } from '../plugins/registry.js';
 import { requireSetup } from '../setup.js';
 import { adapterFor, handler } from './shared.js';
@@ -17,12 +18,18 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
     {
       title: 'Create post',
       description:
-        'Publish an article. Defaults to status "published" — pass "draft" only when the user asked for a draft. The author accepts a persona slug and resolves to that site\'s author id. HTML must not still contain [[content_image]].',
+        'Publish an article. Defaults to status "published" — pass "draft" only when the user asked for a draft. The author accepts a persona slug and resolves to that site\'s author id. HTML must not still contain [[content_image]]. Every article gets a hero (feature_image) and an inline <img> by default when an image provider is configured — refused otherwise; pass images: "hero" | "inline" | "none" to opt out.',
       inputSchema: {
         site: z.string(),
         title: z.string().min(1),
         html: z.string().min(1),
         status: z.enum(['published', 'draft']).default('published'),
+        images: z
+          .enum(['both', 'hero', 'inline', 'none'])
+          .default('both')
+          .describe(
+            'Which of the hero image (feature_image) and the in-body <img> are required before publishing. Only enforced when an image provider is configured; pass "none" if this article genuinely has no image.',
+          ),
 
         custom_excerpt: z.string().max(300).optional().describe('Shown in listings and feeds'),
         meta_title: z.string().optional().describe('SEO title; defaults to title'),
@@ -73,6 +80,7 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         title: string;
         html: string;
         status: 'published' | 'draft';
+        images: 'both' | 'hero' | 'inline' | 'none';
         custom_excerpt?: string;
         meta_title?: string;
         meta_description?: string;
@@ -114,6 +122,48 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
             localWarnings.push(
               `Persona "${requested}" has no author id for site "${a.site}", so ${getPlugin(site.platform).label} attributed this post to the integration's default author. Add "${a.site}: <author id>" under platform_authors in personas/${requested}.yaml, or pass a raw author id as "author". Run list_authors to find ids.`,
             );
+          }
+        }
+
+        // Every article gets a hero image and an inline image unless the caller
+        // explicitly says otherwise (images: "hero" | "inline" | "none") — the
+        // product's stated default. Previously this was only a non-blocking
+        // nudge an agent could read, get, and still ignore; a post shipped with
+        // no hero image and a stock photo in place of a generated inline image
+        // while the agent recorded the nudge as "expected". Only enforced when
+        // an image provider is actually configured: with none, the caller
+        // cannot comply, and refusing would make create_post unusable for
+        // anyone without an image key — images are optional in this product,
+        // the default is not.
+        if (ctx.setup.imageProviders.length > 0) {
+          const needsHero = a.images === 'both' || a.images === 'hero';
+          const needsInline = a.images === 'both' || a.images === 'inline';
+          const missingHero = needsHero && !a.feature_image;
+          const missingInline = needsInline && !hasInlineImage(a.html);
+          const optOutHint =
+            'Call generate_image, then upload_image, then pass the result as feature_image (hero) and/or embed it as an <img src="..."> in html (inline). If this article genuinely needs no image, pass images: "none"; to keep just one, pass images: "hero" or images: "inline".';
+          if (missingHero && missingInline) {
+            throw new ToolError({
+              api: 'create_post',
+              code: 'IMAGES_REQUIRED',
+              message:
+                'Refusing to publish: no feature_image was set and html has no inline <img> — this article has neither a hero image nor an inline image.',
+              hint: optOutHint,
+            });
+          } else if (missingHero) {
+            throw new ToolError({
+              api: 'create_post',
+              code: 'HERO_IMAGE_REQUIRED',
+              message: `Refusing to publish: no feature_image was set, and images: "${a.images}" requires a hero image.`,
+              hint: optOutHint,
+            });
+          } else if (missingInline) {
+            throw new ToolError({
+              api: 'create_post',
+              code: 'INLINE_IMAGE_REQUIRED',
+              message: `Refusing to publish: html has no inline <img ...src="...">, and images: "${a.images}" requires an inline image.`,
+              hint: optOutHint,
+            });
           }
         }
 
@@ -163,26 +213,14 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
           ...(authors ? { authors } : {}),
         });
 
-        // Images are the default the moment a provider key exists — the
-        // writing brief instructs generate_image + upload_image for exactly
-        // this reason. Nothing here can FORCE the calling agent to do that;
-        // an MCP server only ever responds to tool calls, it cannot demand
-        // one. This is the observable half of the fix: a post that reaches
-        // create_post with a working image key configured and no
-        // feature_image gets a named, non-blocking nudge instead of shipping
-        // with no signal that a default was skipped. Appended AFTER the
-        // platform's own warnings, never mixed into `localWarnings` above,
-        // so it can never shift the index of a warning about something the
-        // platform itself did.
-        const imageNudge =
-          !a.feature_image && ctx.setup.imageProviders.length > 0
-            ? [
-                `No feature_image was set, but an image provider (${ctx.setup.imageProviders.join(', ')}) is configured. ` +
-                  'By default every article gets a hero image: call generate_image then upload_image, and pass the ' +
-                  'result as feature_image — unless the user explicitly asked to skip images or supplied their own.',
-              ]
-            : [];
-        const warnings = [...localWarnings, ...(result.warnings ?? []), ...imageNudge];
+        // The non-blocking "no feature_image" nudge that used to live here is
+        // gone: it is now either redundant (the images-required check above
+        // already refused the request before this line was ever reached) or
+        // actively wrong (the caller explicitly opted out via images: "inline"
+        // or "none", and nudging them back toward a hero image would
+        // contradict their own instruction). One rule, one definition — the
+        // enforcement block above is the only place this default is stated.
+        const warnings = [...localWarnings, ...(result.warnings ?? [])];
         // Derived from what actually happened, not from whether the JSON-LD was
         // BUILT. WordPress core cannot accept codeinjection_head at all — its
         // adapter reports that as a warning naming the field

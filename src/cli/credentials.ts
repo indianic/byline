@@ -1,7 +1,7 @@
 import { cancel, isCancel, password, select, spinner, text } from '@clack/prompts';
 import type { SiteConfig } from '../config/sites.js';
 import type { CredentialField, HealthResult, PlatformPlugin } from '../plugins/platforms/types.js';
-import type { ImageProvider } from '../plugins/images/types.js';
+import type { KeyedProvider, ProviderFamily } from '../plugins/provider.js';
 import { fail, info } from './tree.js';
 
 /**
@@ -49,7 +49,7 @@ export interface CollectedSite {
 }
 
 export type SiteProbe = (site: SiteConfig) => Promise<HealthResult>;
-export type ProviderProbe = (provider: ImageProvider, key: string) => Promise<{ ok: boolean; detail: string }>;
+export type ProviderProbe = (provider: KeyedProvider, key: string) => Promise<{ ok: boolean; detail: string }>;
 
 /**
  * Ask for every declared field, in the order the plugin lists them.
@@ -132,43 +132,56 @@ export async function collectSite(
 }
 
 /**
- * Ask for each image provider's key, keyed by the env var the provider itself
- * declares. Skipping one still asks about the next — the second provider is a
- * fallback, and plenty of users want only the first.
+ * Ask for every provider key in every family the caller offers, keyed by the
+ * env var each provider declares.
+ *
+ * Nothing here knows what a family DOES. The yes/no question, the section
+ * label, and each prompt's text all come off descriptors, which is what keeps
+ * `src/cli/` free of provider identities — a research family appears in the
+ * installer for free, correctly or incorrectly, exactly as it describes itself.
+ *
+ * Skipping one provider still asks about the next: within a family the second
+ * provider may be a fallback (images) or an alternative (research), and plenty
+ * of users want only the first either way.
  */
-export async function collectImageProviderKeys(
-  providers: readonly ImageProvider[],
+export async function collectProviderKeys(
+  families: readonly ProviderFamily[],
   p: Prompter,
   probe: ProviderProbe,
+  ask: (question: string) => Promise<boolean>,
 ): Promise<Record<string, string>> {
   const keys: Record<string, string> = {};
 
-  for (const provider of providers) {
-    for (;;) {
-      const c = provider.credential;
-      p.note(c.secret && c.example ? `${c.label} — ${c.help} (looks like: ${c.example})` : `${c.label} — ${c.help}`);
-      const answer = await p.text({
-        message: `${c.label} (Enter nothing to skip)`,
-        placeholder: c.example,
-        secret: c.secret,
-      });
-      if (answer === null || answer.trim() === '') break;
+  for (const family of families) {
+    if (!(await ask(family.initPrompt))) continue;
 
-      const result = await probe(provider, answer.trim());
-      if (result.ok) {
-        keys[c.name] = answer.trim();
-        break;
+    for (const provider of family.providers({})) {
+      for (;;) {
+        const c = provider.credential;
+        p.note(c.secret && c.example ? `${c.label} — ${c.help} (looks like: ${c.example})` : `${c.label} — ${c.help}`);
+        const answer = await p.text({
+          message: `${c.label} (Enter nothing to skip)`,
+          placeholder: c.example,
+          secret: c.secret,
+        });
+        if (answer === null || answer.trim() === '') break;
+
+        const result = await probe(provider, answer.trim());
+        if (result.ok) {
+          keys[c.name] = answer.trim();
+          break;
+        }
+
+        p.problem(`${provider.name} rejected that key:\n${result.detail}`);
+        const next = await p.choose({
+          message: 'What now?',
+          options: [
+            { value: 'retry', label: 'Try again' },
+            { value: 'skip', label: `Skip ${provider.name}` },
+          ],
+        });
+        if (next !== 'retry') break;
       }
-
-      p.problem(`${provider.name} rejected that key:\n${result.detail}`);
-      const next = await p.choose({
-        message: 'What now?',
-        options: [
-          { value: 'retry', label: 'Try again' },
-          { value: 'skip', label: `Skip ${provider.name}` },
-        ],
-      });
-      if (next !== 'retry') break;
     }
   }
 

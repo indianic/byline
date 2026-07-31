@@ -95,6 +95,48 @@ describe('collectStatus', () => {
     expect(grok.configured).toBe(false);
   });
 
+  // Task 6: the research family (Brave + Tavily) is wired into `status`
+  // through the same `providers` array `imageProviders` used to be the only
+  // consumer of. Nothing before this asserted the research entry actually
+  // shows up, or that both providers are listed with their own envVar/
+  // configured pair — only `providerFamilies()` in isolation was tested.
+  it('adds a research family to providers, listing both brave and tavily with envVar and configured', () => {
+    const ctx = loadContext({ BYLINE_HOME: home, TAVILY_API_KEY: 'k' });
+    const data = collectStatus(ctx, fakeHome, fakeHome);
+    const research = data.providers.find((f) => f.family === 'research')!;
+    expect(research).toBeDefined();
+    expect(research.label.length).toBeGreaterThan(0);
+    const brave = research.providers.find((p) => p.name === 'brave')!;
+    const tavily = research.providers.find((p) => p.name === 'tavily')!;
+    expect(brave).toBeDefined();
+    expect(brave.envVar).toBe('BRAVE_API_KEY');
+    expect(brave.configured).toBe(false);
+    expect(tavily).toBeDefined();
+    expect(tavily.envVar).toBe('TAVILY_API_KEY');
+    expect(tavily.configured).toBe(true);
+  });
+
+  // `imageProviders` is "consumed output" per the comment in status.ts — kept
+  // exactly as it was so nothing reading it breaks, with `providers` as the
+  // additive replacement. Prove the addition really is additive: with every
+  // image AND research key set, imageProviders must still contain exactly the
+  // two image providers, under their original names, and nothing from the
+  // research family.
+  it('keeps imageProviders unchanged and images-only even once research providers are configured', () => {
+    const ctx = loadContext({
+      BYLINE_HOME: home,
+      GEMINI_API_KEY: 'g-key',
+      BRAVE_API_KEY: 'b-key',
+      TAVILY_API_KEY: 't-key',
+    });
+    const data = collectStatus(ctx, fakeHome, fakeHome);
+    expect(data.imageProviders).toEqual([
+      { name: 'gemini', configured: true, envVar: 'GEMINI_API_KEY' },
+      { name: 'grok', configured: false, envVar: 'XAI_API_KEY' },
+    ]);
+    expect(data.imageProviders.some((p) => p.name === 'brave' || p.name === 'tavily')).toBe(false);
+  });
+
   it('reports which AI tools have byline registered', () => {
     writeFileSync(join(fakeHome, '.claude.json'), JSON.stringify({ mcpServers: { byline: {} } }));
     const ctx = loadContext({ BYLINE_HOME: home });

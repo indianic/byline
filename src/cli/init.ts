@@ -6,10 +6,10 @@ import { SLUG_PATTERN, SLUG_RULE, loadSites, usableSites } from '../config/sites
 import { loadEnvFile } from '../config/dotenv.js';
 import { PLATFORM_PLUGINS } from '../plugins/registry.js';
 import type { PlatformPlugin } from '../plugins/platforms/types.js';
-import { defaultChain } from '../plugins/images/index.js';
+import { providerFamilies } from '../plugins/providers.js';
 import {
   clackPrompter,
-  collectImageProviderKeys,
+  collectProviderKeys,
   collectSite,
   liveProbe,
   liveProviderProbe,
@@ -307,16 +307,20 @@ export async function runInit(_args: string[]): Promise<void> {
     }
   }
 
-  // --- 3. Image generation ---
-  let imageKeys: Record<string, string> = {};
-  if (await ask('Set up AI image generation for hero images? (optional)', false)) {
-    imageKeys = await collectImageProviderKeys(defaultChain({}), clackPrompter, liveProviderProbe);
-    if (Object.keys(imageKeys).length > 0) {
-      upsertEnvVars(paths.envFile, imageKeys);
-      section('image generation');
-      detail(`${paths.envFile}   (${Object.keys(imageKeys).join(', ')})`);
-      written.push(paths.envFile);
-    }
+  // --- 3. Provider keys (image generation, research, and any future family) ---
+  //
+  // No family is named here. Each one supplies its own yes/no question, so a
+  // new family appears in the installer with no edit to this file.
+  //
+  // `(q) => ask(q, false)`, not `ask` directly: `ask`'s own default
+  // (`initialValue = true`) would flip every family's prompt to default-Yes.
+  // Image setup is opt-in — the prompt must keep defaulting to No.
+  const providerKeys = await collectProviderKeys(providerFamilies(), clackPrompter, liveProviderProbe, (q) => ask(q, false));
+  if (Object.keys(providerKeys).length > 0) {
+    upsertEnvVars(paths.envFile, providerKeys);
+    section('provider keys');
+    detail(`${paths.envFile}   (${Object.keys(providerKeys).join(', ')})`);
+    written.push(paths.envFile);
   }
 
   // --- 4. Author persona ---

@@ -4,6 +4,7 @@ import { buildBrief } from '../../src/craft/brief.js';
 import { DIMENSIONS, HOOKS } from '../../src/craft/dimensions.js';
 import { IMAGE_LOOKS } from '../../src/craft/image-style.js';
 import { GHOST_HTML_PROFILE } from '../../src/plugins/platforms/ghost/html-profile.js';
+import type { Finding, ResearchResult } from '../../src/plugins/research/types.js';
 
 const PERSONA = {
   slug: 'jane-doe',
@@ -356,5 +357,170 @@ describe('the [[content_image]] replacement is specified, not implied', () => {
     expect(text).toMatch(/<figure><img src="URL"/);
     expect(text).not.toMatch(/<figure style=/);
     expect(text).toMatch(/theme sizes the image/i);
+  });
+});
+
+// The brief's research block had no test at all: a refactor that re-sorted
+// findings by date, dropped `relevance`, or printed an unreadable string as a
+// date passed the whole suite. These assert the text a writer actually reads.
+describe('the research block tells the truth about each finding', () => {
+  const iso = (msAgo: number): string => new Date(Date.now() - msAgo).toISOString();
+  const HOUR = 3600 * 1000;
+  const DAY = 24 * HOUR;
+
+  const finding = (over: Partial<Finding> & { url: string }): Finding => ({
+    title: `Title for ${over.url}`,
+    snippet: `Snippet for ${over.url}`,
+    publishedAt: iso(HOUR),
+    relevance: null,
+    provider: 'tavily',
+    ...over,
+  });
+
+  const result = (findings: Finding[], window: 'day' | 'week' | 'month' = 'day'): ResearchResult => ({
+    provider: 'tavily',
+    query: 'cricket',
+    window,
+    selectedBy: 'sole-configured',
+    findings,
+  });
+
+  it("keeps the provider's order and never re-sorts by date", () => {
+    // Oldest first, newest last — the order a date sort would invert. Provider
+    // ranking is the only defence against a provider backfilling off-topic
+    // filler stamped today (measured), so date order must never win.
+    const b = buildBrief({
+      ...base,
+      findings: result([
+        finding({ url: 'https://first.test/a', publishedAt: iso(20 * HOUR) }),
+        finding({ url: 'https://second.test/b', publishedAt: iso(10 * HOUR) }),
+        finding({ url: 'https://third.test/c', publishedAt: iso(1 * HOUR) }),
+      ]),
+    });
+    const order = ['https://first.test/a', 'https://second.test/b', 'https://third.test/c'].map(
+      (u) => b.brief.indexOf(u),
+    );
+    expect(order.every((i) => i > 0)).toBe(true);
+    expect(order).toEqual([...order].sort((x, y) => x - y));
+    expect(b.brief).toContain('[1] Title for https://first.test/a');
+    expect(b.brief).toContain('[3] Title for https://third.test/c');
+  });
+
+  it('surfaces relevance when the provider scores it, and prints no relevance line when it does not', () => {
+    const b = buildBrief({
+      ...base,
+      findings: result([
+        finding({ url: 'https://scored.test/a', relevance: 0.087 }),
+        finding({ url: 'https://unscored.test/b', relevance: null }),
+      ]),
+    });
+    expect(b.brief).toContain('relevance 0.09');
+    // One relevance line only — the null one must not render as "relevance null".
+    expect(b.brief.match(/relevance /g)).toHaveLength(1);
+    expect(b.brief).not.toContain('relevance null');
+  });
+
+  it('says NO DATE GIVEN where the date would go, and warns how many', () => {
+    const b = buildBrief({
+      ...base,
+      findings: result([
+        finding({ url: 'https://dated.test/a' }),
+        finding({ url: 'https://undated.test/b', publishedAt: null }),
+      ]),
+    });
+    expect(b.brief).toContain('NO DATE GIVEN by tavily — do not assert when this happened');
+    expect(b.warnings).toContain(
+      '1 of 2 sources carry no usable publication date — do not assert when those events happened.',
+    );
+  });
+
+  it('treats an unreadable and a future date as no date at all', () => {
+    const b = buildBrief({
+      ...base,
+      findings: result([
+        finding({ url: 'https://ok.test/a' }),
+        finding({ url: 'https://junk.test/b', publishedAt: 'yesterday-ish' }),
+        finding({ url: 'https://future.test/c', publishedAt: '2099-01-01T00:00:00.000Z' }),
+      ]),
+    });
+    expect(b.brief).toContain('is not a readable date');
+    expect(b.brief).toContain('which is in the future');
+    // Neither is counted as dated, and neither is printed as a bare date.
+    expect(b.brief).toContain('3 source(s), 1 dated, 1 inside the day window');
+    expect(b.warnings).toContain(
+      '2 of 3 sources carry no usable publication date — do not assert when those events happened.',
+    );
+  });
+
+  it('marks an out-of-window source next to it, and warns how many', () => {
+    const b = buildBrief({
+      ...base,
+      findings: result([
+        finding({ url: 'https://fresh.test/a', publishedAt: iso(4 * 60 * 1000) }),
+        finding({ url: 'https://stale.test/b', publishedAt: iso(90 * DAY) }),
+      ]),
+    });
+    expect(b.brief).toContain('OUTSIDE the day window this research asked for');
+    expect(b.brief).toContain('do not present it as recent');
+    expect(b.warnings).toContain(
+      '1 of 2 sources fall outside the day window this research asked for — they are marked in the brief; do not present them as recent.',
+    );
+    // The fresh one carries no marker, so the two cannot be confused.
+    expect(b.brief.match(/OUTSIDE the day window/g)).toHaveLength(1);
+  });
+
+  it('reports in-window count in the ORIGIN header, not just a total', () => {
+    const b = buildBrief({
+      ...base,
+      findings: result([
+        finding({ url: 'https://fresh.test/a' }),
+        finding({ url: 'https://stale.test/b', publishedAt: iso(90 * DAY) }),
+        finding({ url: 'https://undated.test/c', publishedAt: null }),
+      ]),
+    });
+    expect(b.brief).toContain(
+      'ORIGIN: tavily, day window, 3 source(s), 2 dated, 1 inside the day window. Selected by: sole-configured.',
+    );
+    expect(b.researchOrigin).toBe('provider');
+  });
+
+  it('leaves an in-window source unmarked and unwarned', () => {
+    const b = buildBrief({
+      ...base,
+      findings: result([finding({ url: 'https://fresh.test/a', publishedAt: iso(4 * 60 * 1000) })]),
+    });
+    expect(b.warnings).toEqual([]);
+    expect(b.brief).not.toContain('OUTSIDE the');
+    expect(b.brief).not.toContain('NO DATE GIVEN');
+  });
+
+  // Follow-up review N2: `Date.parse` alone is too permissive to define "a
+  // readable date" — "5", "0", a bare year, and a year-month all parse
+  // successfully, so a truthiness-plus-Date.parse guard let them through as
+  // dated, out-of-window, and printed BARE in the date position: "5 —
+  // OUTSIDE the day window…". A fragment that is not a date must never be
+  // printed where a date goes, exactly like an unparseable string.
+  it('treats date-shaped junk (a bare year, year-month, or bare number) as no usable date, never prints it bare', () => {
+    const b = buildBrief({
+      ...base,
+      findings: result([
+        finding({ url: 'https://ok.test/a' }),
+        finding({ url: 'https://year.test/b', publishedAt: '2026' }),
+        finding({ url: 'https://yearmonth.test/c', publishedAt: '2026-07' }),
+        finding({ url: 'https://num.test/d', publishedAt: '5' }),
+      ]),
+    });
+    expect(b.brief).toContain('gave "2026", which is not a readable date');
+    expect(b.brief).toContain('gave "2026-07", which is not a readable date');
+    expect(b.brief).toContain('gave "5", which is not a readable date');
+    // None of the junk values is ever printed bare, the way a real date
+    // would be — e.g. "5 — OUTSIDE the day window" or "2026 — OUTSIDE".
+    expect(b.brief).not.toMatch(/^5 —/m);
+    expect(b.brief).not.toMatch(/^2026 —/m);
+    expect(b.brief).not.toMatch(/^2026-07 —/m);
+    expect(b.brief).toContain('4 source(s), 1 dated, 1 inside the day window');
+    expect(b.warnings).toContain(
+      '3 of 4 sources carry no usable publication date — do not assert when those events happened.',
+    );
   });
 });
