@@ -2,6 +2,8 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFile
 import { dirname, join } from 'node:path';
 import { parse, stringify } from 'yaml';
 import type { Paths } from '../config/paths.js';
+import { ENV_REF } from '../config/sites.js';
+import type { PlatformPlugin } from '../plugins/platforms/types.js';
 
 /**
  * Everything that writes `~/.byline/`.
@@ -27,6 +29,63 @@ export function envVarNameFor(slug: string, fieldName: string): string {
       .replace(/[\s-]+/g, '_')
       .replace(/[^A-Z0-9_]/g, '');
   return `${clean(slug)}_${clean(fieldName)}`;
+}
+
+/**
+ * The env var name a site's `config.yaml` block ALREADY references for each
+ * secret field, read straight off disk — keyed by field name, only for
+ * fields whose stored value is a `${VAR}` reference.
+ *
+ * Exists so `persistSite` (`src/cli/init.ts`) can reuse a hand-chosen name on
+ * an update instead of always recomputing one with `envVarNameFor`. Without
+ * this, `persistSite` had no way to see what the config already said — it
+ * only ever received RESOLVED credential values (see `SiteConfig.credentials`
+ * in `src/config/sites.ts`), never the `${VAR}` text itself — so an update
+ * silently renamed a hand-set reference and left the old secret orphaned in
+ * `.env` under a name nothing points at any more.
+ *
+ * Returns `{}` when there is no `config.yaml`, no site under `slug`, or a
+ * field whose value is not a `${VAR}` reference at all (a literal, or simply
+ * not present yet) — every one of those cases means there is no existing name
+ * to protect, so the caller should fall back to `envVarNameFor`.
+ *
+ * Deliberately tolerant of a `config.yaml` that fails to parse: this is a
+ * read used to decide a NAME, not the authoritative load (`loadSites` in
+ * `src/config/sites.ts` is that, and still throws hard on invalid YAML). A
+ * parse failure here just means "no existing name found," which is exactly
+ * right — the field falls back to a freshly computed one.
+ */
+export function existingSecretEnvVars(
+  configFile: string,
+  slug: string,
+  plugin: PlatformPlugin,
+): Record<string, string> {
+  if (!existsSync(configFile)) return {};
+
+  const text = readFileSync(configFile, 'utf8');
+  if (!text.trim()) return {};
+
+  let parsed: unknown;
+  try {
+    parsed = parse(text);
+  } catch {
+    return {};
+  }
+  if (typeof parsed !== 'object' || parsed === null) return {};
+
+  const sites = (parsed as { sites?: Record<string, unknown> }).sites;
+  const raw = sites?.[slug];
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
+
+  const result: Record<string, string> = {};
+  for (const field of plugin.credentialFields) {
+    if (!field.secret) continue;
+    const value = (raw as Record<string, unknown>)[field.name];
+    if (typeof value !== 'string') continue;
+    const m = ENV_REF.exec(value.trim());
+    if (m) result[field.name] = m[1]!;
+  }
+  return result;
 }
 
 /** Create the config home and its subdirectories. Idempotent. */
@@ -105,6 +164,41 @@ export function upsertEnvVars(envFile: string, vars: Record<string, string>): vo
 }
 
 /**
+ * Delete variables from `.env`, leaving every other line — comments, blank
+ * lines, ordering — exactly as it was.
+ *
+ * Every definition of a named key goes, not just the first: `parseEnv` takes
+ * the LAST occurrence, so removing only the first would leave the variable
+ * still set and report a removal that did not happen — the same trap
+ * `upsertEnvVars` collapses duplicates for.
+ *
+ * A `.env` that does not exist is left alone rather than created. `init` must
+ * never bring the config directory into being as a side effect of a step that
+ * removes something (see Finding 2 in `src/cli/init.ts`).
+ */
+export function removeEnvVars(envFile: string, names: readonly string[]): string[] {
+  if (names.length === 0 || !existsSync(envFile)) return [];
+
+  const lines = readFileSync(envFile, 'utf8').split(/\r?\n/);
+  const removed: string[] = [];
+
+  for (const name of names) {
+    const pattern = new RegExp(`^\\s*(export\\s+)?${escapeRegExp(name)}\\s*=`);
+    const kept = lines.filter((l) => !pattern.test(l));
+    if (kept.length !== lines.length) removed.push(name);
+    lines.length = 0;
+    lines.push(...kept);
+  }
+
+  if (removed.length === 0) return [];
+
+  const text = lines.join('\n').replace(/\n+$/, '');
+  writeFileSync(envFile, text === '' ? '' : `${text}\n`, { mode: 0o600 });
+  chmodSync(envFile, 0o600);
+  return removed;
+}
+
+/**
  * Merge one site into `config.yaml`, preserving everything already there.
  *
  * Reads and rewrites rather than appending text, so YAML stays valid; a config
@@ -117,8 +211,17 @@ export function upsertEnvVars(envFile: string, vars: Record<string, string>): vo
  * same slug as an already-configured one (a different platform, a different
  * URL) silently replaced it — config block, `default_site`, and the `.env`
  * secret `persistSite` had already written — with no warning and no recovery.
- * No current caller passes `replace: true`; it exists only for a future caller
- * that has gotten the user's explicit confirmation first.
+ * The only caller that passes `replace: true` is `init`'s update flow, which
+ * gets there only because the user picked that slug off a menu of what is
+ * already configured; typing a taken name into the new-blog path is still
+ * refused by `promptSlug` before this is ever reached.
+ *
+ * `replace: true` MERGES over the existing block rather than substituting it,
+ * because `block` carries only what `buildSiteBlock` composes from the
+ * platform's credential descriptors — a hand-set `api_url` (many installs serve
+ * the admin API on another host, see `SiteConfig.apiUrl`) is not in there, and
+ * a straight substitution would delete it while the user was updating
+ * something else entirely.
  */
 export function writeSiteToConfig(
   configFile: string,
@@ -142,14 +245,19 @@ export function writeSiteToConfig(
     }
   }
 
-  if (doc.sites?.[slug] && !options.replace) {
+  const existing = doc.sites?.[slug];
+  if (existing && !options.replace) {
     throw new Error(
       `Site "${slug}" already exists in ${configFile}. Remove it first (e.g. via the remove_site tool), or pick a different name — ` +
         'replacing it here would silently discard its config and (if different) its .env credential.',
     );
   }
 
-  doc.sites = { ...(doc.sites ?? {}), [slug]: block };
+  const merged =
+    existing && typeof existing === 'object' && !Array.isArray(existing)
+      ? { ...(existing as Record<string, unknown>), ...block }
+      : block;
+  doc.sites = { ...(doc.sites ?? {}), [slug]: merged };
   if (makeDefault || !doc.default_site) doc.default_site = slug;
 
   mkdirSync(dirname(configFile), { recursive: true });

@@ -60,7 +60,7 @@ src/
   index.ts                 the MCP server — `main()` is exported and called by the shim
   cli/                     everything a human at a terminal touches
     main.ts                dispatch, help, levenshtein typo suggestions, error boundary
-    init.ts                the first-run wizard — composition only
+    init.ts                the setup wizard, first run and every re-run — composition only
     credentials.ts         the credential walk, with an injectable Prompter seam
     editor-config.ts       5 AI tools, JSON + Codex TOML merge, backup before write
     status.ts doctor.ts migrate.ts reset.ts register.ts update.ts

@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { stringify } from 'yaml';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { parse, stringify } from 'yaml';
 import { clackPrompter, type Prompter } from './credentials.js';
 
 /**
@@ -39,6 +39,34 @@ export function slugifyPersonaName(name: string): string {
 }
 
 /**
+ * One question, in whichever of its two modes applies.
+ *
+ * With a `current` value the question offers to keep it and an empty answer
+ * does exactly that. Without one — a persona being created — the question and
+ * its skip semantics are byte-for-byte what they have always been, so the
+ * abort-on-skip rule below is unaffected by the existence of the other mode.
+ *
+ * Every prompt in this codebase supplies a `placeholder` — see promptSlug,
+ * promptUrl, collectCredentialValues — and these five did not. That was not
+ * just an inconsistency: @clack's text() renders the literal string
+ * "undefined" as the confirmed value when Enter is pressed on empty input
+ * with no placeholder set, which is real and was seen live in a terminal,
+ * not guessed at.
+ */
+async function askKeeping(
+  p: Prompter,
+  current: string | undefined,
+  question: string,
+  placeholder: string,
+): Promise<string | null> {
+  if (current) {
+    const answer = await p.text({ message: `${question} (Enter to keep "${current}")`, placeholder: current });
+    return answer ?? current;
+  }
+  return p.text({ message: `${question} (Enter nothing to skip)`, placeholder });
+}
+
+/**
  * Walk the five questions. Returns null as soon as a REQUIRED one (name,
  * role, style-and-tone) is skipped, and does not ask the rest — a persona
  * file missing any of those fails `PersonaSchema`, and `loadPersonas` throws
@@ -47,42 +75,145 @@ export function slugifyPersonaName(name: string): string {
  * discipline `collectCredentialValues` already applies to site credentials,
  * for the same reason: a value that "looks entered" but is not complete is
  * worse than not being written.
+ *
+ * `current` switches this to the update walk, where each answer defaults to
+ * what the file already says and an empty answer keeps it — so re-running
+ * `init` to change one thing does not mean retyping the other four. A field
+ * that is currently EMPTY still asks as if new, which is what keeps the
+ * abort-on-skip rule intact: the update path can only ever preserve a value
+ * that exists.
  */
-export async function promptPersonaAnswers(p: Prompter = clackPrompter): Promise<PersonaAnswers | null> {
-  // Every prompt in this codebase supplies a `placeholder` — see promptSlug,
-  // promptUrl, collectCredentialValues — and these five did not. That was not
-  // just an inconsistency: @clack's text() renders the literal string
-  // "undefined" as the confirmed value when Enter is pressed on empty input
-  // with no placeholder set, which is real and was seen live in a terminal,
-  // not guessed at.
-  const name = await p.text({
-    message: 'Your name — used as the byline (Enter nothing to skip)',
-    placeholder: 'Alex Chen',
-  });
+export async function promptPersonaAnswers(
+  p: Prompter = clackPrompter,
+  current?: PersonaAnswers,
+): Promise<PersonaAnswers | null> {
+  const name = await askKeeping(p, current?.name, 'Your name — used as the byline', 'Alex Chen');
   if (!name) return null;
 
-  const role = await p.text({
-    message: 'Your role or title (Enter nothing to skip)',
-    placeholder: 'Senior Engineer, Freelance Journalist',
-  });
+  const role = await askKeeping(p, current?.role, 'Your role or title', 'Senior Engineer, Freelance Journalist');
   if (!role) return null;
 
-  const styleAndTone = await p.text({
-    message: 'Your writing style and tone, in a few words (Enter nothing to skip)',
-    placeholder: 'Analytical, direct, confident',
-  });
+  const styleAndTone = await askKeeping(
+    p,
+    current?.styleAndTone,
+    'Your writing style and tone, in a few words',
+    'Analytical, direct, confident',
+  );
   if (!styleAndTone) return null;
 
-  const yearsRaw = await p.text({ message: 'Years of experience (Enter nothing to skip)', placeholder: '10' });
+  const currentYears = current && current.yearsOfExperience > 0 ? String(current.yearsOfExperience) : undefined;
+  const yearsRaw = await askKeeping(p, currentYears, 'Years of experience', '10');
   const parsedYears = yearsRaw ? Number.parseInt(yearsRaw, 10) : NaN;
   const yearsOfExperience = Number.isFinite(parsedYears) && parsedYears > 0 ? parsedYears : 0;
 
-  const subjectExpertise = await p.text({
-    message: 'Your main subject expertise (Enter nothing to skip)',
-    placeholder: 'cloud architecture, personal finance',
-  });
+  const subjectExpertise = await askKeeping(
+    p,
+    current?.subjectExpertise || undefined,
+    'Your main subject expertise',
+    'cloud architecture, personal finance',
+  );
 
   return { name, role, styleAndTone, yearsOfExperience, subjectExpertise: subjectExpertise ?? '' };
+}
+
+/** A persona file already on disk, with its raw contents kept for a non-destructive update. */
+export interface ExistingPersona {
+  /** The filename stem, which `loadPersonas` requires the `slug` field to equal. */
+  slug: string;
+  path: string;
+  /**
+   * The YAML mapping exactly as it is on disk — every field, including the
+   * twenty the five questions never ask about. An update merges into THIS
+   * rather than rebuilding from `buildPersonaRecord`, because rebuilding would
+   * blank a hand-written `persona_specific_instructions_for_ai`,
+   * `platform_authors`, and everything else someone filled in by editing the
+   * file, which is the workflow `init` itself tells them to use.
+   */
+  record: Record<string, unknown>;
+  /** The five questionnaire answers as this file currently expresses them. */
+  answers: PersonaAnswers;
+}
+
+/**
+ * Every persona already configured, read tolerantly.
+ *
+ * Deliberately NOT `loadPersonas`: that validates against `PersonaSchema` and
+ * throws for the WHOLE directory when any one file fails, which would mean one
+ * hand-broken persona makes `init` unable to even ASK about the others. This is
+ * a menu, not a load — a file it cannot parse is skipped and `doctor` is where
+ * the parse failure gets reported.
+ *
+ * A missing directory is not an error and creates nothing: `init` must not
+ * bring the config home into being just by looking (Finding 2).
+ */
+export function readExistingPersonas(personasDir: string): ExistingPersona[] {
+  let files: string[];
+  try {
+    files = readdirSync(personasDir).filter((f) => /\.ya?ml$/.test(f) && !f.startsWith('_'));
+  } catch {
+    return [];
+  }
+
+  const found: ExistingPersona[] = [];
+  for (const file of files.sort()) {
+    const path = join(personasDir, file);
+    let parsed: unknown;
+    try {
+      parsed = parse(readFileSync(path, 'utf8'));
+    } catch {
+      continue;
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) continue;
+    const record = parsed as Record<string, unknown>;
+    // The filename stem, not `record.slug`: this is the file that will be
+    // rewritten, and `loadPersonas` rejects the pair when they disagree.
+    const slug = basename(file).replace(/\.ya?ml$/, '');
+    found.push({ slug, path, record, answers: personaAnswersFrom(record, slug) });
+  }
+  return found;
+}
+
+/** Read the five questionnaire answers back out of a persona record. */
+export function personaAnswersFrom(record: Record<string, unknown>, slug: string): PersonaAnswers {
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+  return {
+    name: str(record.name) || slug,
+    role: str(record.role),
+    styleAndTone: str(record.writing_style),
+    yearsOfExperience: typeof record.years_of_experience === 'number' ? record.years_of_experience : 0,
+    subjectExpertise: str(record.subject_expertise),
+  };
+}
+
+/**
+ * Apply the five answers to an existing persona record, changing nothing else.
+ *
+ * `slug` is forced to the filename stem so the rewritten file still satisfies
+ * `loadPersonas`' filename-equals-slug rule — including when the user changes
+ * their NAME, which is the one answer that would otherwise derive a different
+ * slug and leave two persona files where there was one.
+ */
+export function updatePersonaRecord(
+  existing: Record<string, unknown>,
+  answers: PersonaAnswers,
+  slug: string,
+): Record<string, unknown> {
+  const record: Record<string, unknown> = { ...existing, slug };
+  record.name = answers.name;
+  record.role = answers.role;
+  record.years_of_experience = answers.yearsOfExperience;
+  record.subject_expertise = answers.subjectExpertise;
+
+  // `buildPersonaRecord` writes writing_style and tone_of_voice from ONE
+  // answer, so on a file `init` created the two are equal. Someone who has
+  // since edited tone_of_voice to say something different meant it, and
+  // driving both from one answer here would silently discard that edit — the
+  // same reason the record above is merged rather than rebuilt.
+  const coupled = existing.tone_of_voice === existing.writing_style;
+  record.writing_style = answers.styleAndTone;
+  if (coupled) record.tone_of_voice = answers.styleAndTone;
+
+  return record;
 }
 
 /**
@@ -135,14 +266,26 @@ export interface WritePersonaResult {
 }
 
 /**
- * Write the persona YAML. Never overwrites — the same rule `add_site` and
- * `migrate` already enforce for the same reason: running `init` a second
- * time must not silently clobber edits someone made to their own file.
+ * Write the persona YAML. Never overwrites unless `replace: true` is passed —
+ * the same rule `add_site`, `migrate`, and `writeSiteToConfig` already enforce
+ * for the same reason: running `init` a second time must not silently clobber
+ * edits someone made to their own file.
+ *
+ * `replace: true` exists for exactly one caller — `init`'s update flow, which
+ * reaches it only after the user picked this persona off a menu of what is
+ * already there and answered a questionnaire pre-filled from the file's own
+ * contents. `alreadyExisted` still reports what was found, so the caller can
+ * say whether it wrote a new file or changed one.
  */
-export function writePersonaFile(personasDir: string, record: Record<string, unknown>): WritePersonaResult {
+export function writePersonaFile(
+  personasDir: string,
+  record: Record<string, unknown>,
+  options: { replace?: boolean } = {},
+): WritePersonaResult {
   const path = join(personasDir, `${record.slug as string}.yaml`);
-  if (existsSync(path)) return { path, alreadyExisted: true };
+  const alreadyExisted = existsSync(path);
+  if (alreadyExisted && !options.replace) return { path, alreadyExisted: true };
   mkdirSync(personasDir, { recursive: true });
   writeFileSync(path, stringify(record));
-  return { path, alreadyExisted: false };
+  return { path, alreadyExisted };
 }

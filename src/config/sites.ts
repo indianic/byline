@@ -45,7 +45,14 @@ const RawConfig = z.object({
   sites: z.record(z.string(), z.object({ platform: z.string() }).passthrough()),
 });
 
-const ENV_REF = /^\$\{([A-Z0-9_]+)\}$/;
+/**
+ * Matches a `${VAR}` reference in `config.yaml` and captures the variable
+ * name. Exported so `src/cli/home-config.ts` can find the env var name a
+ * config ALREADY references for a field, rather than re-deriving the pattern
+ * by hand — a second hand-written copy is how `SLUG_PATTERN` and this kind of
+ * thing drift.
+ */
+export const ENV_REF = /^\$\{([A-Z0-9_]+)\}$/;
 
 /**
  * The one definition of a legal site slug, for both writers of `config.yaml`.

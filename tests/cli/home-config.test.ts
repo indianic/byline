@@ -8,6 +8,7 @@ import { parseEnv } from '../../src/config/dotenv.js';
 import {
   ensureHome,
   envVarNameFor,
+  removeEnvVars,
   seedPersonaTemplate,
   upsertEnvVars,
   writeSiteToConfig,
@@ -132,6 +133,53 @@ describe('upsertEnvVars', () => {
   });
 });
 
+describe('removeEnvVars', () => {
+  it('deletes the named variables and leaves every other line alone', () => {
+    const file = join(home, '.env');
+    writeFileSync(file, '# my keys\nGEMINI_API_KEY=abc\n\nXAI_API_KEY=def\nMYBLOG_ADMIN_API_KEY=id:secret\n');
+    expect(removeEnvVars(file, ['GEMINI_API_KEY'])).toEqual(['GEMINI_API_KEY']);
+    const text = readFileSync(file, 'utf8');
+    expect(parseEnv(text).GEMINI_API_KEY).toBeUndefined();
+    expect(parseEnv(text).XAI_API_KEY).toBe('def');
+    expect(parseEnv(text).MYBLOG_ADMIN_API_KEY).toBe('id:secret');
+    expect(text).toContain('# my keys');
+  });
+
+  it('removes EVERY definition, not just the first', () => {
+    // `parseEnv` takes the LAST occurrence, so removing only the first would
+    // leave the variable still set while reporting a removal — the same trap
+    // `upsertEnvVars` collapses duplicates for.
+    const file = join(home, '.env');
+    writeFileSync(file, 'GEMINI_API_KEY=old\nOTHER=keep\nexport GEMINI_API_KEY=newer\n');
+    removeEnvVars(file, ['GEMINI_API_KEY']);
+    const parsed = parseEnv(readFileSync(file, 'utf8'));
+    expect(parsed.GEMINI_API_KEY).toBeUndefined();
+    expect(parsed.OTHER).toBe('keep');
+  });
+
+  it('reports nothing removed for a variable that was not there', () => {
+    const file = join(home, '.env');
+    writeFileSync(file, 'OTHER=keep\n');
+    expect(removeEnvVars(file, ['NEVER_SET'])).toEqual([]);
+    expect(readFileSync(file, 'utf8')).toBe('OTHER=keep\n');
+  });
+
+  it('never creates a .env that does not exist', () => {
+    // `init` must not bring the config home into being as a side effect of a
+    // step that only removes something (Finding 2).
+    const file = join(home, 'nested', '.env');
+    expect(removeEnvVars(file, ['GEMINI_API_KEY'])).toEqual([]);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it('leaves the file at mode 600', () => {
+    const file = join(home, '.env');
+    writeFileSync(file, 'GEMINI_API_KEY=abc\nOTHER=keep\n', { mode: 0o644 });
+    removeEnvVars(file, ['GEMINI_API_KEY']);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+});
+
 describe('writeSiteToConfig', () => {
   it('creates config.yaml with the site and sets it as the default', () => {
     const file = join(home, 'config.yaml');
@@ -180,6 +228,27 @@ describe('writeSiteToConfig', () => {
     );
     const parsed = parse(readFileSync(file, 'utf8')) as { sites: Record<string, unknown> };
     expect(parsed.sites.personal).toEqual({ platform: 'wordpress', url: 'https://b.com' });
+  });
+
+  it('keeps hand-set keys a replace does not carry, so an update cannot silently delete api_url', () => {
+    // `buildSiteBlock` composes only platform, url, and the credential fields
+    // the plugin declares. A straight substitution would therefore drop an
+    // `api_url` set by hand — many installs serve the admin API on another
+    // host — while the user was updating something else entirely.
+    const file = join(home, 'config.yaml');
+    writeSiteToConfig(
+      file,
+      'personal',
+      { platform: 'ghost', url: 'https://a.com', api_url: 'https://admin.a.com/ghost/api/admin' },
+      true,
+    );
+    writeSiteToConfig(file, 'personal', { platform: 'ghost', url: 'https://b.com' }, false, { replace: true });
+    const parsed = parse(readFileSync(file, 'utf8')) as { sites: Record<string, Record<string, string>> };
+    expect(parsed.sites.personal).toEqual({
+      platform: 'ghost',
+      url: 'https://b.com',
+      api_url: 'https://admin.a.com/ghost/api/admin',
+    });
   });
 
   // Finding 1's related default-site bug: a newly added blog must only become

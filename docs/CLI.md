@@ -46,23 +46,37 @@ enforce at runtime — which is why this guard exists.
 
 **Flags:** none.
 
-The first-run wizard. Requires a terminal. Steps, in order:
+The setup wizard — for the first run **and every run after it**. Requires a terminal.
+Steps, in order:
 
 1. **Offers to migrate** a repo-local config if it finds one (see
    [`migrate`](#byline-migrate)).
 2. **Detects installed AI tools** by config path and offers only those, all
    pre-selected. Backs each file up to `<file>.byline-bak` before merging.
-3. **Walks your blog credentials** — platform picker, short name, address, then that
-   platform's fields in order. Every prompt can be skipped with an empty Enter. Each
-   credential is **validated against the live platform before being accepted**, and the
-   platform's own error is shown on failure with a retry/skip choice.
+3. **Walks your blogs.** With nothing configured: platform picker, short name, address,
+   then that platform's fields in order, every prompt skippable with an empty Enter.
+   With blogs already configured: a menu of *Add a new blog* plus every configured
+   short name, each showing its platform and address. Picking one enters the update
+   walk, where an empty Enter **keeps** the current value instead of skipping, and a
+   stored secret is shown only as a masked fingerprint (`0000••••••aaaa`). Either way
+   the credentials are **validated against the live platform before being accepted** —
+   including a credential you kept without retyping — and the platform's own error is
+   shown on failure with a retry/skip choice.
 4. **Offers each provider family in turn** — image generation (Gemini, then Grok), then
    research (Brave, then Tavily) — each with its own yes/no question, defaulting to No,
-   and each key validated the same way. Both families are optional; declining either
-   leaves a fully working install. Families come from `src/plugins/providers.ts`, so
-   `init` names none of them itself.
-5. **Seeds the persona template** and prints every file it wrote.
-6. **Closes with a copy-pasteable sentence** to type at your AI tool.
+   and each key validated the same way. A key already in `.env` is never asked for
+   again: it is shown as a masked fingerprint and offered **keep / replace / remove**,
+   with keep first so Enter changes nothing. Keeping still probes it, and a stored key
+   the provider no longer accepts is reported with an offer to replace. Both families
+   are optional; declining either leaves a fully working install. Families come from
+   `src/plugins/providers.ts`, so `init` names none of them itself.
+5. **Asks about your author persona** — checking for existing ones *before* asking
+   anything. With none: the five-question walk. With one or more: a menu of *Keep as
+   they are*, *Update "<name>"* per persona, and *Add another*. An update pre-fills
+   every answer from the file and merges back into it, so fields the five questions
+   never ask about survive.
+6. **Seeds the persona template** and prints every file it wrote.
+7. **Closes with a copy-pasteable sentence** to type at your AI tool.
 
 **Writes:** `~/.byline/config.yaml`, `~/.byline/.env` (mode 600),
 `~/.byline/personas/_template.yaml`, and the config file of each AI tool you picked.
@@ -70,8 +84,13 @@ The first-run wizard. Requires a terminal. Steps, in order:
 **Does not write** `~/.byline/` at all if you decline everything — an empty config
 directory would permanently shadow a working repo-local config.
 
-**Never replaces an existing blog.** A short name already present in `config.yaml` is
-refused, and adding a blog does not move `default_site` off one you already had.
+**Never replaces a blog by accident.** A short name already present in `config.yaml` is
+still refused on the *new blog* path; updating one is only ever reached by picking it
+off the menu. Adding a blog does not move `default_site` off one you already had.
+
+**A half-entered NEW blog is still abandoned.** Skipping any field of a blog being
+created discards it — a config that loads "usable" with a blank credential fails at
+publish time. "Empty means keep" applies only where there is a stored value to keep.
 
 ---
 

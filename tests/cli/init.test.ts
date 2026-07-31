@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolvePaths } from '../../src/config/paths.js';
-import { loadSites } from '../../src/config/sites.js';
-import { decideClosing, persistSite, promptSlug, readConfiguredState } from '../../src/cli/init.js';
+import { SLUG_RULE, loadSites } from '../../src/config/sites.js';
+import {
+  decideClosing,
+  persistSite,
+  promptSlug,
+  promptUrl,
+  readConfiguredSites,
+  readConfiguredState,
+} from '../../src/cli/init.js';
 import type { Prompter } from '../../src/cli/credentials.js';
+import { ensureHome } from '../../src/cli/home-config.js';
 import { ghostPlugin } from '../../src/plugins/platforms/ghost/plugin.js';
 import { wordpressPlugin } from '../../src/plugins/platforms/wordpress/plugin.js';
 
@@ -214,5 +222,159 @@ describe('promptSlug', () => {
   it('returns null when the user enters nothing', async () => {
     const slug = await promptSlug(['personal'], scriptedPrompter([null]));
     expect(slug).toBeNull();
+  });
+
+  // The re-run menu offers "+new" alongside the configured slugs. That
+  // sentinel must be unreachable as a real slug, or a blog could shadow it.
+  it('refuses the new-blog menu sentinel as a slug, because it is not a legal slug', async () => {
+    const p = scriptedPrompter(['+new', 'ok-name']);
+    expect(await promptSlug([], p)).toBe('ok-name');
+    expect(p.problems).toEqual([SLUG_RULE]);
+  });
+});
+
+describe('promptUrl', () => {
+  it('keeps the current address when the user enters nothing', async () => {
+    expect(await promptUrl(scriptedPrompter([null]), 'https://blog.example.com')).toBe('https://blog.example.com');
+  });
+
+  // Unchanged for a NEW blog: empty still means skip, and the caller abandons.
+  it('returns null when there is no current address and nothing is entered', async () => {
+    expect(await promptUrl(scriptedPrompter([null]))).toBeNull();
+  });
+
+  it('accepts a replacement address and normalises it the same way either mode does', async () => {
+    expect(await promptUrl(scriptedPrompter(['blog.new.example.com/']), 'https://old.example.com')).toBe(
+      'https://blog.new.example.com',
+    );
+  });
+
+  it('re-asks on an unparseable address rather than keeping the old one by accident', async () => {
+    const p = scriptedPrompter(['http://', 'https://good.example.com']);
+    expect(await promptUrl(p, 'https://old.example.com')).toBe('https://good.example.com');
+    expect(p.problems).toHaveLength(1);
+  });
+});
+
+describe('persistSite with replace — the update path', () => {
+  it('rewrites an existing site in place, changing only what changed', () => {
+    const p = paths();
+    persistSite(
+      p,
+      ghostPlugin,
+      { slug: 'personal', platform: 'ghost', url: 'https://old.example.com', values: { admin_api_key: 'old:key' } },
+      true,
+    );
+    persistSite(
+      p,
+      ghostPlugin,
+      { slug: 'personal', platform: 'ghost', url: 'https://new.example.com', values: { admin_api_key: 'old:key' } },
+      false,
+      { replace: true },
+    );
+
+    const config = readFileSync(p.configFile, 'utf8');
+    expect(config).toContain('url: https://new.example.com');
+    expect(config).not.toContain('old.example.com');
+    // One site, not two, and still the default.
+    expect(config).toContain('default_site: personal');
+    const env = readFileSync(p.envFile, 'utf8');
+    expect(env.match(/PERSONAL_ADMIN_API_KEY=/g)).toHaveLength(1);
+    expect(env).toContain('PERSONAL_ADMIN_API_KEY=old:key');
+  });
+
+  // Important #1 from the phase-8 re-run review: `persistSite` used to
+  // recompute the env var name on every write, so an update silently renamed
+  // a hand-set `${VAR}` reference and left the OLD secret behind in `.env`
+  // under a name config.yaml no longer pointed at — a live credential
+  // duplicated on disk that `remove_site` would never clean up. Reproduces
+  // the review's exact repro: a config.yaml hand-edited to reference
+  // `${MY_CUSTOM_GHOST_KEY}` instead of the computed `MYBLOG_ADMIN_API_KEY`.
+  it('reuses a hand-named env var reference on update instead of renaming it, and leaves no orphaned copy of the secret', () => {
+    const p = paths();
+    ensureHome(p);
+    writeFileSync(
+      p.configFile,
+      'default_site: myblog\nsites:\n  myblog:\n    platform: ghost\n    url: https://admin.example.com\n    admin_api_key: ${MY_CUSTOM_GHOST_KEY}\n',
+      'utf8',
+    );
+    writeFileSync(p.envFile, 'MY_CUSTOM_GHOST_KEY=aaaa:bbbb\nOTHER_ADMIN_API_KEY=cccc:dddd\n', 'utf8');
+
+    const configBefore = readFileSync(p.configFile, 'utf8');
+    expect(configBefore).toContain('admin_api_key: ${MY_CUSTOM_GHOST_KEY}');
+
+    // The update path: same slug, `replace: true`, and — the realistic case —
+    // the user actually rotated the key while they were in there.
+    persistSite(
+      p,
+      ghostPlugin,
+      { slug: 'myblog', platform: 'ghost', url: 'https://admin.example.com', values: { admin_api_key: 'new:secret' } },
+      false,
+      { replace: true },
+    );
+
+    const configAfter = readFileSync(p.configFile, 'utf8');
+    // The hand-chosen name survives — not renamed to the computed
+    // MYBLOG_ADMIN_API_KEY.
+    expect(configAfter).toContain('admin_api_key: ${MY_CUSTOM_GHOST_KEY}');
+    expect(configAfter).not.toContain('MYBLOG_ADMIN_API_KEY');
+
+    const envAfter = readFileSync(p.envFile, 'utf8');
+    const envKeys = envAfter
+      .split('\n')
+      .filter((l) => l.includes('='))
+      .map((l) => l.slice(0, l.indexOf('=')));
+    // Exactly the two names that were there before, still there — one copy of
+    // the (now-rotated) secret, not two. No MYBLOG_ADMIN_API_KEY was created.
+    expect(envKeys.sort()).toEqual(['MY_CUSTOM_GHOST_KEY', 'OTHER_ADMIN_API_KEY']);
+    expect(envAfter).toContain('MY_CUSTOM_GHOST_KEY=new:secret');
+    expect(envAfter).toContain('OTHER_ADMIN_API_KEY=cccc:dddd');
+  });
+
+  it('still refuses to replace without the explicit flag — the collision guard is untouched', () => {
+    const p = paths();
+    persistSite(
+      p,
+      ghostPlugin,
+      { slug: 'personal', platform: 'ghost', url: 'https://a.example.com', values: { admin_api_key: 'k' } },
+      true,
+    );
+    expect(() =>
+      persistSite(
+        p,
+        wordpressPlugin,
+        {
+          slug: 'personal',
+          platform: 'wordpress',
+          url: 'https://b.example.com',
+          values: { username: 'editor', app_password: 'pw' },
+        },
+        false,
+      ),
+    ).toThrow(/already exists/);
+  });
+});
+
+describe('readConfiguredSites', () => {
+  it('hands back credentials RESOLVED from .env, which is what makes "keep" possible', () => {
+    // A `${VAR}` reference cannot be probed and cannot be kept. The update
+    // walk needs the real value, without ever asking the user for it.
+    const p = paths();
+    persistSite(
+      p,
+      ghostPlugin,
+      { slug: 'personal', platform: 'ghost', url: 'https://blog.example.com', values: { admin_api_key: 'id:secret' } },
+      true,
+    );
+    const sites = readConfiguredSites(p, {});
+    expect(sites!.sites.personal!.credentials.admin_api_key).toBe('id:secret');
+    expect(sites!.sites.personal!.url).toBe('https://blog.example.com');
+    expect(sites!.sites.personal!.platform).toBe('ghost');
+  });
+
+  it('returns null when there is nothing configured, and creates nothing by asking', () => {
+    const p = paths();
+    expect(readConfiguredSites(p, {})).toBeNull();
+    expect(existsSync(p.configFile)).toBe(false);
   });
 });

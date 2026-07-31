@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { cancel, confirm, intro, isCancel, outro } from '@clack/prompts';
 import { type Paths, resolvePaths } from '../config/paths.js';
 import { buildSiteBlock } from '../config/site-block.js';
-import { SLUG_PATTERN, SLUG_RULE, loadSites, usableSites } from '../config/sites.js';
+import { SLUG_PATTERN, SLUG_RULE, type SitesConfig, loadSites, usableSites } from '../config/sites.js';
 import { loadEnvFile } from '../config/dotenv.js';
 import { PLATFORM_PLUGINS } from '../plugins/registry.js';
 import type { PlatformPlugin } from '../plugins/platforms/types.js';
@@ -19,11 +19,19 @@ import {
 import {
   ensureHome,
   envVarNameFor,
+  existingSecretEnvVars,
+  removeEnvVars,
   seedPersonaTemplate,
   upsertEnvVars,
   writeSiteToConfig,
 } from './home-config.js';
-import { buildPersonaRecord, promptPersonaAnswers, writePersonaFile } from './persona-setup.js';
+import {
+  buildPersonaRecord,
+  promptPersonaAnswers,
+  readExistingPersonas,
+  updatePersonaRecord,
+  writePersonaFile,
+} from './persona-setup.js';
 import { requireTty } from './interactive.js';
 import { applyMigration, detectRepoConfig, planMigration } from './migrate.js';
 import { promptAndWriteEditorConfigs } from './register.js';
@@ -47,22 +55,35 @@ import { attention, detail, info, section } from './tree.js';
  * Split out from the wizard because this is the step where a wrong environment
  * variable name produces a site that loads as "usable" with an empty
  * credential and fails only at publish time — worth testing directly.
+ *
+ * The env var name for each secret field is not always freshly computed: if
+ * `config.yaml` already references one for this slug and field (checked via
+ * `existingSecretEnvVars`), that name is reused instead. On a new site there
+ * is nothing to find, so this is a no-op and `envVarNameFor` runs exactly as
+ * before. On an update, this is what stops a hand-set reference (e.g.
+ * `${MY_CUSTOM_GHOST_KEY}`) from being silently renamed to the computed name
+ * — which would also leave the OLD secret behind in `.env`, live and
+ * orphaned, under a name `config.yaml` no longer points at. Replacing the
+ * VALUE under the reused name is fine and intended: `upsertEnvVars` just
+ * overwrites that key in place, so there is still exactly one copy.
  */
 export function persistSite(
   paths: Paths,
   plugin: PlatformPlugin,
   site: CollectedSite,
   makeDefault: boolean,
+  options: { replace?: boolean } = {},
 ): { configFile: string; envFile: string; envVars: string[] } {
   ensureHome(paths);
 
+  const existingNames = existingSecretEnvVars(paths.configFile, site.slug, plugin);
   const envNames: Record<string, string> = {};
   const secrets: Record<string, string> = {};
 
   for (const field of plugin.credentialFields) {
     const value = site.values[field.name]!;
     if (field.secret) {
-      const varName = envVarNameFor(site.slug, field.name);
+      const varName = existingNames[field.name] ?? envVarNameFor(site.slug, field.name);
       envNames[field.name] = varName;
       secrets[varName] = value;
     } else {
@@ -71,7 +92,13 @@ export function persistSite(
   }
 
   if (Object.keys(secrets).length > 0) upsertEnvVars(paths.envFile, secrets);
-  writeSiteToConfig(paths.configFile, site.slug, buildSiteBlock(plugin, site.url, envNames, site.defaultAuthor), makeDefault);
+  writeSiteToConfig(
+    paths.configFile,
+    site.slug,
+    buildSiteBlock(plugin, site.url, envNames, site.defaultAuthor),
+    makeDefault,
+    options,
+  );
 
   return { configFile: paths.configFile, envFile: paths.envFile, envVars: Object.keys(secrets) };
 }
@@ -93,6 +120,31 @@ export interface ConfiguredState {
 }
 
 /**
+ * Everything already configured, credentials RESOLVED, or null when nothing is.
+ *
+ * The resolution is the point: `SiteConfig.credentials` here holds the real
+ * values `.env` supplies, not the `${VAR}` text `config.yaml` stores, which is
+ * what lets the update walk offer to keep a credential — and then prove the
+ * kept one still works — without ever asking the user to retype it.
+ *
+ * `.env` is read through `loadEnvFile` into a COPY of `env`, never the real
+ * `process.env` object, so this has no effect on the running process. Reading
+ * creates nothing on disk: `init` must not bring the config home into being
+ * merely by looking at it (Finding 2).
+ */
+export function readConfiguredSites(paths: Paths, env: NodeJS.ProcessEnv = process.env): SitesConfig | null {
+  const merged = { ...env };
+  loadEnvFile(paths.envFile, merged);
+  try {
+    return loadSites(paths.configFile, merged);
+  } catch {
+    // No config.yaml yet, or one that fails to parse — either way, nothing is
+    // configured. `doctor` is where the parse failure itself gets surfaced.
+    return null;
+  }
+}
+
+/**
  * Read the truth from disk rather than trust a flag carried through the run.
  *
  * `added` (this session's loop) is not enough: a migration copies a fully
@@ -100,26 +152,15 @@ export interface ConfiguredState {
  * that only migrates and registers an editor must still be able to report
  * "ready" — and a session that copied a `config.yaml` whose credentials are
  * unset must NOT be reported as ready just because a file exists.
- *
- * `.env` is read through `loadEnvFile` into a COPY of `env`, never the real
- * `process.env` object, so this has no effect on the running process — the
- * wizard has nothing left to do with those variables once this is called.
  */
 export function readConfiguredState(paths: Paths, env: NodeJS.ProcessEnv = process.env): ConfiguredState {
-  const merged = { ...env };
-  loadEnvFile(paths.envFile, merged);
-  try {
-    const sites = loadSites(paths.configFile, merged);
-    return {
-      siteCount: Object.keys(sites.sites).length,
-      usableSites: usableSites(sites),
-      siteSlugs: Object.keys(sites.sites),
-    };
-  } catch {
-    // No config.yaml yet, or one that fails to parse — either way, nothing is
-    // configured. `doctor` is where the parse failure itself gets surfaced.
-    return { siteCount: 0, usableSites: [], siteSlugs: [] };
-  }
+  const sites = readConfiguredSites(paths, env);
+  if (!sites) return { siteCount: 0, usableSites: [], siteSlugs: [] };
+  return {
+    siteCount: Object.keys(sites.sites).length,
+    usableSites: usableSites(sites),
+    siteSlugs: Object.keys(sites.sites),
+  };
 }
 
 export type Closing =
@@ -188,25 +229,133 @@ export async function promptSlug(taken: readonly string[], p: Prompter = clackPr
   }
 }
 
-async function promptUrl(): Promise<string | null> {
+/**
+ * Ask for the blog address.
+ *
+ * With `current` — updating a blog that is already configured — an empty answer
+ * keeps that address and this never returns null. Without one, an empty answer
+ * still means "skip", and the caller still abandons the site, exactly as
+ * before: the two meanings live in different calls and cannot leak into each
+ * other. Injectable `Prompter` so both are testable without a terminal.
+ */
+export async function promptUrl(p: Prompter = clackPrompter, current?: string): Promise<string | null> {
   for (;;) {
-    const value = await clackPrompter.text({
-      message: 'Your blog address (Enter nothing to skip)',
-      placeholder: 'https://blog.example.com',
+    const value = await p.text({
+      message: current ? `Blog address (Enter to keep ${current})` : 'Your blog address (Enter nothing to skip)',
+      placeholder: current ?? 'https://blog.example.com',
     });
-    if (value === null) return null;
+    if (value === null) return current ?? null;
     const url = value.startsWith('http') ? value : `https://${value}`;
     try {
       new URL(url);
       return url.replace(/\/+$/, '');
     } catch {
-      clackPrompter.problem(`"${value}" is not a valid address. It should look like https://blog.example.com`);
+      p.problem(`"${value}" is not a valid address. It should look like https://blog.example.com`);
     }
   }
 }
 
+/**
+ * The "add a new one" entry in a menu whose other entries are slugs.
+ *
+ * `SLUG_PATTERN` requires a leading lowercase letter or digit, so no legal slug
+ * can ever be this string — the sentinel cannot be shadowed by a real blog.
+ */
+const NEW_BLOG = '+new';
+
+/** Same idea for the persona menu: `slugifyPersonaName` can never produce these. */
+const KEEP_PERSONAS = '+keep';
+const NEW_PERSONA = '+new';
+
+/**
+ * Walk one already-configured blog, keeping whatever the user does not change.
+ *
+ * Everything here is driven off the plugin the CONFIG names — the platform is
+ * never re-asked, because changing a blog's platform is not an edit, it is a
+ * different blog. Returns null when nothing was written, having already said
+ * why.
+ *
+ * The stored credentials go in as `current`, so each field offers to be kept —
+ * and the merged result is then put through the same live probe a brand-new
+ * site faces. A kept key is therefore proven, not assumed: this is the one
+ * promise `init` makes about everything it writes, and "the user didn't retype
+ * it" is not a reason to stop keeping it.
+ */
+async function updateBlog(
+  paths: Paths,
+  configured: SitesConfig,
+  slug: string,
+): Promise<{ configFile: string; envFile: string; envVars: string[] } | null> {
+  const current = configured.sites[slug]!;
+  const plugin = PLATFORM_PLUGINS[current.platform];
+  if (!plugin) {
+    attention(
+      `"${slug}" is configured for platform "${current.platform}", which this version of byline does not support — ` +
+        'left exactly as it is.',
+    );
+    return null;
+  }
+
+  info(
+    `Updating "${slug}" — ${plugin.label} at ${current.url}.\n` +
+      'Press Enter at any question to keep what is already there.',
+  );
+
+  const url = await promptUrl(clackPrompter, current.url);
+  if (url === null) return null;
+
+  const site = await collectSite(plugin, slug, url, clackPrompter, liveProbe, current.credentials);
+  if (!site) {
+    info(`Left "${slug}" exactly as it was.`);
+    return null;
+  }
+
+  // `replace: true` is reached only from the menu above — an explicit pick of
+  // an existing blog — never from a name collision. `writeSiteToConfig` merges
+  // over the existing block, so a hand-set `api_url` survives.
+  return persistSite(
+    paths,
+    plugin,
+    { ...site, ...(current.defaultAuthor ? { defaultAuthor: current.defaultAuthor } : {}) },
+    false,
+    { replace: true },
+  );
+}
+
+/**
+ * The five questions for a persona that does not exist yet, plus the file.
+ *
+ * Kept out of `runInit` so the create path reads identically whether it was
+ * reached on a first run or picked as "add another" on a re-run — one
+ * definition, not two that can drift in wording.
+ */
+async function writeNewPersona(paths: Paths, written: string[]): Promise<void> {
+  const answers = await promptPersonaAnswers(clackPrompter);
+  if (!answers) {
+    info('Skipped — set this up any time. See the template path below.');
+    return;
+  }
+
+  const record = buildPersonaRecord(answers);
+  const result = writePersonaFile(paths.personasDir, record);
+  if (result.alreadyExisted) {
+    info(
+      `A persona named "${record.slug as string}" already exists at ${result.path} — left untouched. ` +
+        'Run `byline init` again and pick "Update" to change it.',
+    );
+    return;
+  }
+
+  section('author persona');
+  detail(result.path);
+  written.push(result.path);
+  info(
+    `Say "as ${answers.name}" and drafts use this voice. Edit ${result.path} any time — ` +
+      'the more you fill in, the more distinctive the writing gets.',
+  );
+}
+
 export async function runInit(_args: string[]): Promise<void> {
-  intro('byline — first-run setup');
   requireTty('`byline init`');
 
   const written: string[] = [];
@@ -214,6 +363,11 @@ export async function runInit(_args: string[]): Promise<void> {
   // --- 0. An existing repo checkout is a migration, not a fresh setup ---
   const repoConfig = detectRepoConfig();
   const paths = resolvePaths(process.env, undefined, '/nonexistent');
+
+  // Named for what this run actually is. Calling a re-run "first-run setup"
+  // while it lists four already-configured blogs is the first sentence the
+  // user reads, and it is false.
+  intro(existsSync(paths.configFile) ? 'byline — setup (existing configuration found)' : 'byline — first-run setup');
 
   if (repoConfig) {
     info(
@@ -258,15 +412,58 @@ export async function runInit(_args: string[]): Promise<void> {
   // over the repo whenever it exists at all, even empty (Finding 2).
   const plugins = Object.values(PLATFORM_PLUGINS);
   const added: string[] = [];
-  // Read once, before the loop: every slug already on disk (migrated in, or
-  // from an earlier session), independent of what THIS session adds. See
-  // `promptSlug` and Finding 1.
-  const existingSlugs = readConfiguredState(paths).siteSlugs;
+  const changed: string[] = [];
 
   for (;;) {
-    const first = added.length === 0;
-    if (!first && !(await ask('Add another blog?', false))) break;
-    if (first && !(await ask('Set up a blog to publish to now?'))) break;
+    // Re-read every pass, so a blog added a moment ago is immediately
+    // updatable and immediately refused as a new name. Reading creates
+    // nothing (see `readConfiguredSites`), so this is safe before the user
+    // has answered anything.
+    const configured = readConfiguredSites(paths);
+    const existingSlugs = configured ? Object.keys(configured.sites) : [];
+    const first = added.length === 0 && changed.length === 0;
+
+    if (first) {
+      // Default No when something is already set up: a re-run must be
+      // Enter-through-able without changing a thing.
+      const question = existingSlugs.length > 0 ? 'Add or change a blog now?' : 'Set up a blog to publish to now?';
+      if (!(await ask(question, existingSlugs.length === 0))) break;
+    } else if (!(await ask('Add or change another blog?', false))) break;
+
+    // Which blog — asked only when there is something to choose between.
+    // Updating an existing blog is a deliberate pick off this menu and can
+    // never be reached by typing a name that happens to collide; `promptSlug`
+    // still refuses a taken name on the new-blog path below (Finding 1).
+    let updating: string | null = null;
+    if (existingSlugs.length > 0) {
+      const which = await clackPrompter.choose({
+        message: 'Which blog?',
+        options: [
+          { value: NEW_BLOG, label: 'Add a new blog' },
+          ...existingSlugs.map((slug) => {
+            const site = configured!.sites[slug]!;
+            return { value: slug, label: `Update "${slug}"`, hint: `${site.platform} — ${site.url}` };
+          }),
+        ],
+      });
+      if (which === null) break;
+      if (which !== NEW_BLOG) updating = which;
+    }
+
+    if (updating !== null) {
+      const result = await updateBlog(paths, configured!, updating);
+      if (result) {
+        changed.push(updating);
+        section(`blog "${updating}" updated`);
+        detail(`config    ${result.configFile}`);
+        written.push(result.configFile);
+        if (result.envVars.length > 0) {
+          detail(`secret    ${result.envFile}   (${result.envVars.join(', ')})`);
+          written.push(result.envFile);
+        }
+      }
+      continue;
+    }
 
     const platformId = await clackPrompter.choose({
       message: 'Which kind of blog?',
@@ -275,7 +472,7 @@ export async function runInit(_args: string[]): Promise<void> {
     if (platformId === null) break;
     const plugin = PLATFORM_PLUGINS[platformId]!;
 
-    const slug = await promptSlug([...existingSlugs, ...added]);
+    const slug = await promptSlug(existingSlugs);
     if (slug === null) break;
 
     const url = await promptUrl();
@@ -283,6 +480,7 @@ export async function runInit(_args: string[]): Promise<void> {
 
     // Live-validated at entry: a credential that has not been proven to work is
     // never written. See src/cli/credentials.ts for why that is absolute here.
+    // No `current` is passed, so a skipped field still abandons the whole site.
     const site = await collectSite(plugin, slug, url, clackPrompter, liveProbe);
     if (!site) {
       info(`Skipped "${slug}". You can add it later by running \`byline init\` again.`);
@@ -315,11 +513,33 @@ export async function runInit(_args: string[]): Promise<void> {
   // `(q) => ask(q, false)`, not `ask` directly: `ask`'s own default
   // (`initialValue = true`) would flip every family's prompt to default-Yes.
   // Image setup is opt-in — the prompt must keep defaulting to No.
-  const providerKeys = await collectProviderKeys(providerFamilies(), clackPrompter, liveProviderProbe, (q) => ask(q, false));
-  if (Object.keys(providerKeys).length > 0) {
-    upsertEnvVars(paths.envFile, providerKeys);
+  //
+  // `stored` is the CONTENTS OF `.env` and nothing else — deliberately not
+  // `process.env`. A key exported in the user's shell is a key this file
+  // cannot keep, replace, or remove, so offering to do so would be a lie; such
+  // a provider is simply asked for as if new, exactly as it always was.
+  const stored: NodeJS.ProcessEnv = {};
+  loadEnvFile(paths.envFile, stored);
+
+  const decisions = await collectProviderKeys(
+    providerFamilies(),
+    clackPrompter,
+    liveProviderProbe,
+    (q) => ask(q, false),
+    stored,
+  );
+  const toWrite: Record<string, string> = {};
+  const toRemove: string[] = [];
+  for (const [name, value] of Object.entries(decisions)) {
+    if (value === null) toRemove.push(name);
+    else toWrite[name] = value;
+  }
+  if (Object.keys(toWrite).length > 0) upsertEnvVars(paths.envFile, toWrite);
+  const removed = removeEnvVars(paths.envFile, toRemove);
+  if (Object.keys(toWrite).length > 0 || removed.length > 0) {
     section('provider keys');
-    detail(`${paths.envFile}   (${Object.keys(providerKeys).join(', ')})`);
+    if (Object.keys(toWrite).length > 0) detail(`${paths.envFile}   (${Object.keys(toWrite).join(', ')})`);
+    if (removed.length > 0) detail(`${paths.envFile}   removed ${removed.join(', ')}`);
     written.push(paths.envFile);
   }
 
@@ -332,29 +552,57 @@ export async function runInit(_args: string[]): Promise<void> {
   // disk once a complete, schema-valid answer set exists (see
   // `promptPersonaAnswers`), so a decline or an early skip still creates
   // nothing, exactly like every other step here.
-  if (
+  //
+  // Checked BEFORE a single question is asked. This used to run the whole
+  // five-question walk and only then discover the file was already there, at
+  // which point `writePersonaFile` reported `alreadyExisted` and discarded
+  // every answer the user had just typed — the worst of the three re-run
+  // failures, because the work was done and then thrown away.
+  const personas = readExistingPersonas(paths.personasDir);
+
+  if (personas.length > 0) {
+    const choice = await clackPrompter.choose({
+      message: `You already have ${personas.length === 1 ? 'an author persona' : `${personas.length} author personas`}. What now?`,
+      options: [
+        { value: KEEP_PERSONAS, label: 'Keep as they are', hint: 'nothing is asked, nothing is changed' },
+        ...personas.map((persona) => ({
+          value: persona.slug,
+          label: `Update "${persona.answers.name}"`,
+          hint: persona.answers.role || persona.path,
+        })),
+        { value: NEW_PERSONA, label: 'Add another author persona' },
+      ],
+    });
+
+    if (choice !== null && choice !== KEEP_PERSONAS) {
+      const target = personas.find((persona) => persona.slug === choice);
+      if (target) {
+        info(`Updating "${target.answers.name}" (${target.path}). Press Enter at any question to keep the current answer.`);
+        const answers = await promptPersonaAnswers(clackPrompter, target.answers);
+        if (answers) {
+          // Merged into the file's OWN contents and rewritten under the same
+          // slug, so hand-edited fields the five questions never ask about
+          // survive, and the filename still matches the slug even when the
+          // name changed. See `updatePersonaRecord`.
+          const result = writePersonaFile(paths.personasDir, updatePersonaRecord(target.record, answers, target.slug), {
+            replace: true,
+          });
+          section('author persona updated');
+          detail(result.path);
+          written.push(result.path);
+        } else {
+          info(`Left "${target.answers.name}" exactly as it was.`);
+        }
+      } else {
+        await writeNewPersona(paths, written);
+      }
+    }
+  } else if (
     await ask(
       'Set up your author voice now? A persona makes drafts sound like you instead of generic AI output. (optional)',
     )
   ) {
-    const answers = await promptPersonaAnswers(clackPrompter);
-    if (answers) {
-      const record = buildPersonaRecord(answers);
-      const result = writePersonaFile(paths.personasDir, record);
-      if (result.alreadyExisted) {
-        info(`A persona named "${record.slug as string}" already exists at ${result.path} — left untouched.`);
-      } else {
-        section('author persona');
-        detail(`${result.path}`);
-        written.push(result.path);
-        info(
-          `Say "as ${answers.name}" and drafts use this voice. Edit ${result.path} any time — ` +
-            'the more you fill in, the more distinctive the writing gets.',
-        );
-      }
-    } else {
-      info('Skipped — set this up any time. See the template path below.');
-    }
+    await writeNewPersona(paths, written);
   }
 
   // Only once ~/.byline/ has (or already had) a real reason to exist —
