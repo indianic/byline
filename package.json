@@ -21,6 +21,7 @@
     "node": ">=20"
   },
   "license": "MIT",
+  "author": "Sandeep Mundra <sandeep@indianic.com>",
   "keywords": [
     "mcp",
     "model-context-protocol",
