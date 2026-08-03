@@ -5,16 +5,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.5.0] - 2026-08-03
-
-- Persona presence varies per article; humanising standard for AEO/SEO/GEO
-
 ## [Unreleased]
+
+## [1.5.0] - 2026-08-03
 
 ### Added
 
 - **The persona stops introducing itself on every article.** `build_writing_brief` gains
-  an `personaPresence` dimension, drawn per article like the hook and arc already were.
+  a `personaPresence` dimension, drawn per article like the hook and arc already were.
   Only one of its five variants states the author's credential outright; **60% of
   articles now never state a role or tenure at all**, carrying authority through
   first-hand specificity instead — a detail only someone who did the work would know,
@@ -36,6 +34,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which every competing article already has.
 - The author profile block is now labelled as input to the writer's judgement, with an
   explicit instruction that none of its labels may appear as text in the article.
+
+## [1.4.0] - 2026-08-03
 
 ### Added
 
