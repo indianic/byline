@@ -5,11 +5,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
 ## [1.6.1] - 2026-08-03
 
-- Add the author field so releases are attributed
+### Fixed
 
-## [Unreleased]
+- **Releases were published without an author.** `package.json` had no `author` field at
+  all — `npm view @indianic/byline` reported `author: null`, where every sibling package
+  on the registry reports one. Added.
+- Recorded, because it is not fixable from inside this repo: a publish is attributed to a
+  user only when `~/.npmrc` carries the `username=` + `_password=` + `always-auth=true`
+  credentials that `npmnic login` writes. The older `//npm.indianic.in/:_auth=` form
+  reaches Verdaccio as `user: null`, so the package is never associated with an account —
+  `npmnic packages` omitted `@indianic/byline` entirely through 1.6.0, despite
+  `npmnic whoami` reporting the right user the whole time. `npmnic publish` shells out to
+  plain `npm publish`, so the npmnic session is not what authenticates the upload. Re-run
+  `npmnic login` after upgrading npmnic; nothing in this package can detect or repair it.
 
 ## [1.6.0] - 2026-08-03
 
