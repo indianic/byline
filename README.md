@@ -8,6 +8,10 @@ written as *you*, illustrated with real photographs — and puts it live. You ta
 in plain English inside the AI tool you already use. There is no dashboard, no editor,
 no config file to maintain.
 
+> Built and open-sourced by **[IndiaNIC](https://www.indianic.com)** — the team that
+> builds MCP servers and AI agents into other people's workflows for a living. This one
+> we gave away.
+
 ```
 Write a post about why our migration took nine months, as me, and publish it
 to the company blog as a draft.
@@ -864,6 +868,25 @@ all, `byline reset --yes`.
 | **[docs/ADDING-A-PLATFORM.md](docs/ADDING-A-PLATFORM.md)** | Adding a third platform, written from actually doing it |
 | **[CLAUDE.md](CLAUDE.md)** | The rules for changing this repository, and what each one cost |
 | **[CHANGELOG.md](CHANGELOG.md)** | Release history |
+
+---
+
+## Built by IndiaNIC
+
+Byline is developed and maintained by **[IndiaNIC](https://www.indianic.com)** and given
+away under MIT. Everything in it — the platform probes, the measured behaviour in
+`docs/*-NOTES.md`, the refusals that stop a post publishing at the wrong hour — came out
+of work we do for clients, and it is here in full rather than as a demo.
+
+That is also what we do commercially: **MCP servers and AI agents that fit the way a team
+already works**, and the integration work that decides whether they survive contact with
+production rather than stopping at a convincing pilot.
+
+If you have a workflow worth automating, we would like to hear about it.
+
+**[Talk to us →](https://www.indianic.com/contact)**  ·  [www.indianic.com](https://www.indianic.com)
+
+---
 
 ## License
 
