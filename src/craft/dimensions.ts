@@ -177,6 +177,41 @@ export const HUMAN_TEXTURES = [
 ] as const;
 
 /**
+ * News ledes — the first sentence of a report, not the hook of an essay.
+ *
+ * `HOOKS` above is written for opinion writing: it asks for a contrarian
+ * claim, a rhetorical question, a scene the reader is placed inside. Every one
+ * of those is wrong in a news report, where the first sentence carries the
+ * facts and nothing else. So news draws from here instead.
+ *
+ * All five are forms of the same discipline: the most newsworthy fact goes
+ * first, and the reader who stops after one sentence still knows what
+ * happened.
+ */
+export const NEWS_LEDES = [
+  'LEDE — Hard news. One sentence, 30-40 words, carrying what happened, who it happened to, when, and where. No scene-setting, no question, no throat-clearing. A reader who stops after this sentence still knows the story.',
+  'LEDE — Number first. Open with the single figure that changed and what it measures, then the actor and the timeframe in the same sentence. The number must be exact and attributed in the following sentence — never rounded for rhythm.',
+  'LEDE — Consequence first. Open with what is now true for the people affected, then say what caused it. Use this when the effect matters more to the reader than the event: a price, a rule, a deadline, a closure.',
+  'LEDE — What is new. Open with the development that has not been reported before, explicitly distinguishing it from what was already known. One sentence on the new fact, one on what it changes.',
+  'LEDE — Expectation gap. Open with the difference between what was forecast or promised and what actually happened, with both figures in the first two sentences. State the gap; do not characterise it.',
+] as const;
+
+/**
+ * How a report is built after the lede.
+ *
+ * `ARCS` above are essay architectures — problem/framework/application. A news
+ * story is an inverted pyramid: facts in descending order of importance, so an
+ * editor can cut from the bottom without losing the story. These are four
+ * house shapes that all obey that, differing in what follows the hard facts.
+ */
+export const NEWS_STRUCTURES = [
+  'STRUCTURE — Inverted pyramid. Lede, then the supporting facts in strictly descending order of importance, then background last. The article must survive being cut from the bottom at any paragraph: nothing in the final third may be needed to understand the first third.',
+  'STRUCTURE — Report then analysis. The first half is straight reporting, facts and attribution only. Then a clearly separated second half under a heading such as "Why it matters" or "What this means", where consequence and context are drawn out — still sourced, still not opinion.',
+  'STRUCTURE — Report then reaction. Lede and facts, then the responses of the parties involved, each quoted and named with their title, and given comparable space. Where a party did not respond, say so plainly — "did not respond to a request for comment" — rather than omitting them.',
+  'STRUCTURE — Report then explainer. Lede and facts, then a short standalone background section for a reader coming to the subject cold: what the thing is, how it worked until now, what changed. The explainer must be readable on its own and must not repeat the lede.',
+] as const;
+
+/**
  * Pick the dimension set matching what the target platform preserves.
  * Styled variants are used only where inline styles actually survive.
  */
@@ -211,6 +246,13 @@ export function dimensionsFor(inlineStyles: boolean) {
     // the platform keeps.
     personaPresence: PERSONA_PRESENCES,
     humanTexture: HUMAN_TEXTURES,
+    // Appended, like everything above them, so existing seeds keep resolving
+    // to the same hook/arc/voice. Drawn on EVERY brief even though only news
+    // mode renders them: the RNG consumes one value per dimension in order, so
+    // drawing them conditionally would make a blog brief and a news brief with
+    // the same seed disagree about every dimension after this point.
+    newsLede: NEWS_LEDES,
+    newsStructure: NEWS_STRUCTURES,
   } as const;
 }
 
@@ -232,6 +274,8 @@ export const DIMENSIONS = {
   // missing there (or ordered differently) makes that proof meaningless.
   personaPresence: PERSONA_PRESENCES,
   humanTexture: HUMAN_TEXTURES,
+  newsLede: NEWS_LEDES,
+  newsStructure: NEWS_STRUCTURES,
 } as const;
 
 export type DimensionName = keyof typeof DIMENSIONS;

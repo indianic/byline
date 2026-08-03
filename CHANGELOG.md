@@ -7,6 +7,45 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Persona files accept any field you want.** Anything the schema does not name is kept
+  and carried into the writing brief as your own standing direction, instead of being
+  silently dropped. Previously zod stripped unknown keys, so a 51-field persona loaded as
+  27 and the other 24 vanished with no error — adding a field and having it ignored is a
+  silent failure, which this project's rules forbid.
+- **Eleven of those fields are wired to specific machinery** rather than printed as free
+  text: `preferred_article_length` sets the default word count (first number wins, an
+  explicit `word_count` still overrides), `avoid_in_writing` joins the banned list,
+  `target_audience` and `reading_level` set the register, `citation_preference` /
+  `fact_checking_level` / `preferred_quotes_from` / `quote_usage_frequency` shape the
+  sourcing rules, and `favorite_rhetorical_devices` / `commonly_used_transitions` /
+  `use_of_humor` join the per-article texture. The rest render under ADDITIONAL AUTHOR
+  DIRECTION. Nothing is stated twice in one prompt.
+- **News mode is now actual news writing.** It was one paragraph about recency; it is now
+  a reporting brief — third person, attribution in the same sentence or the next, neutral
+  verbs, short paragraphs, no fabricated quotes, dateline convention, and no call to
+  action. Two new per-article dimensions draw the lede (5 forms) and the report structure
+  (4 inverted-pyramid shapes), so reports vary the way blog posts already did.
+- `personas/_template.yaml` documents the optional fields, which are wired where, and
+  warns against pinning the opening/ending/shape — that would undo the per-article
+  variety.
+
+### Changed
+
+- **News mode suppresses every blog-only section instead of contradicting it.** A news
+  brief no longer carries HOOK, STRUCTURE ARC, NARRATIVE VOICE, AUTHOR PRESENCE,
+  MICRO-STORY or CONCLUSION AND CTA, and "Write in FIRST PERSON" becomes "Write in the
+  THIRD PERSON". The EVIDENCE and GEO sections swap their first-hand-experience
+  requirements for sourcing ones. Leaving both in and relying on "this section wins" would
+  put two contradictory instruction sets in one prompt and let the model choose.
+- **`score_draft` takes `mode`.** A report is judged by the opposite standard to a blog
+  post: `experience_markers` becomes `reporter_voice` (first person is now the defect),
+  and a new advisory `attribution` check measures attributed claims per 200 words and
+  counts "experts say" / "reports suggest" against the draft. Scoring a correct report as
+  a blog post reported its third-person voice as a failure — the same brief-versus-scorer
+  contradiction fixed in 1.5.1.
+
 ## [1.6.1] - 2026-08-03
 
 ### Fixed

@@ -637,3 +637,56 @@ describe('experience_markers agrees with what the brief actually teaches', () =>
     expect(m.findings.join(' ')).toContain('after the midpoint');
   });
 });
+
+describe('news mode scores by the opposite standard', () => {
+  const REPORT =
+    '<p>MUMBAI, August 1 — The Reserve Bank of India tightened disclosure rules for digital lending apps on Friday, ' +
+    'requiring every lender to publish borrowing costs before a loan is sanctioned.</p>' +
+    '<p>The circular, published on the central bank&rsquo;s website on August 1, applies to all regulated entities from October 1, according to the notification.</p>' +
+    '<p>&ldquo;Borrowers must see the full cost up front,&rdquo; said Rajeshwar Rao, deputy governor, in a statement on Friday.</p>' +
+    '<p>Digital lending disbursals reached 1.46 trillion rupees in the year to March, data from the Fintech Association showed.</p>' +
+    '<p>Two lenders told this reporter they would need six months to comply. A third did not respond to a request for comment.</p>';
+
+  const check = (html: string, mode: 'blog' | 'news', name: string) =>
+    scoreDraft(html, GHOST_HTML_PROFILE, undefined, undefined, mode).checks.find((c) => c.name === name);
+
+  // The brief's news block forbids first person outright. Scoring that as a
+  // missing-experience failure tells the writer to break the brief they were
+  // just given.
+  it('does not demand first-hand experience of a report', () => {
+    expect(check(REPORT, 'news', 'experience_markers')).toBeUndefined();
+    expect(check(REPORT, 'news', 'reporter_voice')!.ok).toBe(true);
+  });
+
+  it('the same report fails the BLOG standard, which is why mode has to be passed', () => {
+    expect(check(REPORT, 'blog', 'experience_markers')!.ok).toBe(false);
+    expect(check(REPORT, 'blog', 'reporter_voice')).toBeUndefined();
+  });
+
+  it('flags first person in a report as the defect it is', () => {
+    const withI = REPORT + '<p>I think the deadline is too tight, and we have seen this before.</p>';
+    const r = check(withI, 'news', 'reporter_voice')!;
+    expect(r.ok).toBe(false);
+    expect(r.findings.join(' ')).toContain('third person');
+  });
+
+  it('measures attribution density instead', () => {
+    const a = check(REPORT, 'news', 'attribution')!;
+    expect(a.ok).toBe(true);
+    expect(a.score).toBeGreaterThanOrEqual(4);
+    // Honest about what it can and cannot do.
+    expect(a.detail).toContain('cannot verify a source exists');
+  });
+
+  it('counts vague attribution against the report, not for it', () => {
+    const vague =
+      '<p>Experts say the rules are strict. Reports suggest lenders will struggle. It is understood the deadline may slip.</p>'.repeat(3);
+    const a = check(vague, 'news', 'attribution')!;
+    expect(a.ok).toBe(false);
+    expect(a.findings.join(' ')).toMatch(/vague attribution/i);
+  });
+
+  it('does not run the attribution check on a blog post', () => {
+    expect(check(REPORT, 'blog', 'attribution')).toBeUndefined();
+  });
+});

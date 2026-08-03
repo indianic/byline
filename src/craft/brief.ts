@@ -224,11 +224,106 @@ filler to break up rhythm. Do not fabricate a statistic, a client, a date, or a
 prior article you never wrote — an invented specific is worse than a missing
 one, and it is the one mistake here that cannot be undone after publication.`;
 
+/**
+ * A persona's extras, tolerating one built without them.
+ *
+ * `Persona.extras` is required by the type, and `loadPersonas` always supplies
+ * it — but `tsc` only covers `src/**`, so a test double or any object cast to
+ * `Persona` can reach here without the field and turn every read into a
+ * TypeError. This project has been bitten by exactly that: "a double can cast
+ * past an interface it does not satisfy; assert behaviour at runtime". One
+ * missing field should degrade to "this persona has no extras", not crash the
+ * brief.
+ */
+function extrasOf(p: Persona): Record<string, string> {
+  return p.extras ?? {};
+}
+
+/**
+ * Extras that are WIRED somewhere specific rather than printed as free text.
+ *
+ * Each of these already has machinery in this brief that it belongs to — a
+ * word count, the AVOID list, the evidence rules. Rendering them a second time
+ * in the generic block would state the same instruction twice in one prompt,
+ * in two different registers, which is how a model ends up weighting one of
+ * them arbitrarily.
+ */
+const WIRED_EXTRAS = new Set([
+  'preferred_article_length',
+  'target_audience',
+  'reading_level',
+  'avoid_in_writing',
+  'preferred_quotes_from',
+  'quote_usage_frequency',
+  'citation_preference',
+  'fact_checking_level',
+  'favorite_rhetorical_devices',
+  'commonly_used_transitions',
+  'use_of_humor',
+]);
+
+/**
+ * The persona's own length preference, as a minimum word count.
+ *
+ * `preferred_article_length` is written the way a person writes it —
+ * "1200-3500 words", "about 2000", "1,500+". The FIRST number is taken as the
+ * floor, because the brief states a minimum and the low end of a stated range
+ * is exactly that. Returns null rather than guessing when there is no number
+ * to find, so the caller falls through to its own default instead of receiving
+ * a fabricated one.
+ *
+ * An explicit `wordCount` argument still wins: the caller asking for a
+ * specific length is a decision about THIS article, and the persona is a
+ * standing preference.
+ */
+export function personaWordCount(p: Persona): number | null {
+  const raw = extrasOf(p).preferred_article_length;
+  if (!raw) return null;
+  const match = /\d[\d,]*/.exec(raw);
+  if (!match) return null;
+  const n = Number(match[0].replace(/,/g, ''));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * One brief line for an extra, or nothing at all.
+ *
+ * `$` in the template is replaced by the value. Returning '' rather than a
+ * blank line matters: these are interpolated inside a template literal that
+ * already supplies the newlines, so emitting an empty string collapses cleanly
+ * instead of leaving a gap the reader has to interpret.
+ */
+function ex(p: Persona, key: string, template: string): string {
+  const value = extrasOf(p)[key];
+  return value ? `${template.replace('$', value)}\n` : '';
+}
+
+/**
+ * The free-text extras, rendered for the writer.
+ *
+ * Only the ones with nowhere else to go — see `WIRED_EXTRAS`. Keys are printed
+ * in file order and de-underscored, so `technology_writing_style` reads as
+ * "technology writing style" rather than as a variable name. Returns an empty
+ * string when there is nothing, so the brief does not carry an empty heading.
+ */
+function extrasBlock(p: Persona): string {
+  const rows = Object.entries(extrasOf(p)).filter(([k]) => !WIRED_EXTRAS.has(k));
+  if (rows.length === 0) return '';
+  return `=== ADDITIONAL AUTHOR DIRECTION ===
+These come from the persona file and are this author's own standing rules.
+Treat them the way you treat the profile above: they shape the writing, they
+are never quoted or listed on the page. Where one of them conflicts with an
+instruction elsewhere in this brief, the instruction elsewhere wins — these
+describe a habit, not a format.
+${rows.map(([k, v]) => `- ${k.replace(/_/g, ' ')}: ${v}`).join('\n')}
+`;
+}
+
 export function buildBrief(input: BriefInput): Brief {
   const seed = input.seed ?? Math.floor(Math.random() * 2 ** 31);
   const next = rng(seed);
   const p = input.persona;
-  const words = input.wordCount ?? 800;
+  const words = input.wordCount ?? personaWordCount(p) ?? 800;
   const language = input.language ?? p.language_written;
 
   const dimensions = dimensionsFor(input.profile.inlineStyles);
@@ -241,13 +336,105 @@ export function buildBrief(input: BriefInput): Brief {
     picked[name] = options[idx]!;
   }
 
+  // The blog craft sections, suppressed entirely in news mode.
+  //
+  // News mode supplies its own lede and structure, and its rules contradict
+  // these outright: HOOKS asks for a contrarian claim or a rhetorical
+  // question, VOICES for first-person hard-won experience, STORIES for a
+  // personal anecdote, and AUTHOR PRESENCE governs how a columnist refers to
+  // themselves — none of which belong in a report. Emitting both and relying
+  // on "this section wins" would leave two contradictory sets of instructions
+  // in one prompt and let the model pick; not emitting them is the honest fix.
+  const craftBlock =
+    input.mode === 'news'
+      ? ''
+      : `=== HOOK — FOLLOW EXACTLY ===
+${picked.hook}
+
+=== STRUCTURE ARC — FOLLOW EXACTLY ===
+${picked.arc}
+
+=== NARRATIVE VOICE — APPLY THROUGHOUT ===
+${picked.voice}
+
+=== AUTHOR PRESENCE — HOW MUCH OF YOU REACHES THE PAGE ===
+${picked.personaPresence}
+
+This governs the whole article and overrides any instinct to introduce yourself.
+It is drawn fresh for every piece, so do not fall back on the shape your last
+article used. Whatever it says, these hold:
+- Never state your years of experience as a number unless the line above
+  explicitly tells you to state your credential.
+- Never open a sentence with "As a ${or(p.role, 'professional')}," or "In my experience as a ${or(p.role, 'professional')},".
+  That construction is the single most recognisable tell that a profile was
+  pasted into a prompt.
+- Never restate your expertise in the conclusion. Closing by reminding the
+  reader who you are undoes everything the body earned.
+
+=== MICRO-STORY — PLACE AS INSTRUCTED ===
+${picked.story}`;
+
+  // A report ends on its least important fact so an editor can cut from the
+  // bottom. A call to action is the opposite of that.
+  const ctaBlock =
+    input.mode === 'news'
+      ? ''
+      : `=== CONCLUSION AND CTA ===
+${picked.cta}`;
+
   const modeBlock =
     input.mode === 'news'
-      ? `=== NEWS MODE ===
-Recency is the spine of this article. Lead with what changed in the last 30 days.
-Every substantive claim carries a date and a named source. Quote and cite the
-research below rather than generalising from it. If the research does not support
-a claim, cut the claim — do not invent a statistic.`
+      ? `=== NEWS MODE — YOU ARE REPORTING, NOT COMMENTING ===
+This is a news report. It is a different craft from the rest of this brief, and
+where the two disagree, this section wins.
+
+THE RULE THAT GOVERNS EVERYTHING ELSE: you are a reporter here, not a columnist.
+Write in the THIRD PERSON. No "I", no "we", no first-hand anecdote, no personal
+opinion, no advice to the reader. Your persona still governs word choice,
+sentence rhythm and judgement about what matters — it does not put you in the
+story. AUTHOR PRESENCE below is overridden: your name is the byline, and it
+appears nowhere in the text.
+
+ATTRIBUTION IS THE WHOLE JOB
+- Every fact that is not self-evident carries its source in the same sentence
+  or the one after: "according to <named source>", "<name>, <title>, said in a
+  statement on <date>", "filings published on <date> show".
+- Attribute to the most specific source you actually have. "Reports suggest",
+  "experts say" and "it is understood" are refuges for a fact you cannot stand
+  up — cut the claim instead.
+- Distinguish what is confirmed from what is claimed. A company saying a thing
+  is not the thing being true: "the company said" is not "the company did".
+- If a figure is disputed, give both figures and both sources.
+
+REGISTER — the plain, fast, factual style of a wire report or a national daily
+- Short paragraphs, one or two sentences each. This is house style at every
+  outlet that writes this way, and it is what makes a report scannable.
+- Active voice, past tense, ordinary words. No adjectives of judgement:
+  "significant", "shocking", "impressive", "concerning" are the reporter's
+  opinion smuggled into a fact.
+- Verbs of attribution stay neutral. "Said" is almost always right; "admitted",
+  "claimed", "boasted" and "insisted" all editorialise.
+- Give a number its unit, its period and its basis on first use.
+- Name every person on first mention with their full name and title, then
+  surname alone after.
+- Direct quotes are verbatim and never invented. If you do not have a real
+  quote, write reported speech — a fabricated quote is the one error a
+  newsroom cannot survive.
+- Open with the dateline convention if the location matters: CITY, Month DD —.
+
+WHAT DOES NOT BELONG IN A REPORT
+- No call to action. No "what this means for you" advice. No takeaways.
+- No first-person experience, no "in my years", no anecdote from your own work.
+- No rhetorical question as an opening.
+- Recency is still the spine: lead with what changed in the last 30 days, and
+  every substantive claim carries a date. If the research below does not
+  support a claim, cut the claim — never invent a statistic.
+
+=== LEDE — FOLLOW EXACTLY ===
+${picked.newsLede}
+
+=== REPORT STRUCTURE — FOLLOW EXACTLY ===
+${picked.newsStructure}`
       : `=== BLOG MODE ===
 This is an evergreen piece. Lead with a thesis or framework, not with news.
 First-hand experience carries more weight than recency. Any research below is
@@ -475,7 +662,7 @@ YOUR TASK: Write a comprehensive, SEO-optimised article about: ${input.topic}
 CRITICAL REQUIREMENTS
 - Minimum length: ${words} words
 - Language: ${language}
-- Write in FIRST PERSON as ${p.name}
+- ${input.mode === 'news' ? `Write in the THIRD PERSON. ${p.name} is the byline, not a character in the story — see NEWS MODE below.` : `Write in FIRST PERSON as ${p.name}`}
 - Location context: ${[p.state, p.country].filter(Boolean).join(', ') || 'global'}
 
 YOUR AUTHOR PROFILE — this shapes HOW you write, and is never copied onto the page
@@ -493,7 +680,7 @@ your tone by reading you, not by being told what your tone is.
 - Bias tendency: ${or(p.bias_tendency, 'none stated')}
 - Risk tolerance in opinions: ${or(p.risk_tolerance_in_opinions, 'medium')}
 - Cultural context: ${or(p.cultural_influence, or(p.local_journalistic_style, 'none stated'))}
-
+${ex(p, 'target_audience', '- Written for: $ — pitch every explanation at the least specialist reader in that list.')}${ex(p, 'reading_level', '- Reading level: $')}
 SPECIFIC AUTHOR INSTRUCTIONS
 ${or(p.persona_specific_instructions_for_ai, 'Provide actionable takeaways grounded in real experience.')}
 
@@ -501,31 +688,7 @@ ${modeBlock}
 
 ${researchBlock}
 
-=== HOOK — FOLLOW EXACTLY ===
-${picked.hook}
-
-=== STRUCTURE ARC — FOLLOW EXACTLY ===
-${picked.arc}
-
-=== NARRATIVE VOICE — APPLY THROUGHOUT ===
-${picked.voice}
-
-=== AUTHOR PRESENCE — HOW MUCH OF YOU REACHES THE PAGE ===
-${picked.personaPresence}
-
-This governs the whole article and overrides any instinct to introduce yourself.
-It is drawn fresh for every piece, so do not fall back on the shape your last
-article used. Whatever it says, these hold:
-- Never state your years of experience as a number unless the line above
-  explicitly tells you to state your credential.
-- Never open a sentence with "As a ${or(p.role, 'professional')}," or "In my experience as a ${or(p.role, 'professional')},".
-  That construction is the single most recognisable tell that a profile was
-  pasted into a prompt.
-- Never restate your expertise in the conclusion. Closing by reminding the
-  reader who you are undoes everything the body earned.
-
-=== MICRO-STORY — PLACE AS INSTRUCTED ===
-${picked.story}
+${craftBlock}
 
 ${imageSection}
 
@@ -535,8 +698,7 @@ ${picked.tableTheme}
 === BLOCKQUOTE STYLE — USE EXACTLY ===
 ${picked.blockquote}
 
-=== CONCLUSION AND CTA ===
-${picked.cta}
+${ctaBlock}
 
 === LINKING RULES ===
 - 8 to 10 external links maximum.
@@ -578,12 +740,11 @@ Generative engines cite what they can attribute and verify. Write to be quotable
 - Prefer specific over round numbers. 3.4% is citable; "around 3%" is not.
 - Name entities in full on first use. Write the organisation, product, and person
   names out so a model can resolve them without the surrounding page.
-- Establish authority the way AUTHOR PRESENCE above tells you to, and no further.
+- ${input.mode === 'news' ? 'Authority in a report comes from sourcing, never from the reporter. Name the document, the filing, the official and the date — that is what a generative engine can attribute and verify.' : 'Establish authority the way AUTHOR PRESENCE above tells you to, and no further.'}
   Generative engines weight first-hand specificity, not self-description: an
   unrepeatable operational detail is worth more to them than a stated job title,
   and a stated job title is what every competing article already has.
-- Give at least one claim that exists nowhere else — a first-hand observation,
-  a number from your own delivery work, a named trade-off you have lived.
+- ${input.mode === 'news' ? 'Give at least one fact that is not in every other report on this story — a figure from the primary document, a detail from a filing, a response nobody else obtained. Never a first-person observation.' : 'Give at least one claim that exists nowhere else — a first-hand observation, a number from your own delivery work, a named trade-off you have lived.'}
 - Never assert a figure the research does not contain. An invented statistic that
   gets cited is worse than no citation at all.
 
@@ -601,12 +762,16 @@ ${htmlRules(input.profile)}
 - Include real figures, percentages, or comparative data, at least one per 250 words.
 - One data table: benchmarks, tool comparison, case-study metrics, before/after, cost-benefit, or timeline.
 - Cite recognised sources and hyperlink them.
-- Include at least two concrete first-hand moments — a named scenario, a specific trade-off, a decision you regretted. Spread them; at least one after the midpoint.
+${ex(p, 'citation_preference', '- Prefer these sources, in this order: $')}${ex(p, 'fact_checking_level', '- Fact-checking level: $. A claim you cannot source is cut, not softened.')}${ex(p, 'preferred_quotes_from', '- If you quote a thinker, prefer: $')}${ex(p, 'quote_usage_frequency', '- Quotation frequency: $. Never open the article with someone else\'s words.')}
+- ${input.mode === 'news' ? 'Every substantive fact carries its source in the same sentence or the next. Aim for at least one attributed claim per 200 words — that density is what score_draft measures in news mode.' : 'Include at least two concrete first-hand moments — a named scenario, a specific trade-off, a decision you regretted. Spread them; at least one after the midpoint.'}
 
 === TEXTURE — APPLY THROUGHOUT ===
 ${picked.humanTexture}
+${ex(p, 'favorite_rhetorical_devices', 'Devices this author actually reaches for: $. Use them where they earn their place; forcing one is worse than not using it.')}${ex(p, 'commonly_used_transitions', 'Transitions in this author\'s voice: $. Vary them — repeating one twice in an article is a tic, not a style.')}${ex(p, 'use_of_humor', 'Humour: $')}
 
 ${HUMANISING}
+${ex(p, 'avoid_in_writing', '\nAlso never, per this author\'s own rules: $')}
+${extrasBlock(p)}
 
 === OUTPUT FORMAT ===
 Return ONLY a valid JSON object. No markdown, no code fences, no preamble.

@@ -29,4 +29,51 @@ research_methodology: ""
 
 persona_specific_instructions_for_ai: ""
 
+# ---------------------------------------------------------------------------
+# Anything below here is OPTIONAL and open-ended.
+#
+# Every field above is one Byline reads by name. Everything below is carried
+# into the writing brief as your own standing direction — and so is any field
+# you invent that is not listed here at all. Add `newsletter_style`,
+# `things_i_never_say`, whatever you actually need; unknown fields are kept,
+# not discarded.
+#
+# A few are wired to specific machinery rather than printed as free text:
+#   preferred_article_length  sets the default word count (first number wins)
+#   avoid_in_writing          is added to the brief's banned list
+#   target_audience           pitches every explanation at the least
+#                             specialist reader you name
+#   citation_preference, fact_checking_level, preferred_quotes_from,
+#   quote_usage_frequency     shape the evidence and sourcing rules
+#   favorite_rhetorical_devices, commonly_used_transitions, use_of_humor
+#                             join the per-article voice texture
+#
+# Do NOT pin the article's opening, ending or overall shape here. Byline draws
+# a fresh hook, arc and closing for every article on purpose, so a weekly blog
+# does not publish the same skeleton every week. Fixing them in the persona
+# undoes that.
+#
+# Leave any of these out entirely if you have nothing to say — an empty value
+# is dropped rather than sent to the writer as a blank instruction.
+# ---------------------------------------------------------------------------
+
+# preferred_article_length: "1200-2000 words"
+# reading_level: "Business friendly, non-technical readers can follow it"
+# target_audience: "Founders, CTOs, engineering managers"
+# favorite_rhetorical_devices: "Analogies, contrasts, one-line punches"
+# commonly_used_transitions: "But here is the catch, In reality, The lesson is simple"
+# use_of_humor: "Light, situational, never sarcastic"
+# preferred_quotes_from: "Peter Drucker, Satya Nadella"
+# quote_usage_frequency: "Occasionally, only when it earns its place"
+# preferred_examples: "Real companies, failed startups, everyday life"
+# writing_principles: "Simplicity over complexity, facts before opinions"
+# content_should_always_include: "Evidence, real-world examples, actionable advice"
+# avoid_in_writing: "Clickbait, fear mongering, buzzwords, unsupported claims"
+# fact_checking_level: "High"
+# citation_preference: "Government sources, academic papers, industry reports"
+# seo_style: "Natural SEO, entity-rich, human-first"
+# opinion_style: "Balanced, evidence-based, forward-looking"
+# technology_writing_style: "Explain simply, remove hype, discuss limitations"
+# leadership_style: "Lead by example, long-term thinking, ownership mindset"
+
 platform_authors: {}

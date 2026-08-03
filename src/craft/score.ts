@@ -168,6 +168,7 @@ export function scoreDraft(
   profile: HtmlProfile,
   feature?: FeatureImageInput,
   findings?: readonly Finding[],
+  mode: 'blog' | 'news' = 'blog',
 ): Scorecard {
   const text = stripTags(html);
   const words = text ? text.split(/\s+/).length : 0;
@@ -289,15 +290,29 @@ export function scoreDraft(
   // ("Write in FIRST PERSON as <name>"), so zero of it is not a style
   // preference — it is the signature of a draft written without the brief,
   // which is exactly how generic articles reach publication.
-  const expOk = anecdote >= 2 && lateAnecdote && firstPerson > 0;
+  // In NEWS mode this check inverts, and must not simply be relaxed.
+  //
+  // The brief's news block forbids exactly what this measures: "Write in the
+  // THIRD PERSON. No 'I', no 'we', no first-hand anecdote." A correctly
+  // written report therefore scores zero here, and reporting that as a failure
+  // would tell the writer to break the brief they were just given — the same
+  // brief-versus-scorer contradiction that made a persona-presence article
+  // score zero first-hand moments. So news is judged on the opposite: first
+  // person is a DEFECT, and what matters instead is attribution density,
+  // measured below.
+  const expOk = mode === 'news' ? firstPerson === 0 : anecdote >= 2 && lateAnecdote && firstPerson > 0;
   checks.push({
-    name: 'experience_markers',
+    name: mode === 'news' ? 'reporter_voice' : 'experience_markers',
     ok: expOk,
     blocking: false,
     score: anecdote,
     detail: `${anecdote} concrete first-hand moment(s), ${firstPerson} first-person reference(s); second half has one: ${lateAnecdote}`,
     findings: expOk
       ? []
+      : mode === 'news'
+      ? [
+          `${firstPerson} first-person reference(s) in a news report. A report is written in the third person — the reporter is the byline, not a character in the story. Rewrite them as attributed statements, or as reported speech.`,
+        ]
       : [
           firstPerson === 0
             ? 'No first-person voice anywhere — the brief requires the article be written in first person as the persona. A draft with none was almost certainly written without build_writing_brief, and will read as generic no matter how good the prose is.'
@@ -306,6 +321,42 @@ export function scoreDraft(
           lateAnecdote ? '' : 'No first-hand moment after the midpoint',
         ].filter(Boolean),
   });
+
+  // --- Attribution density (NEWS ONLY, advisory) ---
+  //
+  // The news counterpart to experience_markers. A blog earns trust with
+  // first-hand specificity; a report earns it by saying where every fact came
+  // from. Counting attribution phrases is a proxy, not a proof — it cannot
+  // tell a real source from an invented one — so it is advisory and its detail
+  // says what it measured rather than claiming the sourcing is sound.
+  //
+  // The vague-attribution list is separate and deliberate: "experts say" and
+  // "reports suggest" LOOK like attribution and are what a writer reaches for
+  // when there is no source to name, so they are counted against rather than
+  // for.
+  if (mode === 'news') {
+    const ATTRIB =
+      /\b(?:according to|said in|told|as reported by|data from|filings? (?:show|published)|in a statement|confirmed (?:by|to)|cited by|per the)\b|\b\w+ said\b/gi;
+    const VAGUE = /\b(?:experts say|sources say|reports suggest|it is understood|some believe|many argue|studies show)\b/gi;
+    const attributions = (text.match(ATTRIB) ?? []).length;
+    const vague = (text.match(VAGUE) ?? []).length;
+    const needed = Math.max(2, Math.ceil(words / 200));
+    checks.push({
+      name: 'attribution',
+      ok: attributions >= needed && vague === 0,
+      blocking: false,
+      score: attributions,
+      detail: `${attributions} attribution phrase(s) for ${words} words (want ${needed}); ${vague} vague attribution(s). Counts phrasing only — it cannot verify a source exists.`,
+      findings: [
+        attributions < needed
+          ? `Only ${attributions} attributed claim(s). In a report every fact that is not self-evident names where it came from, in the same sentence or the next.`
+          : '',
+        vague > 0
+          ? `${vague} vague attribution(s) — "experts say", "reports suggest", "it is understood". These are what a writer reaches for when there is no source to name. Name the source or cut the claim.`
+          : '',
+      ].filter(Boolean),
+    });
+  }
 
   // --- Generic opener (advisory) ---
   const opener = sentences(text).slice(0, 2).join(' ');

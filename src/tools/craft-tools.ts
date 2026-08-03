@@ -215,7 +215,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
     {
       title: 'Score draft',
       description:
-        'Mechanically score a draft for human-voice quality: burstiness, AI-tell phrasing, paragraph uniformity, evidence density, first-hand experience, target-platform HTML validity, and — when `findings` is passed — whether every cited URL actually came from the research. Verdict blocked means fix before publishing. No external API is called.',
+        'Mechanically score a draft for human-voice quality: burstiness, AI-tell phrasing, paragraph uniformity, evidence density, target-platform HTML validity, and — when `findings` is passed — whether every cited URL actually came from the research. Pass `mode` matching how the draft was written: blog is scored for first-hand experience and first person, news for third-person reporter voice and attribution density instead. Verdict blocked means fix before publishing. No external API is called.',
       inputSchema: {
         html: z.string(),
         site: z
@@ -240,13 +240,25 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
           .describe(
             'The `findings` array from the research_topic result this draft was written from. Supplying it enables the citation_provenance check, which verifies every cited URL actually came from the research. Omit it and that check reports "not evaluated" rather than passing.',
           ),
+        mode: z
+          .enum(['blog', 'news'])
+          .default('blog')
+          .describe(
+            'Must match the mode the draft was written in. News reports are judged by the OPPOSITE standard to blog posts: a blog needs first-hand experience and first person, a report forbids both and is judged on attribution density instead. Scoring a news report as a blog reports its correct third-person voice as a failure.',
+          ),
       },
     },
     handler(
       'score_draft',
-      async (a: { html: string; site?: string; feature_image?: FeatureImageInput; findings?: Finding[] }) => {
+      async (a: {
+        html: string;
+        site?: string;
+        feature_image?: FeatureImageInput;
+        findings?: Finding[];
+        mode: 'blog' | 'news';
+      }) => {
         const profile = await profileFor(ctx, a.site);
-        return ok(scoreDraft(a.html, profile, a.feature_image, a.findings));
+        return ok(scoreDraft(a.html, profile, a.feature_image, a.findings, a.mode));
       },
     ),
   );

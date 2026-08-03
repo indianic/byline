@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { Persona } from '../../src/config/personas.js';
 import { buildBrief } from '../../src/craft/brief.js';
-import { DIMENSIONS, HOOKS, HUMAN_TEXTURES, PERSONA_PRESENCES } from '../../src/craft/dimensions.js';
+import {
+  DIMENSIONS,
+  HOOKS,
+  HUMAN_TEXTURES,
+  NEWS_LEDES,
+  NEWS_STRUCTURES,
+  PERSONA_PRESENCES,
+} from '../../src/craft/dimensions.js';
 import { IMAGE_LOOKS } from '../../src/craft/image-style.js';
 import { GHOST_HTML_PROFILE } from '../../src/plugins/platforms/ghost/html-profile.js';
 import type { Finding, ResearchResult } from '../../src/plugins/research/types.js';
@@ -652,5 +659,172 @@ describe('appending dimensions did not disturb the existing ones', () => {
       const c = buildBrief({ ...base, seed: Number(seed) }).choices;
       expect([c.hook, c.arc, c.voice], `seed ${seed}`).toEqual([hook, arc, voice]);
     }
+  });
+});
+
+describe('persona extras — fields the schema does not name', () => {
+  const withExtras = (extras: Record<string, string>) => ({
+    ...base,
+    persona: { ...PERSONA, extras } as Persona,
+  });
+
+  // The defect: zod strips unknown keys, so a 51-field persona silently became
+  // 27 and the other 24 were discarded with no error and no way to tell.
+  it('carries an unrecognised field into the brief instead of discarding it', () => {
+    const b = buildBrief({ ...withExtras({ newsletter_style: 'Short, one idea per issue' }), seed: 1 }).brief;
+    expect(b).toContain('=== ADDITIONAL AUTHOR DIRECTION ===');
+    expect(b).toContain('newsletter style: Short, one idea per issue');
+  });
+
+  it('omits the block entirely when there are no extras', () => {
+    expect(buildBrief({ ...withExtras({}), seed: 1 }).brief).not.toContain('ADDITIONAL AUTHOR DIRECTION');
+  });
+
+  // Stating one instruction twice in one prompt, in two registers, leaves the
+  // model to weight them arbitrarily.
+  it('does not also print a wired field as free text', () => {
+    const b = buildBrief({
+      ...withExtras({ avoid_in_writing: 'Clickbait', unwired_thing: 'Something else' }),
+      seed: 1,
+    }).brief;
+    expect(b).toContain("Also never, per this author's own rules: Clickbait");
+    const block = b.slice(b.indexOf('ADDITIONAL AUTHOR DIRECTION'));
+    expect(block).toContain('unwired thing');
+    expect(block).not.toContain('avoid in writing');
+  });
+
+  it.each([
+    ['target_audience', 'Founders, CTOs', 'Written for: Founders, CTOs'],
+    ['citation_preference', 'Government sources', 'Prefer these sources, in this order: Government sources'],
+    ['use_of_humor', 'Light, never sarcastic', 'Humour: Light, never sarcastic'],
+    ['preferred_quotes_from', 'Peter Drucker', 'prefer: Peter Drucker'],
+  ])('wires %s into the section it belongs to', (key, value, expected) => {
+    expect(buildBrief({ ...withExtras({ [key]: value }), seed: 1 }).brief).toContain(expected);
+  });
+
+  describe('preferred_article_length sets the default word count', () => {
+    const wc = (v: string) => buildBrief({ ...withExtras({ preferred_article_length: v }), seed: 1 }).brief;
+
+    it.each([
+      ['1200-3500 words', 1200],
+      ['about 2000', 2000],
+      ['1,500+', 1500],
+    ])('reads %o as a floor of %i', (input, expected) => {
+      expect(wc(input)).toContain(`Minimum length: ${expected} words`);
+    });
+
+    // A caller asking for a length is deciding about THIS article; the persona
+    // is a standing preference.
+    it('yields to an explicit wordCount', () => {
+      const b = buildBrief({
+        ...withExtras({ preferred_article_length: '3000 words' }),
+        wordCount: 700,
+        seed: 1,
+      }).brief;
+      expect(b).toContain('Minimum length: 700 words');
+    });
+
+    it('falls back to 800 rather than fabricating a number it cannot parse', () => {
+      expect(wc('as long as it needs to be')).toContain('Minimum length: 800 words');
+    });
+  });
+
+  // `tsc` covers src/** only, so a double cast to Persona can reach the brief
+  // without `extras` and turn every read into a TypeError.
+  it('survives a persona built without extras at all', () => {
+    const noExtras = { ...PERSONA } as Persona;
+    delete (noExtras as Partial<Persona>).extras;
+    expect(() => buildBrief({ ...base, persona: noExtras, seed: 1 })).not.toThrow();
+  });
+});
+
+describe('news mode is reporting, not commentary', () => {
+  const news = (seed: number) => buildBrief({ ...base, mode: 'news' as const, seed }).brief;
+
+  it('draws a news lede and a report structure, not the blog hook and arc', () => {
+    for (let s = 0; s < 30; s++) {
+      const b = buildBrief({ ...base, mode: 'news' as const, seed: s });
+      expect(b.brief).toContain(NEWS_LEDES[b.choices.newsLede!]);
+      expect(b.brief).toContain(NEWS_STRUCTURES[b.choices.newsStructure!]);
+    }
+  });
+
+  // The blog hook pool asks for a contrarian claim or a rhetorical question —
+  // both wrong in a report.
+  it('does not use the blog hook or arc in news mode', () => {
+    const b = news(4);
+    expect(HOOKS.some((h) => b.includes(h))).toBe(false);
+    expect(b).not.toContain('=== HOOK — FOLLOW EXACTLY ===');
+  });
+
+  it.each([
+    'No "I", no "we", no first-hand anecdote',
+    'ATTRIBUTION IS THE WHOLE JOB',
+    'Attribute to the most specific source you actually have',
+    'a fabricated quote is the one error a',
+    'No call to action',
+    'last 30 days',
+  ])('states the reporting rule: %s', (rule) => {
+    expect(news(6)).toContain(rule);
+  });
+
+  // The news block must beat the persona machinery it contradicts, and say so.
+  it('explicitly overrides AUTHOR PRESENCE rather than silently conflicting', () => {
+    const b = news(9);
+    expect(b).toContain('where the two disagree, this section wins');
+    expect(b).toContain('AUTHOR PRESENCE below is overridden');
+  });
+
+  it('keeps the blog rules out of blog mode’s way', () => {
+    const b = buildBrief({ ...base, mode: 'blog' as const, seed: 6 }).brief;
+    expect(b).not.toContain('ATTRIBUTION IS THE WHOLE JOB');
+    expect(b).toContain('=== HOOK — FOLLOW EXACTLY ===');
+  });
+
+  // Drawing conditionally would desync every later dimension between modes.
+  it('draws the news dimensions on blog briefs too, so seeds stay aligned', () => {
+    for (let s = 0; s < 20; s++) {
+      const blog = buildBrief({ ...base, mode: 'blog' as const, seed: s }).choices;
+      const rep = buildBrief({ ...base, mode: 'news' as const, seed: s }).choices;
+      expect(blog.newsLede, `seed ${s}`).toBe(rep.newsLede);
+      expect(blog.humanTexture, `seed ${s}`).toBe(rep.humanTexture);
+      expect(blog.personaPresence, `seed ${s}`).toBe(rep.personaPresence);
+    }
+  });
+});
+
+describe('no section contradicts news mode', () => {
+  // The brief is one prompt. A news block that forbids first person while the
+  // EVIDENCE section demands "two concrete first-hand moments" leaves the
+  // model to choose, which is the same brief-versus-brief contradiction that
+  // made score_draft disagree with AUTHOR PRESENCE.
+  it.each([
+    'first-hand moments',
+    'a number from your own delivery work',
+    'Establish authority the way AUTHOR PRESENCE',
+    'MICRO-STORY',
+    'NARRATIVE VOICE',
+    'Write in FIRST PERSON',
+    'AUTHOR PRESENCE — HOW MUCH OF YOU',
+    'CONCLUSION AND CTA',
+    'STRUCTURE ARC',
+  ])('news mode never says %o', (phrase) => {
+    for (let s = 0; s < 20; s++) {
+      expect(buildBrief({ ...base, mode: 'news' as const, seed: s }).brief, `seed ${s}`).not.toContain(phrase);
+    }
+  });
+
+  it('blog mode still says all of them', () => {
+    const b = buildBrief({ ...base, mode: 'blog' as const, seed: 3 }).brief;
+    for (const phrase of ['first-hand moments', 'MICRO-STORY', 'AUTHOR PRESENCE — HOW MUCH OF YOU', 'CONCLUSION AND CTA', 'Write in FIRST PERSON']) {
+      expect(b, phrase).toContain(phrase);
+    }
+  });
+
+  it('replaces them with the reporting equivalent rather than just deleting them', () => {
+    const b = buildBrief({ ...base, mode: 'news' as const, seed: 3 }).brief;
+    expect(b).toContain('Authority in a report comes from sourcing');
+    expect(b).toContain('at least one attributed claim per 200 words');
+    expect(b).toContain('Write in the THIRD PERSON');
   });
 });

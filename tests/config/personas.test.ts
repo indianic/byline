@@ -77,3 +77,54 @@ describe('getPersona', () => {
     }
   });
 });
+
+describe('unknown persona fields are kept, not discarded', () => {
+  // THE defect this exists for: zod strips unknown keys, so a real 51-field
+  // persona file silently loaded as 27 fields and the other 24 vanished with
+  // no error and no way to tell from the output.
+  //
+  // This goes through loadPersonas and a real file on disk deliberately. Tests
+  // that build a Persona object by hand prove the brief renders extras IF they
+  // arrive — which is exactly the assumption that was false, and the same
+  // shape as the feature_image_id defect.
+  const load = (body: string) =>
+    loadPersonas(personaDir({ 'x.yaml': `slug: x\nname: X\nrole: CTO\nwriting_style: a\ntone_of_voice: b\n${body}` })).get(
+      'x',
+    )!;
+
+  it('collects fields the schema does not name', () => {
+    const p = load('preferred_article_length: "1200-3500 words"\nuse_of_humor: Light\n');
+    expect(p.extras).toEqual({ preferred_article_length: '1200-3500 words', use_of_humor: 'Light' });
+  });
+
+  it('keeps the typed core out of extras', () => {
+    const p = load('subject_expertise: Cloud\n');
+    expect(p.subject_expertise).toBe('Cloud');
+    expect(p.extras).toEqual({});
+  });
+
+  it('is an empty object, never undefined, when there are none', () => {
+    expect(load('').extras).toEqual({});
+  });
+
+  // YAML hands back whatever was written; the brief needs one readable line.
+  it('flattens a list into a readable line', () => {
+    expect(load('target_audience:\n  - Founders\n  - CTOs\n').extras.target_audience).toBe('Founders, CTOs');
+  });
+
+  it('JSON-encodes a nested map rather than rendering [object Object]', () => {
+    const v = load('scoring:\n  depth: high\n').extras.scoring!;
+    expect(v).toContain('depth');
+    expect(v).not.toContain('[object Object]');
+  });
+
+  it('stringifies a number', () => {
+    expect(load('max_links: 8\n').extras.max_links).toBe('8');
+  });
+
+  // A key someone started and did not finish tells the writer nothing while
+  // taking up room in the prompt.
+  it('drops a key whose value is blank', () => {
+    expect(load('use_of_humor: ""\nreading_level: Easy\n').extras).toEqual({ reading_level: 'Easy' });
+  });
+});
