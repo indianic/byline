@@ -1,0 +1,83 @@
+.env
+.env.*
+!.env.example
+.runs/
+node_modules/
+dist/
+*.log
+.DS_Store
+.omc/
+.superpowers/
+
+# Real working config/personas — contains actual site URLs and author ids.
+# See config/sites.example.yaml and personas/_template.yaml for the tracked
+# templates. Every hand-written persona file is untracked by default, not just
+# the maintainer's — a fresh contributor's own persona file must not get
+# tracked by accident either.
+config/*.yaml
+!config/*.example.yaml
+personas/*.yaml
+!personas/_template.yaml
+
+# Internal design/planning tree and session prompts — not part of the product.
+# Load-bearing on `main`: this is the release tree, and these files carry
+# personal identifiers. The working branch force-adds them and therefore does
+# not need the rule; `main` does. Do not drop these lines when syncing a
+# release across.
+docs/superpowers/
+docs/2026-*.md
+.superpowers/
+
+# ---------------------------------------------------------------------------
+# Secrets and machine-local state. Added when the history was reset on
+# 2026-08-03: a real Ghost Admin API key had reached the repository and
+# survived in git history for five days, and the only reason it was caught was
+# an audit run before going public. These rules are deliberately broader than
+# the files that exist today — the cost of an over-broad ignore is a `git add
+# -f`, and the cost of a narrow one is a live credential in a public history.
+# ---------------------------------------------------------------------------
+
+# npm / registry auth. `npmnic login` writes credentials into ~/.npmrc, but a
+# project-local .npmrc is equally capable of holding one.
+.npmrc
+
+# Keys and certificates, whatever they are called.
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+*.keystore
+
+# Every environment file, not just the bare `.env` — `.env.local`,
+# `.env.production` and friends all hold the same kind of value.
+.env
+.env.*
+!.env.example
+
+# Byline's own runtime directories, which contain the resolved config and
+# generated images for real sites.
+.byline/
+.writeblogs/
+runs/
+.runs/
+
+# Build and packaging output. A packed tarball embeds the whole publishable
+# tree, so committing one commits everything it contains.
+dist/
+coverage/
+*.tgz
+
+# Editor, tooling and agent state.
+.vscode/
+.idea/
+.DS_Store
+*.log
+.omc/
+.superpowers/
+.claude/
+
+# Throwaway scripts. Anything named zz-* in the repo root is a scratch probe
+# written during a session; several in this project loaded real credentials in
+# order to test against live blogs.
+zz-*
