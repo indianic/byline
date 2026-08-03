@@ -10,6 +10,7 @@ import { SLUG_PATTERN, loadSites, usableSites } from '../src/config/sites.js';
 import { type Context, loadContext } from '../src/context.js';
 import { buildServer } from '../src/index.js';
 import { MIN_SCHEDULE_LEAD_MS, clearTimezoneCache } from '../src/plugins/platforms/schedule.js';
+import { IMAGE_LOOKS } from '../src/craft/image-style.js';
 import type { PlatformPlugin } from '../src/plugins/platforms/types.js';
 import { PLATFORM_PLUGINS } from '../src/plugins/registry.js';
 import { TavilyResearch } from '../src/plugins/research/tavily/index.js';
@@ -1880,25 +1881,44 @@ describe('generate_image — the people contract', () => {
 
     expect(r.ok).toBe(true);
     expect(seen).toHaveLength(1);
-    // The caller sent a bare subject; the tool supplied everything else.
-    expect(seen[0]).toMatch(/^Photograph\./);
+    // The caller sent a bare subject; the tool supplied everything else — the
+    // medium anchor, the scene, the city, the people clause and the negatives.
+    // Either medium anchor is valid: roughly one prompt in twelve is drawn as
+    // an editorial illustration rather than a photograph.
+    expect(seen[0]).toMatch(/^(Photograph\.|Editorial illustration)/);
     expect(seen[0]).toContain('nurse checking a ward chart');
-    expect(seen[0]).toMatch(/one or two people/i);
+    expect(seen[0]).toMatch(/Include people engaged/i);
+    expect(seen[0]).toMatch(/If the subject does not already fix the location/i);
+    expect(seen[0]).toMatch(/The setting is in /);
     expect(seen[0]).toMatch(/no text/i);
     expect(r.people_dropped).toBeUndefined();
   });
 
-  it('passes the brief\'s look through verbatim when given one', async () => {
-    const seen = stubGemini(okResponse);
-    const look = 'Shot on a 24mm lens at f/5.6, broad ambient daylight, deep depth of field.';
-
-    await call('generate_image', { prompt: 'a warehouse aisle', look });
-
-    expect(seen[0]).toContain(look);
+  // Checked across EVERY look rather than one hand-picked value. A single look
+  // passes or fails depending on which medium its hash draws, so one example
+  // would be a coin flip dressed up as a test — it would have passed today and
+  // broken the day someone edited an unrelated string.
+  it('passes the brief\'s look through verbatim on every photographic look', async () => {
+    let photographic = 0;
+    for (const look of IMAGE_LOOKS) {
+      const seen = stubGemini(okResponse);
+      await call('generate_image', { prompt: 'a warehouse aisle', look });
+      if (seen[0]!.startsWith('Photograph.')) {
+        expect(seen[0], look).toContain(look);
+        photographic++;
+      } else {
+        // An illustration has no lens or aperture, so the camera register is
+        // deliberately dropped rather than sent into a contradiction.
+        expect(seen[0], look).not.toContain(look);
+      }
+    }
+    expect(photographic, 'most looks should still yield photographs').toBeGreaterThan(
+      IMAGE_LOOKS.length / 2,
+    );
   });
 
   it('retries without people when every provider refuses, and says that it did', async () => {
-    const seen = stubGemini((prompt) => (/one or two people/i.test(prompt) ? safetyResponse() : okResponse()));
+    const seen = stubGemini((prompt) => (/Include people engaged/i.test(prompt) ? safetyResponse() : okResponse()));
 
     const r = await call('generate_image', { prompt: 'a clinic reception desk', slot: 'hero' });
 
@@ -1907,8 +1927,8 @@ describe('generate_image — the people contract', () => {
     expect(r.people_dropped_reason).toMatch(/SAFETY/i);
     // Two attempts: the people prompt, then the de-peopled one.
     expect(seen).toHaveLength(2);
-    expect(seen[0]).toMatch(/one or two people/i);
-    expect(seen[1]).not.toMatch(/one or two people/i);
+    expect(seen[0]).toMatch(/Include people engaged/i);
+    expect(seen[1]).not.toMatch(/Include people engaged/i);
     // And the subject survived the retry — a peopleless image of the WRONG
     // thing would be worse than the refusal.
     expect(seen[1]).toContain('clinic reception desk');

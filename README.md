@@ -627,12 +627,31 @@ that touches the outside world:
    default. If no image key is set up, no image is attempted and none is expected.
 
    Images are **photographs, not AI art**, and the rules are fixed rather than improvised
-   per article: every prompt must name the article's actual subject, in a real setting,
-   with no text anywhere in the frame — and explicitly not an illustration, 3D render, or
-   glowing-circuitry abstraction. The **hero image always contains people** doing the work
-   the article is about, since it is what appears on the post card and every social share.
-   People are asked to vary in age, ethnicity, and gender across images so a blog does not
-   end up looking like one demographic.
+   per article: every prompt names the article's actual subject, in a real setting, with no
+   text anywhere in the frame and no glowing-circuitry abstraction. The **hero image always
+   contains people** doing the work the article is about, since it is what appears on the
+   post card and every social share.
+
+   **Four independent axes decide how it is shot**, so a blog's images do not read as one
+   template:
+
+   | axis | varies across |
+   |---|---|
+   | **Light and camera** | window light, hard midday sun, after dark by screen glow, warm tungsten, cool office fluorescent, blue hour, high-key bright — plus macro close-ups, overhead aerials and low-angle handheld frames |
+   | **Scene** | open-plan floors, glass meeting rooms, private cabins, neighbourhood cafes, building forecourts, lunch tables, stairwells, rooftops, canteens, home workspaces |
+   | **City** | Bengaluru, Singapore, Berlin, São Paulo, Nairobi, Tokyo, Dubai, Toronto, Amsterdam, Mexico City, Warsaw, Ho Chi Minh City |
+   | **Moment** | mid-laugh, mid-argument, deep concentration, relief when something finally works, the tail end of a long day, coffee and thinking |
+
+   The axes move **independently** — 400 sample subjects reach 128 of the 144 possible
+   city-and-scene pairs, and effectively every combination is distinct. Naming a real city
+   is also what carries who is in the frame: asking a model for "diverse people" in the
+   abstract produces a stock-library composite, while naming Nairobi or Ho Chi Minh City
+   produces architecture, clothing, light and faces that genuinely belong together.
+
+   Roughly **one image in twelve is an editorial illustration** instead — hand-drawn ink
+   line with flat washes and a limited palette, the kind a newspaper opinion page runs.
+   Both images in a single article always share one city and one medium, so they read as
+   a set rather than two unrelated stock pictures.
 
    Image models sometimes refuse a prompt asking for people. If **every** provider refuses,
    byline retries once without people and tells you it did, naming the providers' own

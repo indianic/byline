@@ -20,6 +20,40 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Images stopped looking like one template.** Every image was previously drawn from four
+  looks — *all four of them daylight* — plus one fixed setting sentence and one fixed
+  people sentence, so a whole blog's images shared one camera setup and one mood. There
+  are now **four independent axes**: light and camera (14 options, including after-dark
+  screen glow, tungsten, cool fluorescent, blue hour, high-key, hard midday sun, macro
+  close-up, overhead aerial and low-angle handheld), scene (12), city (12), and human
+  moment (10 — mid-laugh, mid-argument, concentration, relief, the tail end of a long day).
+- **Who appears is now carried by naming a real city** rather than by asking for
+  demographic variety in the abstract, which produces a stock-library composite. Twelve
+  cities across five continents; both images in one article always share one.
+- **Roughly one image in twelve is an editorial illustration** — hand-drawn ink line with
+  flat washes and a limited palette, specified against the flat-corporate-vector and
+  cartoon-mascot defaults. The camera register is dropped for those, since a drawing has
+  no lens, and "not an illustration" is dropped from its negatives.
+
+### Fixed
+
+- **The image axes were correlated, not independent.** FNV-1a's low bits are its weak
+  point and `% 12` reads exactly those, so 400 subjects reached only **36 of 144** possible
+  city-and-scene pairs — scene and region moved in lockstep and most combinations were
+  unreachable. The hash now finalises before the modulo; the same measurement now reaches
+  **128 of 144**.
+- **"No text in the frame" was not enough on its own.** A generated illustration came back
+  with four lines of confident gibberish on a document in the centre of the frame, with the
+  instruction already present. Prompts now say what paper, screens and signs must
+  positively look like — blank, or indistinct marks — which is a far more reliable
+  instruction than a prohibition. Verified by regenerating the same image: the gibberish
+  is gone.
+- Two `IMAGE_LOOKS` entries named subject matter ("desk lamp", "office fluorescents"),
+  which the existing contract forbids because a look that names objects fights the
+  article's own subject. Caught by the test that guards exactly this.
+
 ## [1.5.0] - 2026-08-03
 
 ### Added

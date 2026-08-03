@@ -55,8 +55,8 @@ describe('composeImagePrompt', () => {
   });
 
   it('adds the people clause only for photoreal_people', () => {
-    expect(composeImagePrompt('photoreal_people', 'x')).toMatch(/one or two people/i);
-    expect(composeImagePrompt('photoreal_scene', 'x')).not.toMatch(/one or two people/i);
+    expect(composeImagePrompt('photoreal_people', 'x')).toMatch(/Include people engaged in the activity/i);
+    expect(composeImagePrompt('photoreal_scene', 'x')).not.toMatch(/Include people engaged in the activity/i);
   });
 
   it('rules out the stock-photo tells whenever it asks for people', () => {
@@ -168,17 +168,189 @@ describe('IMAGE_LOOKS', () => {
 describe('who appears', () => {
   it('asks for variety across images rather than leaving the model to default', () => {
     const p = composeImagePrompt('photoreal_people', 'a clinic reception desk');
-    expect(p).toMatch(/vary in age, ethnicity, and gender/i);
-    expect(p).toMatch(/do not default to one demographic/i);
+    expect(p).toMatch(/Vary age, build and gender/i);
   });
 
-  it('keeps that subordinate to the setting rather than imposing it', () => {
-    // "appropriate to the setting and region" — the subject still drives the
-    // image; this only removes the default, it does not override the topic.
-    expect(composeImagePrompt('photoreal_people', 'x')).toMatch(/appropriate to the setting and region/i);
+  // The mechanism changed and is worth stating: asking a model to make people
+  // "diverse" in the abstract produces a stock-library composite. Naming the
+  // CITY produces architecture, clothing, light and faces that actually belong
+  // together — so every people prompt must carry a region.
+  it('always names a specific city, which is what now drives who appears', () => {
+    for (const subject of ['a clinic reception', 'x', 'two engineers reviewing a rollout plan']) {
+      expect(composeImagePrompt('photoreal_people', subject), subject).toMatch(/The setting is in /);
+    }
+  });
+
+  // The real anti-monoculture proof, and far stronger than matching a sentence:
+  // across many subjects the tool must actually reach many different cities. A
+  // contract that said the right words but always resolved to one place would
+  // pass a string match and still produce fifty identical posts.
+  it('reaches many different cities across subjects, not one default', () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 400; i++) {
+      const p = composeImagePrompt('photoreal_people', `subject number ${i}`);
+      seen.add(/The setting is in ([^,—]+)/.exec(p)![1]!);
+    }
+    expect(seen.size).toBeGreaterThanOrEqual(8);
+  });
+
+  it('keeps people subordinate to the setting rather than imposing a demographic', () => {
+    // The subject still drives the image; the region only removes the default.
+    expect(composeImagePrompt('photoreal_people', 'x')).toMatch(
+      /ethnicity follows the city named above/i,
+    );
   });
 
   it('says nothing about demographics when no people were asked for', () => {
     expect(composeImagePrompt('photoreal_scene', 'x')).not.toMatch(/ethnicity/i);
+  });
+});
+
+describe('variety — the point of all these axes', () => {
+  const prompts = (n: number, style: 'photoreal_people' | 'photoreal_scene' = 'photoreal_people') =>
+    Array.from({ length: n }, (_, i) => composeImagePrompt(style, `article subject number ${i}`));
+
+  const axis = (p: string, re: RegExp) => re.exec(p)?.[0] ?? '';
+
+  // Before this, every image shared one of four looks, one fixed setting
+  // sentence and one fixed people sentence — so a blog's images read as one
+  // template no matter how different the articles were.
+  it('produces a large number of DISTINCT prompts, not a handful of templates', () => {
+    const set = new Set(prompts(300));
+    expect(set.size).toBeGreaterThan(200);
+  });
+
+  it.each([
+    ['look', /Shot on[^.]+\.|Tight close-up[^.]+\.|Aerial view[^.]+\.|High-key[^.]+\.|Blue-hour[^.]+\.|Handheld[^.]+\./],
+    ['scene', /set it in [^.]+\.|set it outdoors[^.]+\.|set it at [^.]+\.|set it on [^.]+\./],
+    ['region', /The setting is in [^,—]+/],
+    ['energy', /Catch [^.]+\./],
+  ])('reaches many different %s values across subjects', (_name, re) => {
+    const seen = new Set(prompts(400).map((p) => axis(p, re)).filter(Boolean));
+    expect(seen.size).toBeGreaterThanOrEqual(8);
+  });
+
+  // The axes must move INDEPENDENTLY. Salted separately, twelve options each
+  // gives thousands of combinations; salted identically they would move in
+  // lockstep and a Bengaluru cafe would always be shot at blue hour.
+  it('varies the axes independently rather than in lockstep', () => {
+    const pairs = new Set(
+      prompts(400).map(
+        (p) => `${axis(p, /The setting is in [^,—]+/)}|${axis(p, /set it in [^.]+\.|set it outdoors[^.]+\.|set it at [^.]+\.|set it on [^.]+\./)}`,
+      ),
+    );
+    // Lockstep caps this at the length of the shorter list (12). A weakly
+    // avalanched hash capped it at 36, which is why `hash` finalises before
+    // anyone takes it modulo. 400 subjects now reach ~128 of the 144 possible
+    // pairs, so the bar is set where a regression in mixing would be caught
+    // rather than merely where lockstep would be.
+    expect(pairs.size).toBeGreaterThan(100);
+  });
+
+  // Lighting specifically — the complaint was that every image looked the same
+  // and was lit the same. Daylight-only was literally true before: all four
+  // original looks were daylight.
+  it('covers night, artificial and bright daylight lighting, not just daylight', () => {
+    const all = IMAGE_LOOKS.join(' ').toLowerCase();
+    for (const condition of ['after dark', 'fluorescent', 'tungsten', 'blue-hour', 'midday', 'overcast']) {
+      expect(all, condition).toContain(condition);
+    }
+  });
+
+  it('covers close-up and aerial framing, not just eye-level', () => {
+    const all = IMAGE_LOOKS.join(' ').toLowerCase();
+    expect(all).toContain('close-up');
+    expect(all).toContain('aerial');
+    expect(all).toContain('low angle');
+  });
+});
+
+describe('illustration — the occasional alternative', () => {
+  const illustrated = (p: string) => p.startsWith('Editorial illustration');
+
+  it('stays a small minority of images', () => {
+    const n = 600;
+    const count = Array.from({ length: n }, (_, i) =>
+      composeImagePrompt('photoreal_people', `subject ${i}`),
+    ).filter(illustrated).length;
+    const share = count / n;
+    // 1 in 12 by construction. Bounded on BOTH sides: zero would mean the
+    // feature silently does nothing, and a third would change what this
+    // product is.
+    expect(share).toBeGreaterThan(0.02);
+    expect(share).toBeLessThan(0.2);
+  });
+
+  it('never tells an illustration it is not an illustration', () => {
+    const p = Array.from({ length: 600 }, (_, i) =>
+      composeImagePrompt('photoreal_people', `subject ${i}`),
+    ).find(illustrated)!;
+    expect(p).not.toMatch(/Not an illustration/i);
+    expect(p).not.toMatch(/Photograph\./);
+    // A drawing has no lens or aperture.
+    expect(p).not.toMatch(/\d{2}mm|f\/\d/);
+  });
+
+  // The text rule is the one negative that must NEVER be dropped: gibberish
+  // signage gives a drawing away exactly as fast as a photograph.
+  it('keeps the no-text and no-tech-slop rules whichever medium is drawn', () => {
+    for (let i = 0; i < 200; i++) {
+      const p = composeImagePrompt('photoreal_people', `subject ${i}`);
+      expect(p, p.slice(0, 30)).toMatch(/No text, letters, numbers, logos, watermarks, or signage/);
+      expect(p, p.slice(0, 30)).toMatch(/no glowing circuitry/i);
+    }
+  });
+
+  it('names what the illustration must NOT be, since bare "illustration" is what produces slop', () => {
+    const p = Array.from({ length: 600 }, (_, i) =>
+      composeImagePrompt('photoreal_people', `subject ${i}`),
+    ).find(illustrated)!;
+    for (const anti of ['Not a 3D render', 'not flat corporate vector art', 'not a cartoon mascot']) {
+      expect(p).toContain(anti);
+    }
+  });
+});
+
+describe('coherence within one article', () => {
+  // The brief hands the same `look` to every image in one article. Region and
+  // medium key off it so both images land in one city and one medium — a hero
+  // in Tokyo with an inline image in Nairobi reads as two unrelated stock
+  // pictures, which is the problem, not the fix.
+  it('puts both images of an article in the same city and medium', () => {
+    for (const look of IMAGE_LOOKS) {
+      const hero = composeImagePrompt('photoreal_people', 'the hero subject', look);
+      const inline = composeImagePrompt('photoreal_people', 'a completely different inline subject', look);
+      const city = (p: string) => /The setting is in ([^,—]+)/.exec(p)![1];
+      expect(city(hero), look).toBe(city(inline));
+      expect(hero.startsWith('Editorial illustration')).toBe(inline.startsWith('Editorial illustration'));
+    }
+  });
+
+  // ...but the two images must not be the same picture twice.
+  it('still gives the two images different scenes and different moments', () => {
+    const look = IMAGE_LOOKS[0]!;
+    const hero = composeImagePrompt('photoreal_people', 'the hero subject', look);
+    const inline = composeImagePrompt('photoreal_people', 'a completely different inline subject', look);
+    const scene = (p: string) => /set it (?:in|outdoors|at|on) [^.]+\./.exec(p)?.[0];
+    const energy = (p: string) => /Catch [^.]+\./.exec(p)?.[0];
+    expect(scene(hero)).not.toBe(scene(inline));
+    expect(energy(hero)).not.toBe(energy(inline));
+  });
+});
+
+describe('the no-text rule is actionable, not just a prohibition', () => {
+  // Measured 2026-08-03: a generated illustration rendered four lines of
+  // confident gibberish on a document in the centre of the frame, with "no
+  // text" already in the prompt. Telling the model what the surfaces must BE
+  // gives it something to draw; telling it what to avoid does not.
+  it('says what paper and screens must positively look like, in both mediums', () => {
+    const photo = composeImagePrompt('photoreal_people', 'x');
+    const drawn = Array.from({ length: 600 }, (_, i) =>
+      composeImagePrompt('photoreal_people', `subject ${i}`),
+    ).find((p) => p.startsWith('Editorial illustration'))!;
+    for (const p of [photo, drawn]) {
+      expect(p).toMatch(/is blank or carries only indistinct marks/);
+      expect(p).toMatch(/never letters or word-shapes/);
+    }
   });
 });
