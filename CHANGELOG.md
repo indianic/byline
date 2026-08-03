@@ -5,24 +5,9 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.6.0] - 2026-08-03
-
-- Image variety: independent light, scene, city and moment axes
-
-## [1.5.1] - 2026-08-03
-
-### Fixed
-
-- **`score_draft` scored a correctly-written article as having zero first-hand
-  moments.** Its `experience_markers` check matched a fixed verb list that none of
-  1.5.0's new persona-presence worked examples hit — "We killed the pilot in week six.",
-  "The team pushed back hard on that." A real 1,000-word draft written exactly to that
-  instruction scored **0** and was told to add first-hand moments; it now scores 7. The
-  brief and the scorer disagreed about what a first-hand moment is. A test now runs the
-  brief's own option strings through the scorer's own regex so the two cannot drift
-  apart again, and a companion test keeps bare opinion ("I think", "we believe") at zero.
-
 ## [Unreleased]
+
+## [1.6.0] - 2026-08-03
 
 ### Changed
 
@@ -57,6 +42,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Two `IMAGE_LOOKS` entries named subject matter ("desk lamp", "office fluorescents"),
   which the existing contract forbids because a look that names objects fights the
   article's own subject. Caught by the test that guards exactly this.
+
+## [1.5.1] - 2026-08-03
+
+### Fixed
+
+- **`score_draft` scored a correctly-written article as having zero first-hand
+  moments.** Its `experience_markers` check matched a fixed verb list that none of
+  1.5.0's new persona-presence worked examples hit — "We killed the pilot in week six.",
+  "The team pushed back hard on that." A real 1,000-word draft written exactly to that
+  instruction scored **0** and was told to add first-hand moments; it now scores 7. The
+  brief and the scorer disagreed about what a first-hand moment is. A test now runs the
+  brief's own option strings through the scorer's own regex so the two cannot drift
+  apart again, and a companion test keeps bare opinion ("I think", "we believe") at zero.
 
 ## [1.5.0] - 2026-08-03
 
