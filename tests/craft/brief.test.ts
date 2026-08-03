@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Persona } from '../../src/config/personas.js';
 import { buildBrief } from '../../src/craft/brief.js';
-import { DIMENSIONS, HOOKS } from '../../src/craft/dimensions.js';
+import { DIMENSIONS, HOOKS, HUMAN_TEXTURES, PERSONA_PRESENCES } from '../../src/craft/dimensions.js';
 import { IMAGE_LOOKS } from '../../src/craft/image-style.js';
 import { GHOST_HTML_PROFILE } from '../../src/plugins/platforms/ghost/html-profile.js';
 import type { Finding, ResearchResult } from '../../src/plugins/research/types.js';
@@ -522,5 +522,135 @@ describe('the research block tells the truth about each finding', () => {
     expect(b.warnings).toContain(
       '3 of 4 sources carry no usable publication date — do not assert when those events happened.',
     );
+  });
+});
+
+describe('author presence — the persona is not restated on every article', () => {
+  // The defect this dimension exists for: the brief used to hardcode "State the
+  // author's credential once, early, in the first person" on EVERY article, so
+  // a blog written weekly reintroduced the same person every week.
+  it('no longer orders the credential stated on every article', () => {
+    for (let s = 0; s < 60; s++) {
+      const b = buildBrief({ ...base, seed: s }).brief;
+      expect(b, `seed ${s}`).not.toContain("State the author's credential once, early");
+    }
+  });
+
+  it('always carries exactly one drawn AUTHOR PRESENCE instruction', () => {
+    for (let s = 0; s < 40; s++) {
+      const b = buildBrief({ ...base, seed: s });
+      expect(b.brief).toContain('=== AUTHOR PRESENCE');
+      expect(b.brief).toContain(PERSONA_PRESENCES[b.choices.personaPresence!]);
+      // One drawn option, never two — a second would contradict the first.
+      const present = PERSONA_PRESENCES.filter((o) => b.brief.includes(o));
+      expect(present, `seed ${s}`).toHaveLength(1);
+    }
+  });
+
+  // Four of the five options must not state a credential at all. If the pool
+  // ever drifts toward "state it" variants, the whole point is lost.
+  it('keeps most variants credential-free', () => {
+    const statesIt = PERSONA_PRESENCES.filter((o) => /Stated once, plainly/.test(o));
+    expect(statesIt).toHaveLength(1);
+    expect(PERSONA_PRESENCES.length).toBeGreaterThanOrEqual(4);
+  });
+
+  // The standing rules that hold whichever variant is drawn.
+  it('forbids the pasted-profile constructions on every seed', () => {
+    for (let s = 0; s < 30; s++) {
+      const b = buildBrief({ ...base, seed: s }).brief;
+      expect(b).toContain('Never write "As a CTO,"');
+      expect(b).toContain('Never restate your expertise in the conclusion');
+      expect(b).toContain('Never state your years of experience as a number');
+    }
+  });
+
+  // The profile block is input to the writer's judgement, not text to copy.
+  // Without this the model reproduces "Tone of voice: Dry" as a sentence.
+  it('marks the author profile as shaping HOW to write, not what to say', () => {
+    const b = buildBrief({ ...base, seed: 3 }).brief;
+    expect(b).toContain('this shapes HOW you write, and is never copied onto the page');
+    expect(b).toContain('None of these labels should ever appear as text in the article');
+  });
+
+  it('still tells the model who it is, so voice and judgement survive', () => {
+    const b = buildBrief({ ...base, seed: 5 }).brief;
+    expect(b).toContain('You are Jane Doe');
+    expect(b).toContain('Write in FIRST PERSON as Jane Doe');
+  });
+});
+
+describe('humanising rules', () => {
+  it('draws exactly one texture and always carries the fixed rules', () => {
+    for (let s = 0; s < 40; s++) {
+      const b = buildBrief({ ...base, seed: s });
+      expect(b.brief).toContain(HUMAN_TEXTURES[b.choices.humanTexture!]);
+      expect(HUMAN_TEXTURES.filter((o) => b.brief.includes(o)), `seed ${s}`).toHaveLength(1);
+      expect(b.brief).toContain('=== NEVER USE THESE ===');
+      expect(b.brief).toContain('=== STRUCTURAL TELLS');
+    }
+  });
+
+  // The structural rules are the half that actually matters; a word blacklist
+  // alone just moves the tell somewhere else.
+  it.each([
+    'Paragraph length must be genuinely uneven',
+    'Do not open two paragraphs in a row with the same word',
+    'Do not write three consecutive sentences of similar length',
+    'Take a position',
+    'at least one sentence that only you could have written',
+  ])('keeps the structural rule: %s', (rule) => {
+    expect(buildBrief({ ...base, seed: 11 }).brief).toContain(rule);
+  });
+
+  // Sounding human must never become licence to invent. This is the one
+  // failure here that cannot be undone once published.
+  it('forbids fabrication as a humanising technique', () => {
+    const b = buildBrief({ ...base, seed: 2 }).brief;
+    expect(b).toContain('Do not introduce errors, typos, or slang');
+    // Asserted up to the line wrap in the template, not through it.
+    expect(b).toContain('Do not fabricate a statistic, a client, a date');
+    expect(b).toContain('prior article you never wrote');
+    expect(b).toContain('an invented specific is worse than a missing');
+  });
+
+  // The "assumed familiarity" variant gets closest to inventing a shared
+  // history, so it has to carry the prohibition itself rather than relying on
+  // a general rule further down the brief.
+  it('stops the assumed-familiarity variant inventing a back catalogue', () => {
+    const familiar = PERSONA_PRESENCES.find((o) => /Assumed familiarity/.test(o))!;
+    expect(familiar).toContain('Do not invent a shared history');
+    expect(familiar).toContain('no reference to a specific earlier article');
+  });
+
+  it('bans the tells that survived the old short list', () => {
+    const b = buildBrief({ ...base, seed: 1 }).brief;
+    for (const word of ['myriad', 'pivotal', 'leverage (as a verb)', 'moreover', 'furthermore']) {
+      expect(b, word).toContain(word);
+    }
+  });
+});
+
+describe('appending dimensions did not disturb the existing ones', () => {
+  // `buildBrief` draws one RNG value per dimension in insertion order, so a
+  // dimension inserted anywhere but the END silently rewrites which hook, arc
+  // and voice every previously recorded seed resolves to. These are the picks
+  // measured immediately before personaPresence/humanTexture were added.
+  it('resolves recorded seeds to the same hook, arc and voice as before', () => {
+    // Captured by running buildBrief on the commit immediately BEFORE
+    // personaPresence/humanTexture existed, not written from memory. Seeds
+    // 0-29 were compared in full at the time; these five are the pinned
+    // regression.
+    const recorded: Record<number, [number, number, number]> = {
+      0: [1, 0, 0],
+      1: [3, 0, 2],
+      2: [3, 1, 1],
+      7: [0, 0, 3],
+      29: [1, 0, 1],
+    };
+    for (const [seed, [hook, arc, voice]] of Object.entries(recorded)) {
+      const c = buildBrief({ ...base, seed: Number(seed) }).choices;
+      expect([c.hook, c.arc, c.voice], `seed ${seed}`).toEqual([hook, arc, voice]);
+    }
   });
 });

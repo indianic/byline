@@ -123,6 +123,60 @@ export const PLAIN_TABLE_THEMES = [
 ] as const;
 
 /**
+ * How the author's identity surfaces in the prose.
+ *
+ * This exists because the brief used to do exactly one thing with a persona:
+ * open with "You are <name>, <role> with <n> years of experience", dump every
+ * profile field as a labelled list, and then instruct the writer to "state the
+ * author's credential once, early, in the first person." Every article
+ * therefore began by introducing the same person the same way. Someone who
+ * actually writes a blog every week does not reintroduce themselves every
+ * week — their readers already know them, and their authority shows up in what
+ * they choose to say, not in a byline restated in the first paragraph.
+ *
+ * Only ONE of these five says the credential outright. The rest carry it
+ * indirectly, and two of them never state it at all. The persona still governs
+ * voice, judgement, and subject matter in every case — what varies is how much
+ * of it is announced.
+ *
+ * **None of these licenses invention.** "Write as though readers know you"
+ * means skip the introduction, not fabricate a shared history: no invented
+ * prior article, no made-up date, no client name that does not exist. That
+ * distinction is stated inside the options that get closest to the line.
+ */
+export const PERSONA_PRESENCES = [
+  'AUTHOR PRESENCE — Stated once, plainly. Say who you are and what you have done exactly ONCE, inside the first 150 words, in one clause of one sentence. Then never refer to your own credentials again for the rest of the piece — no "in my X years", no "as a <role>", no second reminder. Everything after that first mention has to earn trust through the substance of the calls you make.',
+  'AUTHOR PRESENCE — Earned, never announced. Do NOT state your role, your title, or your years of experience anywhere in the article. Not in the opening, not at the end. Authority arrives instead through one operational detail so specific that only somebody who has actually done this work would know it — a number from real delivery, a failure mode you only meet at a certain scale, a constraint nobody writes about. Let the reader infer the seniority from the specificity.',
+  'AUTHOR PRESENCE — Assumed familiarity. Write as a regular columnist whose readers already know exactly who you are. No introduction, no credential, no "as a <role>" anywhere. You may refer to your own settled position as something already established between you and the reader ("I have never been persuaded that…", "Regular readers will know where I stand on this"). **Do not invent a shared history to lean on**: no reference to a specific earlier article, no invented date, no fabricated prior prediction. Established stance, yes; invented citation of yourself, never.',
+  'AUTHOR PRESENCE — Through the room, not the résumé. Never state a title or a tenure. Instead, show where you were standing: "The team pushed back hard on that." "We killed the pilot in week six." "The client had already signed before anyone asked engineering." Seniority is implied entirely by the scale and kind of decisions you were party to. The reader should finish the piece knowing what you do without you ever having said it.',
+  'AUTHOR PRESENCE — Oblique aside. The credential appears exactly once, and it is never the point of the sentence it is in. Bury it in a subordinate clause of a sentence that is really about something else — the way someone mentions their job in passing while making a different argument. It should be possible to delete that clause without losing the sentence.',
+] as const;
+
+/**
+ * Prose-level human signal.
+ *
+ * Model-written prose is recognisable less from vocabulary than from
+ * *evenness*: paragraphs of uniform length, every section the same shape,
+ * every list perfectly parallel, every argument advanced without a single
+ * concession or change of mind. These five push in different directions
+ * against that evenness, one per article, so consecutive posts do not share
+ * the same texture either.
+ *
+ * They are craft instructions, not obfuscation. Each one describes something
+ * good writers actually do; none asks for noise, misspellings, or damage to
+ * the argument. Writing that is genuinely more specific and less uniform reads
+ * better to a human, which is the point — see `HUMANISING` in `brief.ts` for
+ * the rules that apply to every article regardless of which of these is drawn.
+ */
+export const HUMAN_TEXTURES = [
+  'TEXTURE — Asymmetry. Break the rhythm on purpose. At least one paragraph must be a single sentence standing completely alone, and at least one must run five or six lines. Never let three consecutive paragraphs have the same shape or length. Do the same inside lists: bullets should not all be the same length or all start with the same part of speech.',
+  'TEXTURE — Concede before you convince. At least twice, state the strongest version of the opposing case in its own sentence and give it real credit before you answer it. "Fair." "That is true, and it is the reason most teams start there." Never build a strawman to knock over — if the counterargument is genuinely good, say so and answer it anyway. A piece with no concessions in it reads as marketing.',
+  'TEXTURE — Think on the page. Once, and only once, visibly revise your own framing mid-argument: name the way you used to see this, then correct it. "For years I called this a tooling problem. It is not — it is a sequencing problem, and the tools were never going to fix it." The reader should feel a mind working rather than a conclusion being delivered.',
+  'TEXTURE — Specific over smooth. Refuse every abstraction that has a concrete equivalent. Name the tool, the number, the role, the month. Apply this test to every sentence you write: if it could be dropped unchanged into an article about a completely different industry, it is filler — cut it or make it specific. Prefer a slightly awkward exact sentence to a graceful vague one.',
+  'TEXTURE — Say it out loud. Write sentences a person would actually speak. Use contractions where a human would. Start the occasional sentence with And, But, or So. Allow one parenthetical aside in your own voice. If a sentence could not be said aloud to a colleague without sounding like a brochure, rewrite it.',
+] as const;
+
+/**
  * Pick the dimension set matching what the target platform preserves.
  * Styled variants are used only where inline styles actually survive.
  */
@@ -146,6 +200,17 @@ export function dimensionsFor(inlineStyles: boolean) {
     // Does not vary by `inlineStyles` — a platform's HTML filtering has
     // nothing to do with photography.
     imageLook: IMAGE_LOOKS,
+    // Appended after `imageLook`, for the reason stated above it: `buildBrief`
+    // draws one RNG value per dimension in insertion order, so anything added
+    // at the END leaves every existing seed → pick mapping untouched. Putting
+    // either of these higher up would quietly change which hook, arc, and
+    // voice every previously recorded seed resolves to.
+    //
+    // Neither varies by `inlineStyles`: how an author refers to themselves and
+    // how their sentences are shaped have nothing to do with which HTML tags
+    // the platform keeps.
+    personaPresence: PERSONA_PRESENCES,
+    humanTexture: HUMAN_TEXTURES,
   } as const;
 }
 
@@ -161,6 +226,12 @@ export const DIMENSIONS = {
   summaryBlock: SUMMARY_BLOCKS,
   callout: CALLOUTS,
   imageLook: IMAGE_LOOKS,
+  // Keep this list in the SAME order as `dimensionsFor` above. It is the
+  // source of `DimensionName`, and the brief suite iterates it to prove every
+  // option of every dimension is reachable — a dimension present here but
+  // missing there (or ordered differently) makes that proof meaningless.
+  personaPresence: PERSONA_PRESENCES,
+  humanTexture: HUMAN_TEXTURES,
 } as const;
 
 export type DimensionName = keyof typeof DIMENSIONS;

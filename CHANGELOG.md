@@ -5,11 +5,33 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.4.0] - 2026-08-03
-
-- Scheduled publishing on Ghost and WordPress, read in the blog's own timezone
-
 ## [Unreleased]
+
+### Added
+
+- **The persona stops introducing itself on every article.** `build_writing_brief` gains
+  an `personaPresence` dimension, drawn per article like the hook and arc already were.
+  Only one of its five variants states the author's credential outright; **60% of
+  articles now never state a role or tenure at all**, carrying authority through
+  first-hand specificity instead — a detail only someone who did the work would know,
+  the scale of decisions described, or a credential buried in a subordinate clause.
+  Someone who blogs weekly does not reintroduce themselves weekly.
+- **A `humanTexture` dimension plus a fixed humanising standard.** The texture varies per
+  article (asymmetric rhythm, conceding the counter-case, visibly changing your mind
+  mid-argument, refusing abstraction, spoken cadence). The fixed half targets what
+  actually gives machine prose away — uniform paragraph length, relentlessly parallel
+  lists, an argument that never concedes or commits — alongside a much longer banned
+  word and construction list. It explicitly forbids fabricating a statistic, client,
+  date, or prior article in the name of sounding human.
+
+### Changed
+
+- The GEO section no longer orders "State the author's credential once, early, in the
+  first person" on every article; it defers to `personaPresence` and notes that
+  generative engines weight unrepeatable first-hand detail over a stated job title,
+  which every competing article already has.
+- The author profile block is now labelled as input to the writer's judgement, with an
+  explicit instruction that none of its labels may appear as text in the article.
 
 ### Added
 

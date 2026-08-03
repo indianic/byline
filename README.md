@@ -567,6 +567,37 @@ persona_specific_instructions_for_ai: |
   marketing version. Never write a paragraph that could apply to any company.
 ```
 
+#### The persona shapes the writing — it does not get announced in it
+
+A persona pasted into a prompt has a signature: every article opens by introducing the
+same person the same way. *"As a CEO with 25 years in enterprise delivery…"* Once, that
+reads as authority. Every week, it reads as a template.
+
+So how much of you reaches the page is **drawn fresh per article**, like the hook and the
+structure already were. Across articles: **20%** state your credential outright — once,
+early, and never again — **20%** bury it in a subordinate clause of a sentence about
+something else, and **60% never state your role or your years at all.** Those carry
+authority the way a regular columnist does: through a detail only somebody who has done
+the work would know, through the scale of the decisions described, through simply
+assuming the reader knows who is talking.
+
+None of that weakens the byline. Generative engines weight unrepeatable first-hand
+specificity far above a stated job title — every competing article already has the job
+title. Your profile still governs tone, judgement, and subject matter on every single
+piece; what varies is how much of it is said out loud.
+
+Alongside it, each article draws a prose texture — uneven rhythm, conceding the strongest
+counter-argument before answering it, visibly changing your mind mid-piece, refusing
+abstraction, writing sentences you could say aloud. Every article also carries a fixed
+standard aimed at what actually gives machine-written prose away: paragraphs of uniform
+length, relentlessly parallel lists, and an argument that never once commits to
+anything — plus a long list of words and constructions to avoid outright.
+
+> It will not fake being human by breaking things. Introducing typos, padding for rhythm,
+> or inventing a statistic, a client, a date, or a prior article you never wrote are all
+> forbidden explicitly. An invented specific is the one mistake here you cannot take back
+> after publishing.
+
 **Byline doesn't have your keys or your voice until you give them.** `init` collects
 credentials interactively and validates each one against the live platform before
 accepting it. You can skip every prompt and fill things in later — everything lives in

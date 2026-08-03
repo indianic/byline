@@ -159,6 +159,71 @@ const or = (v: string, fallback: string): string => (v.trim() ? v : fallback);
 const hasImageProvider = (imageProviders: readonly string[] | undefined): boolean =>
   imageProviders === undefined || imageProviders.length > 0;
 
+/**
+ * The rules that apply to every article, whichever texture was drawn.
+ *
+ * A constant rather than a template literal because nothing in it depends on
+ * the persona, the platform, or the topic — and because it is long enough that
+ * leaving it inline made the one 120-line template string in `buildBrief`
+ * genuinely hard to read.
+ *
+ * **On what this is and is not.** It is a craft standard: be specific, vary
+ * your rhythm, do not reach for the phrase everyone reaches for. Writing that
+ * follows it is better to read, which is the whole justification — an article
+ * a person actually finishes is what SEO, AEO and GEO are all downstream of.
+ * It makes no claim about any particular detector, and none should be added:
+ * that claim could not be verified from inside this codebase, and a promise
+ * the host model repeats to a user as fact is exactly the kind of overclaim
+ * this project has had to walk back before.
+ *
+ * The word list is the cheap half. The structural rules below it matter more —
+ * model-written prose gives itself away far more through uniform paragraph
+ * length, relentlessly parallel lists, and an argument that never once concedes
+ * anything than through any individual word.
+ */
+const HUMANISING = `=== NEVER USE THESE ===
+Words: delve, landscape (figurative), transformative, seamless, robust,
+revolutionary, tapestry, testament, realm, myriad, plethora, pivotal, crucial,
+vital, elevate, unlock, harness, streamline, cutting-edge, game-changer,
+navigate (figurative), foster, bolster, underscore, embark, leverage (as a verb),
+meticulous, intricate, multifaceted, holistic, paradigm, synergy.
+
+Constructions: "it's not just X, it's Y", "in today's world", "in the
+ever-evolving", "when it comes to", "it's worth noting that", "at the end of the
+day", "in conclusion", "the fact that", "one thing is clear", "let's dive in",
+"buckle up", "the bottom line", "that said" used more than once, "moreover" and
+"furthermore" anywhere at all.
+
+Openings: never begin the article, or any section, with a dictionary definition,
+with "In an era where", with a rhetorical question you answer in the next
+sentence, or by restating the H2 you just wrote.
+
+=== STRUCTURAL TELLS — THESE MATTER MORE THAN THE WORD LIST ===
+- Paragraph length must be genuinely uneven. Three consecutive paragraphs of
+  similar length is the strongest single tell there is.
+- Do not open two paragraphs in a row with the same word or the same
+  construction. Vary where the sentence's subject lands.
+- Do not write three consecutive sentences of similar length. Put a four-word
+  sentence next to a thirty-word one and let the contrast do the work.
+- Break at least one "rule" of the tricolon: not every list should have three
+  items, and not every list should be parallel in grammar or length.
+- No section may have the same internal shape as the section before it. If one
+  opens with a claim and closes with an example, the next must not.
+- Take a position. At least once, say plainly that a widely held view is wrong,
+  and accept the cost of being wrong about it. Prose that hedges every claim
+  reads as machine-written because it is what a model does when it has no stake.
+- Every article needs at least one sentence that only you could have written —
+  a number from your own work, a specific failure, a judgement you would defend
+  in a room. If nothing in the draft qualifies, the draft is not finished.
+- Contractions are allowed and usually better. Write "doesn't" unless the
+  emphasis genuinely needs "does not".
+
+=== WHAT NOT TO DO IN THE NAME OF SOUNDING HUMAN ===
+Do not introduce errors, typos, or slang to seem informal. Do not pad with
+filler to break up rhythm. Do not fabricate a statistic, a client, a date, or a
+prior article you never wrote — an invented specific is worse than a missing
+one, and it is the one mistake here that cannot be undone after publication.`;
+
 export function buildBrief(input: BriefInput): Brief {
   const seed = input.seed ?? Math.floor(Math.random() * 2 ** 31);
   const next = rng(seed);
@@ -400,6 +465,11 @@ ${input.research}`;
     warnings,
     brief: `You are ${p.name}, ${or(p.role, 'an industry expert')} with ${p.years_of_experience} years of experience in ${or(p.subject_expertise, or(p.description, 'your field'))}.
 
+That is who you ARE. It is not a thing you have to announce. How much of it
+reaches the page is decided by AUTHOR PRESENCE below, and on most articles the
+answer is "less than you think" — a person who writes regularly does not
+reintroduce themselves to their own readers every week.
+
 YOUR TASK: Write a comprehensive, SEO-optimised article about: ${input.topic}
 
 CRITICAL REQUIREMENTS
@@ -408,7 +478,10 @@ CRITICAL REQUIREMENTS
 - Write in FIRST PERSON as ${p.name}
 - Location context: ${[p.state, p.country].filter(Boolean).join(', ') || 'global'}
 
-YOUR AUTHOR PROFILE
+YOUR AUTHOR PROFILE — this shapes HOW you write, and is never copied onto the page
+Treat the lines below as settings on your own judgement, not as facts to state.
+None of these labels should ever appear as text in the article: a reader learns
+your tone by reading you, not by being told what your tone is.
 - Writing style: ${or(p.writing_style, 'Professional')}
 - Tone of voice: ${or(p.tone_of_voice, 'Engaging')}
 - Communication style: ${or(p.communication_style, 'Clear')}
@@ -436,6 +509,20 @@ ${picked.arc}
 
 === NARRATIVE VOICE — APPLY THROUGHOUT ===
 ${picked.voice}
+
+=== AUTHOR PRESENCE — HOW MUCH OF YOU REACHES THE PAGE ===
+${picked.personaPresence}
+
+This governs the whole article and overrides any instinct to introduce yourself.
+It is drawn fresh for every piece, so do not fall back on the shape your last
+article used. Whatever it says, these hold:
+- Never state your years of experience as a number unless the line above
+  explicitly tells you to state your credential.
+- Never write "As a ${or(p.role, 'professional')}," or "In my experience as a
+  ${or(p.role, 'professional')}," as an opening construction. It is the single
+  most recognisable tell that a profile was pasted into a prompt.
+- Never restate your expertise in the conclusion. Closing by reminding the
+  reader who you are undoes everything the body earned.
 
 === MICRO-STORY — PLACE AS INSTRUCTED ===
 ${picked.story}
@@ -491,7 +578,10 @@ Generative engines cite what they can attribute and verify. Write to be quotable
 - Prefer specific over round numbers. 3.4% is citable; "around 3%" is not.
 - Name entities in full on first use. Write the organisation, product, and person
   names out so a model can resolve them without the surrounding page.
-- State the author's credential once, early, in the first person.
+- Establish authority the way AUTHOR PRESENCE above tells you to, and no further.
+  Generative engines weight first-hand specificity, not self-description: an
+  unrepeatable operational detail is worth more to them than a stated job title,
+  and a stated job title is what every competing article already has.
 - Give at least one claim that exists nowhere else — a first-hand observation,
   a number from your own delivery work, a named trade-off you have lived.
 - Never assert a figure the research does not contain. An invented statistic that
@@ -513,10 +603,10 @@ ${htmlRules(input.profile)}
 - Cite recognised sources and hyperlink them.
 - Include at least two concrete first-hand moments — a named scenario, a specific trade-off, a decision you regretted. Spread them; at least one after the midpoint.
 
-=== AVOID ===
-Never use: delve, landscape (figurative), transformative, seamless, robust, revolutionary, tapestry, testament, "it's not just X, it's Y", "in today's world", "in the ever-evolving".
-Vary sentence length deliberately — short sentences between longer ones.
-Do not end consecutive paragraphs with the same shape of summary clause.
+=== TEXTURE — APPLY THROUGHOUT ===
+${picked.humanTexture}
+
+${HUMANISING}
 
 === OUTPUT FORMAT ===
 Return ONLY a valid JSON object. No markdown, no code fences, no preamble.
