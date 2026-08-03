@@ -7,7 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.5.1] - 2026-08-03
 
-- score_draft recognises the first-hand constructions the new brief teaches
+### Fixed
+
+- **`score_draft` scored a correctly-written article as having zero first-hand
+  moments.** Its `experience_markers` check matched a fixed verb list that none of
+  1.5.0's new persona-presence worked examples hit — "We killed the pilot in week six.",
+  "The team pushed back hard on that." A real 1,000-word draft written exactly to that
+  instruction scored **0** and was told to add first-hand moments; it now scores 7. The
+  brief and the scorer disagreed about what a first-hand moment is. A test now runs the
+  brief's own option strings through the scorer's own regex so the two cannot drift
+  apart again, and a companion test keeps bare opinion ("I think", "we believe") at zero.
 
 ## [Unreleased]
 
