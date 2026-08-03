@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { scoreDraft } from '../../src/craft/score.js';
+import { HUMAN_TEXTURES, PERSONA_PRESENCES } from '../../src/craft/dimensions.js';
 import { GHOST_HTML_PROFILE } from '../../src/plugins/platforms/ghost/html-profile.js';
 import { buildProfile } from '../../src/plugins/platforms/wordpress/html-profile.js';
 
@@ -584,5 +585,55 @@ describe('citation_provenance', () => {
       findings,
     );
     expect(card.checks.find((c) => c.name === 'citation_provenance')!.blocking).toBe(false);
+  });
+});
+
+describe('experience_markers agrees with what the brief actually teaches', () => {
+  const markers = (html: string) =>
+    scoreDraft(html, GHOST_HTML_PROFILE).checks.find((c) => c.name === 'experience_markers')!;
+
+  // ONE RULE, ONE DEFINITION — across two modules this time. `PERSONA_PRESENCES`
+  // teaches an author to show seniority through the room rather than the
+  // résumé and gives these as its worked examples. Before this, none of them
+  // matched, so a real draft written exactly to that instruction scored ZERO
+  // first-hand moments and score_draft told the writer to add some.
+  it.each([
+    'We killed the pilot in week six.',
+    'The team pushed back hard on that.',
+    'The client had already signed before anyone asked engineering.',
+    'For years I called this a tooling problem.',
+    'I used to treat this as a change-management problem.',
+  ])('recognises %o, which the brief instructs verbatim', (sentence) => {
+    // Doubled so the >= 2 threshold is not what is under test here; this is
+    // about whether the construction is seen at all.
+    expect(markers(`<p>${sentence} ${sentence}</p>`).score).toBeGreaterThanOrEqual(2);
+  });
+
+  // The examples above are drawn from the real option strings, so if someone
+  // edits a variant to teach a different construction this fails rather than
+  // silently drifting.
+  it('sources those examples from the shipped persona-presence options', () => {
+    const all = PERSONA_PRESENCES.join(' ');
+    expect(all).toContain('We killed the pilot in week six.');
+    expect(all).toContain('The team pushed back hard on that.');
+    expect(all).toContain('The client had already signed before anyone asked engineering.');
+    expect(HUMAN_TEXTURES.join(' ')).toContain('For years I called this a tooling problem.');
+  });
+
+  // Widening the verb list must not turn every opinion into an anecdote.
+  // "I think", "we believe" and bare first person are stance, not experience.
+  it.each([
+    '<p>I think this is the right approach. We believe it will work.</p>',
+    '<p>We are seeing more of this. I am not convinced by any of it.</p>',
+    '<p>In my opinion the tooling is fine. Our view is that it is a people problem.</p>',
+  ])('does not count bare opinion as a first-hand moment: %o', (html) => {
+    expect(markers(html).score).toBe(0);
+  });
+
+  it('still requires two moments and one after the midpoint', () => {
+    const early = '<p>We killed the pilot in week six.</p>' + '<p>Filler. </p>'.repeat(40);
+    const m = markers(early);
+    expect(m.ok).toBe(false);
+    expect(m.findings.join(' ')).toContain('after the midpoint');
   });
 });

@@ -559,7 +559,7 @@ describe('author presence — the persona is not restated on every article', () 
   it('forbids the pasted-profile constructions on every seed', () => {
     for (let s = 0; s < 30; s++) {
       const b = buildBrief({ ...base, seed: s }).brief;
-      expect(b).toContain('Never write "As a CTO,"');
+      expect(b).toContain('Never open a sentence with "As a CTO," or "In my experience as a CTO,"');
       expect(b).toContain('Never restate your expertise in the conclusion');
       expect(b).toContain('Never state your years of experience as a number');
     }

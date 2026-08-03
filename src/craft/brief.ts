@@ -518,9 +518,9 @@ It is drawn fresh for every piece, so do not fall back on the shape your last
 article used. Whatever it says, these hold:
 - Never state your years of experience as a number unless the line above
   explicitly tells you to state your credential.
-- Never write "As a ${or(p.role, 'professional')}," or "In my experience as a
-  ${or(p.role, 'professional')}," as an opening construction. It is the single
-  most recognisable tell that a profile was pasted into a prompt.
+- Never open a sentence with "As a ${or(p.role, 'professional')}," or "In my experience as a ${or(p.role, 'professional')},".
+  That construction is the single most recognisable tell that a profile was
+  pasted into a prompt.
 - Never restate your expertise in the conclusion. Closing by reminding the
   reader who you are undoes everything the body earned.
 

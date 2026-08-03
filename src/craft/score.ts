@@ -241,8 +241,43 @@ export function scoreDraft(
   // between the pronoun and the verb ("I have watched", "we very nearly lost"), and the
   // comma after a year is optional ("In 2023 we bid..."). Requiring exact adjacency
   // produced false negatives on writing that was plainly first-hand.
-  const ANECDOTE =
-    /\b(?:when (?:I|we)\b|one client\b|a client\b|last (?:year|month|week|quarter)\b|in \d{4},? (?:I|we)\b|(?:I|we)(?:\s+\w+){0,2}\s+(?:once|learned|watched|shipped|rebuilt|regret|regretted|lost|bid|delivered|priced|misjudged|underestimated|inherited)\b)/gi;
+  //
+  // **This list has to agree with what the brief actually instructs**, and once
+  // it did not. `PERSONA_PRESENCES` in `dimensions.ts` teaches an author to
+  // show seniority through the room rather than the résumé, and gives
+  // "We killed the pilot in week six." and "The team pushed back hard on that."
+  // as its worked examples — neither of which the original verb list matched.
+  // A real 1,000-word draft written to that instruction scored **zero**
+  // first-hand moments. One rule, one definition: a construction the brief
+  // teaches is a construction this check must recognise, and the suite pins
+  // that by running the brief's own examples through this regex.
+  //
+  // Three shapes are recognised. A first-person actor doing something
+  // (a much wider verb list than before, all past-tense operational acts); a
+  // named party in the room acting on you, which is how the résumé-free
+  // variants carry authority; and a visible change of mind, which the
+  // "Think on the page" texture asks for by name.
+  const ANECDOTE = new RegExp(
+    [
+      '\\bwhen (?:I|we)\\b',
+      '\\bone client\\b',
+      '\\ba client\\b',
+      '\\blast (?:year|month|week|quarter)\\b',
+      '\\bin \\d{4},? (?:I|we)\\b',
+      // "in week six", "by month three" — the scale markers a real project has.
+      '\\b(?:in|by) (?:week|month|sprint|quarter) (?:\\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\\b',
+      // A visible correction of your own past view. "For years I called this a
+      // tooling problem." "I used to treat this as a change-management problem."
+      '\\b(?:I|we)(?:\\s+\\w+){0,2}\\s+used to\\b',
+      '\\bfor years (?:I|we)\\b',
+      // Someone else in the room, acting. This is the whole mechanism of the
+      // "Through the room, not the résumé" variant.
+      '\\b(?:the|our) (?:team|client|board|vendor|customer|engineers?|buyer|partner|sponsor|regulator)\\b[^.!?]{0,60}?\\b(?:pushed|signed|refused|asked|agreed|balked|walked|escalated|rejected|approved|cancelled|complained|insisted|objected|overruled|blocked)\\b',
+      // A first-person operational act.
+      '\\b(?:I|we)(?:\\s+\\w+){0,2}\\s+(?:once|learned|watched|shipped|rebuilt|rewrote|regret|regretted|lost|bid|delivered|priced|misjudged|underestimated|inherited|killed|scrapped|cut|hired|fired|fixed|built|ran|sat|chose|picked|pushed|argued|told|asked|sold|quoted|walked|refused|approved|signed|rejected|missed|spent|wrote|called|treated|moved|stopped|started|launched|paused|reverted|migrated|onboarded|billed|estimated|scoped|shut|pulled|rolled)\\b',
+    ].join('|'),
+    'gi',
+  );
 
   const firstPerson = (text.match(/\b(I|we|my|our)\b/g) ?? []).length;
   const anecdote = (text.match(ANECDOTE) ?? []).length;
