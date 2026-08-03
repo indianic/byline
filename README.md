@@ -607,11 +607,59 @@ that touches the outside world:
    byline retries once without people and tells you it did, naming the providers' own
    reason — you never get a silently peopleless image. A provider that *broke* rather than
    refused is reported as the failure it is, not quietly worked around.
-5. **`create_post`** publishes. Then it **reads the response back** and compares it to
-   what was sent, and reports any field the platform quietly dropped.
+5. **`create_post`** publishes — now, as a draft, or at a time you choose. Then it
+   **reads the response back** and compares it to what was sent, and reports any field
+   the platform quietly dropped.
 
 That last point is the design rule everywhere in this project: **nothing fails
 silently.** Every tool returns a result or an error naming the API and its HTTP status.
+
+### Scheduling
+
+> Write this up and publish it at 10 AM tomorrow.
+
+Say a time and byline publishes then, on either platform.
+
+**The time you say is the time on the blog.** Not your laptop's timezone, not the
+server's, not UTC — the blog's own. "10 AM tomorrow" means 10 AM as that blog's
+readers experience it, and byline looks the blog's timezone up from the platform
+itself rather than guessing. Send the identical instruction to two blogs in two
+countries and they publish at two different instants, on purpose:
+
+| blog | its timezone | you say | it publishes at |
+|---|---|---|---|
+| a Ghost blog set to `Asia/Kolkata` | IST | `2026-08-04T10:00` | `04:30Z` |
+| a WordPress blog set to UTC | UTC | `2026-08-04T10:00` | `10:00Z` |
+
+You can still pin an exact instant by writing the offset yourself —
+`2026-08-04T10:00:00+05:30` or `...Z` — and byline takes that at face value without
+consulting the blog. Only do that if you actually meant a specific timezone.
+
+Under the hood that is `status: "scheduled"` plus `publish_at`, which becomes Ghost's
+`scheduled` / `published_at` or WordPress's `future` / `date_gmt`. `update_post`
+schedules a draft you already have, and unschedules one. A **past** time with
+`status: "published"` backdates a post instead. The result reports
+`publish_at_local` — the time as the blog's clock reads it — alongside the UTC instant
+the platform actually stored.
+
+Three things byline refuses rather than guessing at:
+
+- **A time under two minutes away.** WordPress does not reject a scheduled post whose
+  date is too close. It publishes it immediately, returns `201`, and reports no error
+  at all. Measured 2026-08-03: 45 seconds of lead went live, 60 seconds scheduled.
+  After writing, byline re-reads the post and fails loudly if the platform published it
+  anyway — naming the post, its live URL, and the platform's own clock. It does **not**
+  unpublish it for you; that is your call, not a tool's.
+- **A future time with `status: "published"`.** The identical request publishes
+  immediately on Ghost and schedules on WordPress. One input cannot be allowed to mean
+  two opposite things, so byline asks you to say `"scheduled"` if that is what you meant.
+- **A local time that does not exist.** On a blog whose timezone observes daylight
+  saving, the clocks skip an hour each spring. Asking for a time inside that hour is
+  refused rather than quietly moved.
+
+If the blog does not report a timezone at all, byline says so and asks for an explicit
+offset — it never falls back to UTC, because that would publish five and a half hours
+early for an Indian blog while reporting success.
 
 ### The platforms really do differ
 

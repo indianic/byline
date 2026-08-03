@@ -43,8 +43,13 @@ marker in code and below — do not remove those markers on the strength of this
 | `GET /wp/v2/posts/{id}?context=edit` is what returns `.raw` fields; the default response returns `content.rendered` with `wpautop` applied. | Every write-back diff (`diffReadBack`) reads back with `?context=edit` — diffing against `.rendered` would manufacture a false warning on every single call. |
 | `PUT /wp/v2/posts/{id}` accepted a title update; read back and verified. | Confirmed by `tests/integration/wordpress.integration.test.ts`'s update step, not by the human-run probe above — recorded here as its own line for that reason. |
 | Endpoints reachable: posts, tags, media, users — all `200`. | Baseline connectivity for `health_check`. |
+| **Scheduling** (probed 2026-08-03): a scheduled post is `status: "future"` with the time in **`date_gmt`** — naive ISO with no offset marker, UTC by definition (`"2026-08-04T09:00:00"`). A trailing `Z` is accepted on the way in but never comes back. The sibling `date` field is the same instant in the *site's* timezone. | `WordPressAdapter.STATUS` maps Byline's `scheduled` → `future`, and `buildBaseBody` writes `date_gmt`, never `date` — `date` would land the post at the wrong hour on any site not set to UTC, and the probed site *was* UTC (`gmt_offset: 0`), which is exactly the configuration where that mistake is invisible. |
+| **`status: "future"` with a date that is not far enough ahead is silently rewritten to `publish` and the post goes live immediately** — `201`, no error, nothing in the body naming the change. Measured against WordPress's own clock (`Date` response header, same request): **45 s of lead published immediately; 60 s scheduled**. Same result from two different points within the minute, so it is a lead-time rule, not a minute-boundary artefact. Identical silent publish for a **past** date and for `status: "future"` with **no date at all**. | The reason `MIN_SCHEDULE_LEAD_MS` (2 min) exists in `src/plugins/platforms/schedule.ts`, and the reason `verifyPublishTime` re-reads the post and throws `SCHEDULE_NOT_APPLIED` rather than trusting the write. The floor is measured against the *local* clock and WordPress decides using its own, so the read-back is what holds when the two disagree. |
+| `status: "publish"` with a **future** `date_gmt` is silently converted to `future` — WordPress schedules it. **Ghost does the opposite with the same input** (publishes immediately). | `resolveTiming` refuses that combination outright (`SCHEDULE_STATUS_MISMATCH`) rather than letting one request mean two different things on two platforms. |
+| **The blog's timezone** is on the REST root `GET /wp-json/`, stated two ways of which a site uses exactly one: `timezone_string` is an IANA name when the site was configured by city, and **empty** when it was configured by raw UTC offset, in which case `gmt_offset` carries the hours. Measured 2026-08-03: `timezone_string: ""` with **`gmt_offset: "0"` — a STRING, not the documented number**. `GET /wp/v2/settings` exposes a `timezone` field too, but returned `""` with **no `gmt_offset` at all**, so it cannot answer for an offset-configured blog. | `WordPressAdapter.siteTimezone()` reads the ROOT endpoint, prefers `timezone_string`, and accepts `gmt_offset` as either a string or a number — a `typeof === 'number'` check would have rejected this very install, and arithmetic on `"0"` would concatenate rather than add. Hours are converted to minutes rather than assumed whole: India is 5.5, Nepal 5.75, Chatham 12.75. |
+| **Backdating** works on create and on update: `status: "publish"` with a past `date_gmt` stores the date exactly as given, to the second, arbitrarily far back (3 years probed). `publish` → `future` via `PUT` also works, as does `future` → `draft`. | Backdating and unscheduling both go through the ordinary `create_post`/`update_post` paths; no special casing. Sub-second precision is truncated, which is why `toWholeSecondIso` normalises before sending. |
 
-## The two traps, verbatim
+## The three traps, verbatim
 
 **1. Media upload with no `Content-Type` is a hard failure, not a soft one.**
 
@@ -69,6 +74,32 @@ tag a post about "ProbeAI" with "ProbeAI Ethics" (or vice versa, depending on
 WordPress's internal ordering) roughly as often as it got the right term. The fix is
 an exact, case-insensitive comparison against `name` before trusting a hit; only when
 nothing matches exactly is a new tag created.
+
+**3. A scheduled post whose date is too close does not fail — it publishes.**
+
+Probed 2026-08-03. Lead times measured against WordPress's own clock, read from the
+`Date` header of the very same response, so clock skew is excluded rather than
+assumed away:
+
+```
+POST /wp/v2/posts  {"status":"future","date_gmt":"…+45s"}  -> 201  {"status":"publish"}   LIVE
+POST /wp/v2/posts  {"status":"future","date_gmt":"…+60s"}  -> 201  {"status":"future"}    scheduled
+POST /wp/v2/posts  {"status":"future"}                     -> 201  {"status":"publish"}   LIVE
+POST /wp/v2/posts  {"status":"future","date_gmt":"…-1h"}   -> 201  {"status":"publish"}   LIVE
+```
+
+There is no error, no warning, and no field in the response naming the change — only
+`status`, which the caller has no particular reason to re-read after a `201`. A caller
+who asked to schedule an article for next Tuesday gets a success and a live article.
+
+Ghost, for the same class of mistake, returns a **422** and writes nothing. This is the
+sharpest disagreement between the two platforms in this codebase, and it is why
+scheduling is not simply forwarded to whatever the platform does:
+`src/plugins/platforms/schedule.ts` refuses a too-close time before the request, and
+`WordPressAdapter.verifyPublishTime` re-reads the post afterwards and throws
+`SCHEDULE_NOT_APPLIED` if WordPress published it anyway. The first check uses this
+machine's clock; the second uses WordPress's answer. Only the second is true when the
+two clocks disagree, which is the case the first cannot cover.
 
 ## What remains UNVERIFIED
 
@@ -106,3 +137,38 @@ pending a probe with an account that genuinely lacks the capability:
 Every one of these stays marked UNVERIFIED in `src/plugins/platforms/wordpress/html-profile.ts`
 and must not be promoted to a measured fact without a probe against an account that
 actually exercises that path.
+
+### Scheduling on a site that is not UTC — UNVERIFIED
+
+The site every scheduling behaviour above was measured on reports
+`gmt_offset: 0` and an empty `timezone_string`. It is UTC, so its `date` and
+`date_gmt` are the same string, and **no probe here could tell the two fields apart**.
+
+The adapter writes `date_gmt` and never `date`, which is correct by construction:
+`date_gmt` is UTC by definition and needs no knowledge of the site's offset. But that
+is reasoning, not measurement.
+
+The same gap applies to `siteTimezone()`. Only the **`gmt_offset` = 0** branch was
+measured; the `timezone_string` branch — a site configured by city, where WordPress
+returns e.g. `"Asia/Kolkata"` — was **never exercised against a live WordPress site**,
+because no such site was available. (The equivalent code path *is* exercised live via
+Ghost, which always returns an IANA name, and offline by unit tests across a
+daylight-saving boundary — but not through this adapter's own parsing of
+`timezone_string`.) Specifically UNVERIFIED, pending a probe against a site with a
+non-zero `gmt_offset` or a set `timezone_string`:
+
+- That `timezone_string` really is an IANA name on a city-configured site, and that it
+  and `gmt_offset` are never both meaningfully populated in a way that would make
+  preferring `timezone_string` wrong.
+- That a non-zero `gmt_offset` arrives in hours (`"5.5"`) rather than minutes or
+  seconds. Zero is the one value that reads identically under all three.
+
+- That `date_gmt` is honoured as UTC on such a site (rather than being reinterpreted in
+  site-local time).
+- What `date` alone does there — the 2026-08-03 probe sent `date` once and WordPress
+  filled in a matching `date_gmt`, but on a UTC site that proves nothing about which
+  field was authoritative.
+- Whether the `future`-to-`publish` lead-time boundary is evaluated in UTC or in
+  site-local time. `verifyPublishTime`'s read-back check does not depend on the answer —
+  it compares what was stored against what was sent — but the 2-minute floor in
+  `schedule.ts` implicitly assumes UTC.

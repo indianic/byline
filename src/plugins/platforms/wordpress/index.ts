@@ -1,6 +1,13 @@
 import type { SiteConfig } from '../../../config/sites.js';
 import { ToolError } from '../../../errors.js';
 import { basicAuthHeader } from './auth.js';
+import {
+  assertScheduleApplied,
+  normaliseStoredTime,
+  publishTimeWarning,
+  type PostStatus,
+  type SiteTimezone,
+} from '../schedule.js';
 import type { HealthResult, PlatformAdapter, PostInput, PostResult } from '../types.js';
 
 interface WordPressErrorBody {
@@ -14,6 +21,13 @@ interface WordPressPostResponse {
   id: number;
   link: string;
   status: string;
+  /**
+   * UTC, with no offset marker of any kind — `"2026-08-04T09:00:00"`. The
+   * sibling `date` field is the same instant in the SITE's timezone, so the two
+   * agree only on a UTC site and this is the one that can be compared without
+   * knowing the site's offset.
+   */
+  date_gmt?: string;
   title?: { raw?: string; rendered?: string };
   content?: { raw?: string; rendered?: string };
 }
@@ -68,10 +82,10 @@ const UNSUPPORTED_FIELD_REASONS: Record<string, string> = {
     'WordPress does not accept alt text on the post endpoint; it must be set on the media object with a follow-up request, so it was not sent here.',
   feature_image_caption:
     'WordPress does not accept a caption on the post endpoint; it belongs to the media/attachment object, so it was not sent.',
-  // Not in the platform's documented "cannot accept" list, but nothing in this
-  // adapter maps it to WordPress's `date`/`date_gmt` fields yet — warning
-  // rather than silently dropping it until that mapping is built and verified.
-  published_at: "Scheduling/backdating is not wired up for WordPress yet, so it was not sent.",
+  // `publish_at` used to be listed here, warning that scheduling and
+  // backdating were not wired up. Both now are — it maps to `date_gmt` in
+  // `buildBaseBody`, verified live on 2026-08-03 — so listing it would warn
+  // that a field was dropped every single time it was correctly stored.
 };
 
 export class WordPressAdapter implements PlatformAdapter {
@@ -101,6 +115,23 @@ export class WordPressAdapter implements PlatformAdapter {
    * message.
    */
   private async request(path: string, init: RequestInit = {}, json = true): Promise<unknown> {
+    return (await this.requestFull(path, init, json)).body;
+  }
+
+  /**
+   * As `request`, but also hands back WordPress's `Date` response header.
+   *
+   * The write paths need it because WordPress decides whether a `future` post
+   * is really in the future using ITS clock, not this machine's, and when that
+   * decision goes the wrong way the only honest diagnosis names the clock that
+   * actually made it. Taking it from the same response as the result — rather
+   * than a separate call afterwards — is what keeps the two from disagreeing.
+   */
+  private async requestFull(
+    path: string,
+    init: RequestInit = {},
+    json = true,
+  ): Promise<{ body: unknown; serverDate: string | null }> {
     const url = `${this.base}/${path}`;
     let res: Response;
     try {
@@ -145,7 +176,7 @@ export class WordPressAdapter implements PlatformAdapter {
             : 'Run health_check to test all configured APIs',
       });
     }
-    return body;
+    return { body, serverDate: res.headers.get('date') };
   }
 
   /**
@@ -207,6 +238,55 @@ export class WordPressAdapter implements PlatformAdapter {
   }
 
   /**
+   * The blog's timezone, from the REST root `GET /wp-json/`.
+   *
+   * WordPress states it two different ways and a site uses exactly one:
+   * `timezone_string` is an IANA name when the site was configured by city,
+   * and **empty** when it was configured by raw UTC offset — in which case
+   * `gmt_offset` carries the hours instead. Measured 2026-08-03 on the probed
+   * site: `timezone_string: ""` with `gmt_offset: "0"`.
+   *
+   * That `"0"` is the trap. `gmt_offset` is documented as a number and this
+   * install returns it as a **string**, so `typeof === 'number'` would reject a
+   * perfectly good value and arithmetic on it would concatenate rather than
+   * add. Both shapes are accepted. Fractional offsets are real and must
+   * survive — India is 5.5, Nepal 5.75, Chatham 12.75 — so the hours are
+   * converted to minutes rather than assumed whole.
+   *
+   * `/wp/v2/settings` also exposes a `timezone` field, but was measured
+   * returning `""` with **no** `gmt_offset` at all on the same site, so it
+   * cannot answer for an offset-configured blog. The root endpoint is the one
+   * that can.
+   *
+   * An IANA name is preferred whenever there is one: it resolves daylight
+   * saving per instant, while a fixed offset cannot.
+   */
+  async siteTimezone(): Promise<SiteTimezone> {
+    const body = (await this.request('')) as { timezone_string?: unknown; gmt_offset?: unknown };
+
+    const zone = body.timezone_string;
+    if (typeof zone === 'string' && zone.trim() !== '') {
+      return { kind: 'iana', zone: zone.trim() };
+    }
+
+    const raw = body.gmt_offset;
+    const hours = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : Number.NaN;
+    if (!Number.isFinite(hours)) {
+      throw new ToolError({
+        api: `wordpress:${this.slug}`,
+        code: 'NO_SITE_TIMEZONE',
+        message: `WordPress returned no usable timezone for "${this.slug}" — timezone_string was empty and gmt_offset was ${JSON.stringify(raw)}.`,
+        hint: 'Set the site timezone in WordPress (Settings → General → Timezone), or pass publish_at with an explicit offset.',
+      });
+    }
+    const offsetMinutes = Math.round(hours * 60);
+    const sign = offsetMinutes < 0 ? '-' : '+';
+    const abs = Math.abs(offsetMinutes);
+    const label = `UTC${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+    return { kind: 'fixed', offsetMinutes, label };
+  }
+
+  /**
    * WordPress's media endpoint takes the raw file body, not a multipart form —
    * unlike Ghost. `Content-Disposition` carries the filename and `Content-Type`
    * is set explicitly (see `mimeFor`); `json = false` on `request` stops the
@@ -263,16 +343,53 @@ export class WordPressAdapter implements PlatformAdapter {
     return warnings;
   }
 
+  /**
+   * WordPress's status vocabulary, which is not Byline's.
+   *
+   * `scheduled` is called `future` here, and `published` is `publish` —
+   * neither name matches. Written as a total map rather than the chain of
+   * ternaries this used to be (`status === 'published' ? 'publish' : 'draft'`),
+   * because that chain quietly folded every status it did not recognise into
+   * `draft`: adding `scheduled` to `PostStatus` without touching it would have
+   * turned every scheduling request into a draft, with no error and no
+   * warning, and the tests that existed would all still have passed.
+   */
+  private static readonly STATUS: Record<PostStatus, string> = {
+    published: 'publish',
+    draft: 'draft',
+    scheduled: 'future',
+  };
+
   /** Only the fields WordPress core accepts directly, built from whatever subset is present. */
   private buildBaseBody(input: Partial<PostInput>): Record<string, unknown> {
     const body: Record<string, unknown> = {};
     if (input.title !== undefined) body.title = input.title;
     // Sent as raw HTML, unchanged — see the read-back diff for whether WordPress rewrote it.
     if (input.html !== undefined) body.content = input.html;
-    if (input.status !== undefined) body.status = input.status === 'published' ? 'publish' : 'draft';
+    if (input.status !== undefined) body.status = WordPressAdapter.STATUS[input.status];
     // WordPress's own `excerpt` is writable, unlike Ghost's (where `custom_excerpt` is
     // the writable field and `excerpt` is read-only) — see the `PostInput` doc comment.
     if (input.custom_excerpt !== undefined) body.excerpt = input.custom_excerpt;
+    // `date_gmt`, not `date`. `date` is interpreted in the SITE's timezone, so
+    // sending a UTC instant there would land the post at the wrong hour on any
+    // site not set to UTC — and the site probed on 2026-08-03 was itself UTC
+    // (`gmt_offset: 0`), which is exactly the configuration in which that
+    // mistake cannot be observed. `date_gmt` is unambiguous everywhere.
+    // `publish_at` is already whole-second UTC ISO (`toWholeSecondIso`); the
+    // trailing `Z` is stripped because that is the form WordPress echoes back,
+    // and matching it makes the read-back comparison exact. A `Z`-suffixed
+    // value is also accepted by WordPress — measured — but comes back without
+    // it either way.
+    // `publish_at` arrives as whole-second UTC ISO from `toWholeSecondIso`,
+    // which always renders milliseconds — `2026-08-04T09:00:00.000Z`. Both the
+    // `.000` and the `Z` come off, leaving `2026-08-04T09:00:00`: the exact
+    // form WordPress echoes back, which is what makes the read-back comparison
+    // an equality rather than a tolerance. (A `Z`-suffixed value is accepted
+    // too — measured — but is not what comes back, so sending it would mean
+    // comparing two shapes that differ for no reason.)
+    if (input.publish_at !== undefined) {
+      body.date_gmt = input.publish_at.replace(/\.\d{3}Z$/, '').replace(/Z$/, '');
+    }
     return body;
   }
 
@@ -429,6 +546,65 @@ export class WordPressAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * Check what WordPress actually did with a publish time, on the read-back
+   * rather than on the write response.
+   *
+   * This is the single most important verification in the adapter, and it
+   * exists because of one measured behaviour: **WordPress does not reject a
+   * `future` post whose date is too close or already past — it rewrites the
+   * status to `publish` and the article goes live immediately**, returning 201
+   * with no error, no warning, and nothing in the body naming the change. A
+   * caller who asked to schedule gets a 2xx and a live post. Measured
+   * 2026-08-03: a lead of 45 s published immediately, 60 s scheduled; a `future`
+   * post with no date at all published immediately; a past date published
+   * immediately.
+   *
+   * `resolveTiming`'s two-minute floor is what normally prevents this, but that
+   * floor is measured against the local clock and WordPress decides using its
+   * own — so this is the check that holds when the two disagree.
+   */
+  private verifyPublishTime(
+    sent: Partial<PostInput>,
+    result: WordPressPostResponse,
+    serverDate: string | null,
+    warnings: string[],
+  ): void {
+    if (sent.publish_at === undefined) return;
+    if (sent.status === 'scheduled') {
+      assertScheduleApplied({
+        api: `wordpress:${this.slug}`,
+        platform: 'WordPress',
+        scheduledToken: 'future',
+        requestedIso: sent.publish_at,
+        returnedStatus: String(result.status),
+        id: String(result.id),
+        url: String(result.link),
+        serverDate,
+      });
+    }
+    const w = publishTimeWarning(sent.publish_at, result.date_gmt ?? null, 'WordPress');
+    if (w) warnings.push(w);
+  }
+
+  /**
+   * The `publish_at` fragment of a `PostResult`, present only when a publish
+   * time was actually asked for and WordPress echoed a readable one back.
+   *
+   * Normalised through `normaliseStoredTime` rather than by appending `Z`
+   * here: WordPress's offset-less `date_gmt` and Ghost's full ISO describe the
+   * same instant in different shapes, and a caller should not get a different
+   * string format depending on which blog they published to.
+   */
+  private storedPublishAt(
+    sent: Partial<PostInput>,
+    readBack: WordPressPostResponse,
+  ): { publish_at?: string } {
+    if (sent.publish_at === undefined) return {};
+    const stored = normaliseStoredTime(readBack.date_gmt);
+    return stored === null ? {} : { publish_at: stored };
+  }
+
   async createPost(post: PostInput): Promise<PostResult> {
     this.assertResolved(post.html);
     const warnings = this.unsupportedFieldWarnings(post);
@@ -441,10 +617,11 @@ export class WordPressAdapter implements PlatformAdapter {
       warnings.push(...tagWarnings);
     }
 
-    const created = (await this.request('wp/v2/posts', {
+    const { body: rawCreated, serverDate } = await this.requestFull('wp/v2/posts', {
       method: 'POST',
       body: JSON.stringify(body),
-    })) as WordPressPostResponse;
+    });
+    const created = rawCreated as WordPressPostResponse;
 
     // A second GET is used rather than trusting the create response's own
     // shape — confirmed necessary and sufficient by live probe on 2026-07-29:
@@ -455,10 +632,17 @@ export class WordPressAdapter implements PlatformAdapter {
     const readBack = (await this.request(`wp/v2/posts/${created.id}?context=edit`)) as WordPressPostResponse;
     warnings.push(...this.diffReadBack({ title: post.title, html: post.html }, readBack));
 
+    // Verified against the read-back, whose `status`/`date_gmt` are what the
+    // post actually carries now, rather than against the create response. The
+    // create response is the same request that would have been rewritten, and
+    // the whole point here is to catch a rewrite.
+    this.verifyPublishTime(post, { ...readBack, id: created.id, link: created.link }, serverDate, warnings);
+
     return {
       id: String(created.id),
       url: String(created.link),
-      status: String(created.status),
+      status: String(readBack.status ?? created.status),
+      ...this.storedPublishAt(post, readBack),
       ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
@@ -481,18 +665,21 @@ export class WordPressAdapter implements PlatformAdapter {
     // building this. WordPress core registers WP_REST_Server::EDITABLE (PUT,
     // PATCH, POST) for the single-post route, consistent with the observed
     // result.
-    const updated = (await this.request(`wp/v2/posts/${id}`, {
+    const { body: rawUpdated, serverDate } = await this.requestFull(`wp/v2/posts/${id}`, {
       method: 'PUT',
       body: JSON.stringify(body),
-    })) as WordPressPostResponse;
+    });
+    const updated = rawUpdated as WordPressPostResponse;
 
     const readBack = (await this.request(`wp/v2/posts/${id}?context=edit`)) as WordPressPostResponse;
     warnings.push(...this.diffReadBack({ title: patch.title, html: patch.html }, readBack));
+    this.verifyPublishTime(patch, { ...readBack, id: updated.id, link: updated.link }, serverDate, warnings);
 
     return {
       id: String(updated.id),
       url: String(updated.link),
-      status: String(updated.status),
+      status: String(readBack.status ?? updated.status),
+      ...this.storedPublishAt(patch, readBack),
       ...(warnings.length > 0 ? { warnings } : {}),
     };
   }

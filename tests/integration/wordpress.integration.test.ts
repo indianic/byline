@@ -213,5 +213,136 @@ if (skipReason) {
       },
       20000,
     );
+
+    /** Removes a probe post whatever the assertions did. */
+    const remove = async (id: string): Promise<void> => {
+      await fetch(`${usableSite.apiUrl}/wp/v2/posts/${id}?force=true`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
+    };
+
+    describe('scheduling', () => {
+      /** Whole-second UTC ISO, the form `toWholeSecondIso` produces. */
+      const isoAt = (offsetMs: number): string => {
+        const d = new Date(Date.now() + offsetMs);
+        d.setMilliseconds(0);
+        return d.toISOString();
+      };
+
+      // A `future` post is not publicly visible before its date, so this is
+      // safe against the live site.
+      it(
+        'schedules a post and reports back the time WordPress actually stored',
+        async () => {
+          const iso = isoAt(60 * 60_000);
+          let id: string | undefined;
+          try {
+            const r = await adapter.createPost({
+              title: 'ZZ scheduling probe — safe to delete',
+              html: '<p>Scheduling probe.</p>',
+              status: 'scheduled',
+              publish_at: iso,
+            });
+            id = r.id;
+            // WordPress's own token, not Byline's — proof the status map
+            // reached the platform. Before `STATUS` existed, an unhandled
+            // status fell through to `draft` with no error at all.
+            expect(r.status).toBe('future');
+            expect(r.publish_at).toBe(iso);
+            expect(r.warnings ?? []).toEqual([]);
+          } finally {
+            if (id) await remove(id);
+          }
+        },
+        20000,
+      );
+
+      // THE behaviour the whole feature is defended against, exercised live:
+      // WordPress answers 201 and silently publishes when the date is too
+      // close. The adapter must refuse to call that a scheduled post. This
+      // calls the adapter directly, bypassing `resolveTiming`'s floor, because
+      // the point is what WORDPRESS does — the guard is unit-tested separately.
+      it(
+        'catches WordPress silently publishing a too-soon post instead of scheduling it',
+        async () => {
+          let id: string | undefined;
+          try {
+            const r = await adapter.createPost({
+              title: 'ZZ scheduling probe — safe to delete',
+              html: '<p>x</p>',
+              status: 'scheduled',
+              // Measured 2026-08-03: 45s of lead publishes immediately.
+              publish_at: isoAt(20_000),
+            });
+            id = r.id;
+            expect.unreachable('WordPress published this; the adapter should have refused to report success');
+          } catch (e) {
+            const err = e as { code?: string; message?: string; hint?: string };
+            expect(err.code).toBe('SCHEDULE_NOT_APPLIED');
+            // The error has to be actionable: the post EXISTS and is live.
+            expect(err.message).toMatch(/returned status "publish"/);
+            expect(err.hint).toContain('LIVE NOW');
+            // Recover the id from the message so the live post still gets
+            // cleaned up — the throw is the correct behaviour, but it means
+            // the id never came back through a return value.
+            id = /id (\d+)/.exec(err.message ?? '')?.[1];
+            expect(id, 'error message must name the post id, or it is not actionable').toBeTruthy();
+          } finally {
+            if (id) await remove(id);
+          }
+        },
+        20000,
+      );
+
+      it(
+        'schedules an existing draft through updatePost, then unschedules it',
+        async () => {
+          const iso = isoAt(60 * 60_000);
+          let id: string | undefined;
+          try {
+            const draft = await adapter.createPost({
+              title: 'ZZ scheduling probe — safe to delete',
+              html: '<p>x</p>',
+              status: 'draft',
+            });
+            id = draft.id;
+            const scheduled = await adapter.updatePost(draft.id, { status: 'scheduled', publish_at: iso });
+            expect(scheduled.status).toBe('future');
+            expect(scheduled.publish_at).toBe(iso);
+
+            const back = await adapter.updatePost(draft.id, { status: 'draft' });
+            expect(back.status).toBe('draft');
+          } finally {
+            if (id) await remove(id);
+          }
+        },
+        20000,
+      );
+
+      // Backdating publishes for real; created, checked, deleted.
+      it(
+        'backdates a published post to a past date',
+        async () => {
+          const iso = isoAt(-30 * 86_400_000);
+          let id: string | undefined;
+          try {
+            const r = await adapter.createPost({
+              title: 'ZZ backdate probe — safe to delete',
+              html: '<p>x</p>',
+              status: 'published',
+              publish_at: iso,
+            });
+            id = r.id;
+            expect(r.status).toBe('publish');
+            expect(r.publish_at).toBe(iso);
+            expect(r.warnings ?? []).toEqual([]);
+          } finally {
+            if (id) await remove(id);
+          }
+        },
+        20000,
+      );
+    });
   });
 }

@@ -8,8 +8,69 @@ import { buildArticleSchema } from '../craft/schema.js';
 import { hasInlineImage } from '../craft/score.js';
 import { ToolError, ok } from '../errors.js';
 import { getPlugin, makeAdapter } from '../plugins/registry.js';
+import {
+  MIN_SCHEDULE_LEAD_MS,
+  cachedTimezone,
+  needsSiteTimezone,
+  resolveTiming,
+  type PostStatus,
+  type ResolvedTiming,
+} from '../plugins/platforms/schedule.js';
+import type { PlatformAdapter } from '../plugins/platforms/types.js';
 import { requireSetup } from '../setup.js';
 import { adapterFor, handler } from './shared.js';
+
+/**
+ * The `publish_at` rules, in the words the host model reads.
+ *
+ * Shared by both tool descriptions, and it interpolates
+ * `MIN_SCHEDULE_LEAD_MS` rather than restating it in prose. Two
+ * hand-maintained copies of one number drift — `SLUG_PATTERN` and
+ * `IMAGE_LOOKS` both proved that in code — and a description that promises a
+ * floor the guard no longer enforces is worse than a vague one: the model
+ * repeats it to the user as fact.
+ */
+const PUBLISH_AT_RULES =
+  'a date and a time of day — "2026-08-04T10:00". ' +
+  '**It is read in the TARGET BLOG\'S OWN timezone, never yours and never the user\'s.** ' +
+  'So "publish at 10am tomorrow" is simply "2026-08-04T10:00": pass the wall-clock time the user said, ' +
+  'verbatim. Do NOT convert it to UTC, do NOT convert it to your own timezone, and do NOT ask the user which ' +
+  'timezone they mean — the blog decides, and Byline looks its timezone up from the platform. The same string ' +
+  'sent to two blogs in two countries is two different instants, on purpose. ' +
+  'An explicit offset ("2026-08-04T10:00:00+05:30" or "...Z") is also accepted and is then taken at face ' +
+  'value, but only use one if the user actually named a timezone. ' +
+  `Required with status "scheduled", where it must be at least ${MIN_SCHEDULE_LEAD_MS / 60_000} minutes in ` +
+  'the future. With status "published" it must be in the PAST — that backdates the post; a future time with ' +
+  'status "published" is refused, because Ghost would publish it immediately while WordPress would schedule ' +
+  'it. The result reports publish_at_local, the time as the blog\'s own clock reads it — tell the user that ' +
+  'one, not the UTC value.';
+
+/**
+ * Resolve `status` + `publish_at` for a specific blog, fetching that blog's
+ * timezone only when the answer actually depends on it.
+ *
+ * The lookup is a network round trip, so it is skipped entirely when there is
+ * no time to resolve, or when the caller already wrote an explicit offset and
+ * has therefore already said which instant they meant. When it is needed it
+ * goes through `cachedTimezone`, so a blog's timezone is fetched once per
+ * process rather than once per post.
+ *
+ * A failed lookup is deliberately NOT swallowed into a UTC default. Assuming
+ * UTC for a blog in Kolkata publishes five and a half hours early while
+ * reporting success — the silent-wrong-result this whole module exists to
+ * avoid. The error names the blog and says to pass an explicit offset instead.
+ */
+async function resolveTimingFor(
+  adapter: PlatformAdapter,
+  status: PostStatus,
+  publishAt: string | undefined,
+): Promise<ResolvedTiming> {
+  const needsZone = publishAt !== undefined && needsSiteTimezone(publishAt);
+  const zone = needsZone
+    ? await cachedTimezone(`${adapter.platform}:${adapter.slug}`, () => adapter.siteTimezone())
+    : undefined;
+  return resolveTiming(status, publishAt, zone);
+}
 
 export function registerPostTools(server: McpServer, ctx: Context): void {
   // ---- create_post ----
@@ -18,12 +79,21 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
     {
       title: 'Create post',
       description:
-        'Publish an article. Defaults to status "published" — pass "draft" only when the user asked for a draft. The author accepts a persona slug and resolves to that site\'s author id. HTML must not still contain [[content_image]]. Every article gets a hero (feature_image) and an inline <img> by default when an image provider is configured — refused otherwise; pass images: "hero" | "inline" | "none" to opt out.',
+        'Publish an article. Defaults to status "published" — pass "draft" only when the user asked for a draft, or "scheduled" with publish_at to go live at a set time. The author accepts a persona slug and resolves to that site\'s author id. HTML must not still contain [[content_image]]. Every article gets a hero (feature_image) and an inline <img> by default when an image provider is configured — refused otherwise; pass images: "hero" | "inline" | "none" to opt out.',
       inputSchema: {
         site: z.string(),
         title: z.string().min(1),
         html: z.string().min(1),
-        status: z.enum(['published', 'draft']).default('published'),
+        status: z
+          .enum(['published', 'draft', 'scheduled'])
+          .default('published')
+          .describe(
+            '"published" goes live now, "draft" is not visible, "scheduled" goes live at publish_at (which is then required).',
+          ),
+        publish_at: z
+          .string()
+          .optional()
+          .describe(`When the post should be published, as ${PUBLISH_AT_RULES}`),
         images: z
           .enum(['both', 'hero', 'inline', 'none'])
           .default('both')
@@ -79,7 +149,8 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         site: string;
         title: string;
         html: string;
-        status: 'published' | 'draft';
+        status: PostStatus;
+        publish_at?: string;
         images: 'both' | 'hero' | 'inline' | 'none';
         custom_excerpt?: string;
         meta_title?: string;
@@ -103,6 +174,19 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
       }) => {
         requireSetup(ctx, 'sites');
         const site = getSite(ctx.sites, a.site);
+        const adapter = makeAdapter(site);
+
+        // Resolved BEFORE anything is uploaded, resolved, or written: a
+        // publish time this pair of platforms cannot agree on is refused at
+        // the door rather than after a post exists somewhere. `timing.status`
+        // is what the adapter is given, so the tool layer never decides what
+        // "scheduled" means on a particular platform — see schedule.ts.
+        //
+        // The adapter is passed in because a wall-clock time means whatever
+        // THIS blog's clock says, and only the adapter can ask the platform
+        // what that is.
+        const timing = await resolveTimingFor(adapter, a.status, a.publish_at);
+
         const requested = a.author ?? site.defaultAuthor;
         let authors: string[] | undefined;
         let persona: ReturnType<typeof getPersona> | undefined;
@@ -186,10 +270,11 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
             })
           : undefined;
 
-        const result = await makeAdapter(site).createPost({
+        const result = await adapter.createPost({
           title: a.title,
           html: a.html,
-          status: a.status,
+          status: timing.status,
+          ...(timing.publishAtIso !== undefined ? { publish_at: timing.publishAtIso } : {}),
           ...(a.custom_excerpt !== undefined ? { custom_excerpt: a.custom_excerpt } : {}),
           ...(a.meta_title !== undefined ? { meta_title: a.meta_title } : {}),
           ...(a.meta_description !== undefined ? { meta_description: a.meta_description } : {}),
@@ -234,6 +319,13 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
           Boolean(codeinjection) && !warnings.some((w) => w.includes('codeinjection_head'));
         return ok({
           ...result,
+          // The time the caller actually asked for, in the blog's own words.
+          // `publish_at` is UTC because that is what the platform stores; a
+          // user who said "10am tomorrow" should be told "10am tomorrow", not
+          // handed an instant they have to convert back themselves.
+          ...(timing.publishAtLocal !== undefined
+            ? { publish_at_local: timing.publishAtLocal }
+            : {}),
           schema_injected: schemaInjected,
           ...(warnings.length > 0 ? { warnings } : {}),
         });
@@ -246,13 +338,20 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
     'update_post',
     {
       title: 'Update post',
-      description: 'Edit an existing post in place. Only the fields you pass are changed.',
+      description:
+        'Edit an existing post in place. Only the fields you pass are changed. Also the way to schedule an existing draft (status "scheduled" plus publish_at), to unschedule one (status "draft"), or to correct a post\'s date (publish_at in the past).',
       inputSchema: {
         site: z.string(),
         post_id: z.string(),
         title: z.string().optional(),
         html: z.string().optional(),
-        status: z.enum(['published', 'draft']).optional(),
+        status: z.enum(['published', 'draft', 'scheduled']).optional(),
+        publish_at: z
+          .string()
+          .optional()
+          .describe(
+            `${PUBLISH_AT_RULES} Note that Ghost refuses to move an already-published post back to "scheduled" (it answers "Your post is already published"); set it to "draft" first.`,
+          ),
         custom_excerpt: z.string().max(300).optional(),
         meta_title: z.string().optional(),
         meta_description: z.string().optional(),
@@ -278,11 +377,53 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
     },
     handler(
       'update_post',
-      async (a: Record<string, unknown> & { site: string; post_id: string }) => {
+      async (
+        a: Record<string, unknown> & {
+          site: string;
+          post_id: string;
+          status?: PostStatus;
+          publish_at?: string;
+        },
+      ) => {
         requireSetup(ctx, 'sites');
         const { site, post_id, ...patch } = a;
+
+        // A publish time with no status is the one combination that cannot be
+        // resolved here, because what it means depends on the status the post
+        // ALREADY has — measured 2026-08-03, the same `publish_at` alone
+        // backdates a published post and does nothing visible to a draft. The
+        // alternative to refusing is fetching the post first and inferring the
+        // caller's intent from its current state, which is a guess dressed up
+        // as a lookup. Ask for the status instead.
+        if (a.publish_at !== undefined && a.status === undefined) {
+          throw new ToolError({
+            api: 'update_post',
+            code: 'PUBLISH_AT_NEEDS_STATUS',
+            message: 'publish_at was given with no status, so what it should do is ambiguous.',
+            hint: 'Pass status too: "scheduled" to publish at that time, or "published" to backdate an already-live post to it.',
+          });
+        }
+        // Same guard as create_post, from the same function — a scheduled time
+        // that create_post refuses must not become reachable by updating a
+        // draft instead.
+        const adapter = adapterFor(ctx, site);
+        const timing =
+          a.status !== undefined
+            ? await resolveTimingFor(adapter, a.status, a.publish_at)
+            : undefined;
+
         const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
-        return ok(await adapterFor(ctx, site).updatePost(post_id, clean));
+        if (timing) {
+          clean.status = timing.status;
+          if (timing.publishAtIso !== undefined) clean.publish_at = timing.publishAtIso;
+        }
+        const result = await adapter.updatePost(post_id, clean);
+        return ok({
+          ...result,
+          ...(timing?.publishAtLocal !== undefined
+            ? { publish_at_local: timing.publishAtLocal }
+            : {}),
+        });
       },
     ),
   );

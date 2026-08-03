@@ -5,11 +5,61 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.0] - 2026-07-31
-
-- byline init is re-runnable: keep, change, or remove what is already configured.
-
 ## [Unreleased]
+
+### Added
+
+- **Scheduled publishing on Ghost and WordPress.** `create_post` and `update_post` take
+  `status: "scheduled"` with a `publish_at` time, mapped to Ghost's `scheduled` /
+  `published_at` and WordPress's `future` / `date_gmt`. `update_post` also schedules an
+  existing draft, and unschedules one (`status: "draft"`).
+- **A publish time is read in the BLOG's timezone**, never the caller's and never the
+  host's. `publish_at: "2026-08-04T10:00"` means 10 AM as that blog's readers experience
+  it; the timezone is fetched from the platform (Ghost's `GET /settings/` → `timezone`,
+  WordPress's `GET /wp-json/` → `timezone_string` / `gmt_offset`) and memoised per site.
+  The same string sent to a `Asia/Kolkata` blog and a UTC blog is deliberately two
+  different instants. A value carrying an explicit offset is still accepted and taken at
+  face value. Daylight saving is resolved per instant rather than sampled, and a local
+  time the clocks skip is refused rather than quietly moved.
+- `publish_at_local` in the result — the stored instant as the blog's own clock reads
+  it, e.g. `2026-08-04 10:00:00 (Asia/Kolkata)`, so a user who asked for 10 AM is told
+  10 AM rather than a UTC value they have to convert back.
+- `PlatformAdapter.siteTimezone()`, which every platform must now implement. It throws
+  rather than defaulting to UTC: a blog whose timezone cannot be read is one Byline
+  cannot schedule for, and assuming UTC would publish at the wrong hour while reporting
+  success.
+- **Backdating.** A *past* `publish_at` with `status: "published"` sets the post's date;
+  measured identical on both platforms, on create and update, arbitrarily far back.
+- `publish_at` in the result, reporting the time the platform actually stored — read back
+  from its response, not echoed from the request, and normalised to UTC ISO so the same
+  instant reads the same whichever platform it came from.
+- Measured scheduling and backdating behaviour recorded in `docs/GHOST-NOTES.md` and
+  `docs/WORDPRESS-NOTES.md`, including what stays UNVERIFIED (a WordPress site whose
+  timezone is not UTC).
+
+### Fixed
+
+- **A scheduled WordPress post could go live immediately, reported as a success.**
+  WordPress does not reject a `future` post whose date is too close or already past — it
+  rewrites the status to `publish`, returns 201, and the article is live, with no error
+  anywhere in the response. Byline now refuses a `publish_at` under 2 minutes ahead
+  (measured: 45 s of lead published immediately, 60 s scheduled), and re-reads the post
+  afterwards, failing with `SCHEDULE_NOT_APPLIED` — naming the post, its live URL, and
+  the platform's own clock — rather than reporting a schedule that did not happen. The
+  post is left exactly as it is; Byline does not unpublish it on its own.
+- **`status: "published"` with a future `publish_at` is refused** rather than sent. The
+  same request publishes immediately on Ghost and schedules on WordPress, so one input
+  meant two opposite things depending on the target site.
+- A `publish_at` with no offset is never handed to `Date.parse`, which reads it as the
+  *sending machine's* local time — the same string would otherwise schedule an article at
+  a different hour depending on which machine sent it. It is resolved against the blog's
+  timezone instead.
+- Ghost's `errors[0].context` is now surfaced as the error hint. Ghost puts the real
+  reason for a 422 there and leaves `message` as the generic "Validation error, cannot
+  save post." — both scheduling refusals were invisible without it.
+- The WordPress status map no longer folds an unrecognised status into `draft`. It was
+  `status === 'published' ? 'publish' : 'draft'`, so adding a third status would have
+  silently drafted every scheduled post.
 
 ## [1.2.0] - 2026-07-31
 

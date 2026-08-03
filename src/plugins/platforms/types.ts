@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import type { SiteConfig } from '../../config/sites.js';
 import type { HtmlProfile } from '../../craft/html-profile.js';
+import type { PostStatus, SiteTimezone } from './schedule.js';
 
 /**
  * One field a platform needs in order to authenticate.
@@ -38,7 +39,12 @@ export interface HealthResult {
 export interface PostInput {
   title: string;
   html: string;
-  status: 'published' | 'draft';
+  /**
+   * `scheduled` means "publish this at `publish_at`, not now". Each adapter
+   * maps it to its own token — Ghost's `scheduled`, WordPress's `future` —
+   * because the two platforms do not share one.
+   */
+  status: PostStatus;
 
   /** Shown in listings and feeds. Ghost's writable field — `excerpt` is read-only. */
   custom_excerpt?: string;
@@ -80,7 +86,23 @@ export interface PostInput {
 
   tags?: string[];
   authors?: string[];
-  published_at?: string;
+
+  /**
+   * When the post should carry as its publish time, as whole-second UTC ISO.
+   *
+   * Named `publish_at` and not `published_at` — the field it used to be called
+   * — because past tense is wrong for its main use and actively misleading to
+   * the model filling it in: with `status: 'scheduled'` this is a time that has
+   * not happened yet. Each adapter maps it to its own wire field (Ghost's
+   * `published_at`, WordPress's `date_gmt`); nothing forwards this name
+   * verbatim. Under its old name the Ghost adapter DID forward it verbatim, by
+   * accident, through a loop that copies every key — so the field was half-wired
+   * on one platform and warned as unsupported on the other.
+   *
+   * What a given `status` + `publish_at` pair is permitted to mean is decided
+   * once, in `resolveTiming` (`./schedule.ts`), before any adapter sees it.
+   */
+  publish_at?: string;
 }
 
 /** Fields the caller set that came back empty from the platform. */
@@ -88,6 +110,13 @@ export interface PostResult {
   id: string;
   url: string;
   status: string;
+  /**
+   * The publish time the platform actually stored, as UTC ISO — present
+   * whenever `publish_at` was sent. Read back from the platform's own
+   * response rather than echoed from the request, so it reports what is true
+   * rather than what was asked for.
+   */
+  publish_at?: string;
   /** Non-fatal: fields the platform silently discarded. Never empty-but-absent. */
   warnings?: string[];
 }
@@ -133,6 +162,27 @@ export interface PlatformAdapter {
    * `upload_image`'s tool result into `PostInput.feature_image_id`.
    */
   uploadImage(file: Buffer, filename: string, alt?: string): Promise<{ url: string; id?: string }>;
+  /**
+   * The BLOG's own timezone — what a wall-clock `publish_at` is read in.
+   *
+   * "Publish at 10am tomorrow" means 10am *on the blog*. The machine running
+   * Byline never enters into it, so this cannot be answered locally: it is a
+   * setting on the platform and has to be fetched from it. Ghost reports an
+   * IANA zone under the `timezone` key of `GET /settings/`; WordPress reports
+   * `timezone_string` on `GET /wp-json/`, or — when the site is configured by
+   * offset rather than by city — an empty string plus a `gmt_offset`.
+   *
+   * **Throw rather than defaulting to UTC.** A blog whose timezone could not
+   * be read is a blog Byline cannot schedule for correctly, and quietly
+   * assuming UTC would publish at the wrong hour for most of the world while
+   * reporting success. `parsePublishAt` turns the absence into a refusal that
+   * tells the caller to pass an explicit offset instead.
+   *
+   * Callers should not call this repeatedly — it is a setting, not a
+   * per-request fact. `cachedTimezone` in `../schedule.ts` memoises it per
+   * site, caching successes only.
+   */
+  siteTimezone(): Promise<SiteTimezone>;
   createPost(post: PostInput): Promise<PostResult>;
   updatePost(id: string, patch: Partial<PostInput>): Promise<PostResult>;
   listTags(): Promise<Array<{ id: string; name: string; slug: string }>>;

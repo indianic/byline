@@ -238,30 +238,70 @@ skipping it once already shipped a broken or silently-wrong feature.
    not merely that a warning was suppressed. Stopping after the first two is
    the mistake that shipped a feature which typechecked, built, and did
    nothing.
-6. **Never let unsupported fields disappear silently.** Every field the new
+6. **Map every member of `PostStatus`, and measure what the platform does with
+   a publish time — including the cases that should fail.** `PostStatus` has
+   three members and the platforms agree on none of the names (`published` is
+   Ghost's `published` and WordPress's `publish`; `scheduled` is Ghost's
+   `scheduled` and WordPress's `future`). Write the mapping as a **total
+   record**, never a ternary chain: WordPress's used to be
+   `status === 'published' ? 'publish' : 'draft'`, which folded every
+   unrecognised status into a draft, so adding `scheduled` would have silently
+   drafted every scheduled post with no error and no failing test.
+
+   Then probe, live, all four of: a scheduled post with a *valid* future time; a
+   scheduled post with **no** time; a scheduled post with a **past** time; and a
+   `published` post with a **future** time. Do not assume a platform rejects the
+   bad ones. Ghost returns 422 for the middle two — WordPress returns **201 and
+   publishes the article immediately**, and the same `published`-plus-future-date
+   request that publishes instantly on Ghost schedules on WordPress. Record the
+   measured lead time the platform needs (WordPress: 45 s published, 60 s
+   scheduled, measured against *its* clock via the `Date` response header) and,
+   if it is above `MIN_SCHEDULE_LEAD_MS`, raise that constant.
+
+   Finally, implement the read-back check: after writing, confirm the platform
+   really scheduled it and call `assertScheduleApplied` if it did not. A fixed
+   lead-time floor is measured against *this* machine's clock while the platform
+   decides using its own; only the read-back is true when the two disagree.
+7. **Implement `siteTimezone()`, and make it throw rather than default.** A
+   `publish_at` like `2026-08-04T10:00` is read in the **blog's** timezone —
+   not the caller's, not the host's — so every platform must be able to report
+   its own. Find where the platform states it and probe the shape rather than
+   trusting its docs: Ghost puts an IANA name under the `timezone` key of
+   `GET /settings/`; WordPress puts `timezone_string` on `GET /wp-json/` and
+   falls back to `gmt_offset`, which the probed install returned as the
+   **string** `"0"` despite being documented as a number.
+
+   Prefer an IANA zone name over a numeric offset whenever the platform offers
+   one — an offset cannot express daylight saving, so a blog in
+   `America/New_York` captured as `-05:00` publishes an hour wrong for half the
+   year. And do **not** return UTC when the lookup fails. Assuming UTC for a
+   blog in Kolkata publishes five and a half hours early while reporting
+   success; throwing turns that into a refusal that tells the caller to pass an
+   explicit offset.
+8. **Never let unsupported fields disappear silently.** Every field the new
    platform's core can't store must produce a warning naming the field (see
    `UNSUPPORTED_FIELD_REASONS` in `wordpress/index.ts`), not a silent drop —
    and if you're deriving something like `schema_injected` from whether a
    field was accepted, derive it from that warning mechanism, not from whether
    the value was merely built.
-7. **If the platform's ingest behaviour is not a fixed constant** (varies by
+9. **If the platform's ingest behaviour is not a fixed constant** (varies by
    account, role, or install — as WordPress's does by `unfiltered_html`),
    resolve the `HtmlProfile` per site/account, cache it per the caching
    contract on `PlatformPlugin.htmlProfile`, and mark every UNVERIFIED branch
    as UNVERIFIED in both the code comments and the platform's own README —
    don't let an unmeasured guess read as a measured fact.
-8. **Assume the new profile's `preserved` / `unwrapped` / `visualContainers`
+10. **Assume the new profile's `preserved` / `unwrapped` / `visualContainers`
    might be empty, and check that the shared renderers in `src/craft/` don't
    fabricate a tag name or become impossible to satisfy when they are.** This
    is condition (b) above — it will not show up in `tsc` or in the platform's
    own unit tests.
-9. **Render a brief and score a draft with the new profile, and READ the
+11. **Render a brief and score a draft with the new profile, and READ the
    output.** Not "the tests pass" — read the actual English sentences
    `build_writing_brief` and `score_draft` produce for this profile, including
    its empty-collection edge cases, the way you'd read it as the writer who
    has to act on it. This is what caught both `score.ts` defects above; a
    green test suite did not.
-10. **Publish one real post end to end and read it back from the live site.**
+12. **Publish one real post end to end and read it back from the live site.**
    Not the adapter's own mocked unit tests — an actual `create_post` against a
    real, throwaway install, followed by actually fetching the created post and
    confirming every field landed the way the response claimed it did. This is
@@ -269,7 +309,7 @@ skipping it once already shipped a broken or silently-wrong feature.
    test suite did not catch that either, because the test that would have
    caught it didn't exist yet.
 
-Steps 9 and 10 are not optional polish at the end — they are the only two steps
+Steps 11 and 12 are not optional polish at the end — they are the only two steps
 in this whole checklist that would have caught either of WordPress's two real
 defects. Everything before them (`tsc`, unit tests, `npm run build`) passed
 while both defects were still live in the code.

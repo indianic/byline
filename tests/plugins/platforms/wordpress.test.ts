@@ -749,3 +749,221 @@ describe('WordPressAdapter — unresolved image placeholder', () => {
     ).resolves.toMatchObject({ id: '1' });
   });
 });
+
+describe('WordPressAdapter scheduling', () => {
+  const SCHEDULED = '2026-08-04T09:00:00.000Z';
+  /** What WordPress echoes back: UTC, no offset marker. */
+  const WIRE = '2026-08-04T09:00:00';
+
+  /** create + read-back, with the fields the scheduling path actually reads. */
+  function schedulingStub(readBackOverrides: Record<string, unknown> = {}) {
+    return stub((url, init) => {
+      if (url.includes('context=edit') && (!init || (init.method ?? 'GET') === 'GET')) {
+        return new Response(
+          JSON.stringify({
+            title: { raw: 'T' },
+            content: { raw: '<p>x</p>' },
+            status: 'future',
+            date_gmt: WIRE,
+            ...readBackOverrides,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({ id: 42, link: 'https://wp.example.com/?p=42', status: 'future', date_gmt: WIRE }),
+        { status: init?.method === 'PUT' ? 200 : 201 },
+      );
+    });
+  }
+
+  it('maps status scheduled -> future and publish_at -> date_gmt', async () => {
+    const calls = schedulingStub();
+    await new WordPressAdapter(site).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'scheduled',
+      publish_at: SCHEDULED,
+    });
+    const body = JSON.parse(String(calls.find((c) => c.init?.method === 'POST')!.init!.body));
+    expect(body.status).toBe('future');
+    // `date_gmt`, never `date`: `date` is read in the SITE's timezone, so a UTC
+    // instant sent there lands at the wrong hour on any non-UTC site — and the
+    // site this was probed against was UTC, which is exactly where that mistake
+    // is invisible.
+    expect(body.date_gmt).toBe(WIRE);
+    expect(body.date).toBeUndefined();
+  });
+
+  it('strips the trailing Z, matching the form WordPress echoes back', async () => {
+    const calls = schedulingStub();
+    await new WordPressAdapter(site).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'scheduled',
+      publish_at: SCHEDULED,
+    });
+    const body = JSON.parse(String(calls.find((c) => c.init?.method === 'POST')!.init!.body));
+    expect(body.date_gmt.endsWith('Z')).toBe(false);
+  });
+
+  // THE defect this feature is defended against. WordPress answers 201 with the
+  // status quietly rewritten to `publish`, no error anywhere, and the article
+  // live. Reporting that as a successful schedule is the failure.
+  it('refuses to report success when WordPress published instead of scheduling', async () => {
+    schedulingStub({ status: 'publish' });
+    await expect(
+      new WordPressAdapter(site).createPost({
+        title: 'T',
+        html: '<p>x</p>',
+        status: 'scheduled',
+        publish_at: SCHEDULED,
+      }),
+    ).rejects.toMatchObject({ code: 'SCHEDULE_NOT_APPLIED' });
+  });
+
+  it('checks the read-back, not the create response, since the create response is what got rewritten', async () => {
+    // Create says `future`; the read-back — the post's actual state — says
+    // `publish`. Trusting the create response here would report success.
+    stub((url, init) => {
+      if (url.includes('context=edit') && (!init || (init.method ?? 'GET') === 'GET') ) {
+        return new Response(
+          JSON.stringify({ title: { raw: 'T' }, content: { raw: '<p>x</p>' }, status: 'publish', date_gmt: WIRE }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({ id: 42, link: 'https://wp.example.com/?p=42', status: 'future', date_gmt: WIRE }),
+        { status: 201 },
+      );
+    });
+    await expect(
+      new WordPressAdapter(site).createPost({
+        title: 'T',
+        html: '<p>x</p>',
+        status: 'scheduled',
+        publish_at: SCHEDULED,
+      }),
+    ).rejects.toMatchObject({ code: 'SCHEDULE_NOT_APPLIED' });
+  });
+
+  it('reports the stored publish time back as explicit UTC', async () => {
+    schedulingStub();
+    const r = await new WordPressAdapter(site).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'scheduled',
+      publish_at: SCHEDULED,
+    });
+    expect(r.publish_at).toBe(SCHEDULED);
+    expect(r.status).toBe('future');
+  });
+
+  // It was listed in UNSUPPORTED_FIELD_REASONS while scheduling was unwired.
+  // Leaving it there would now warn that a field was dropped on every call
+  // where it was stored correctly.
+  it('no longer warns that a publish time was not sent', async () => {
+    schedulingStub();
+    const r = await new WordPressAdapter(site).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'scheduled',
+      publish_at: SCHEDULED,
+    });
+    expect(JSON.stringify(r.warnings ?? [])).not.toMatch(/publish_at|not wired up/);
+  });
+
+  it('warns when WordPress stored a different instant than was sent', async () => {
+    schedulingStub({ status: 'publish', date_gmt: '2026-08-04T11:00:00' });
+    const r = await new WordPressAdapter(site).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'published',
+      publish_at: SCHEDULED,
+    });
+    expect(r.warnings?.join(' ')).toContain('2026-08-04T11:00:00.000Z');
+  });
+
+  // The status map used to be `status === 'published' ? 'publish' : 'draft'`,
+  // which folds every unrecognised status into a draft. Adding `scheduled`
+  // without touching it would have silently drafted every scheduled post.
+  it('never folds an unhandled status into draft', async () => {
+    for (const [input, wire] of [
+      ['published', 'publish'],
+      ['draft', 'draft'],
+      ['scheduled', 'future'],
+    ] as const) {
+      const calls = schedulingStub({ status: wire });
+      await new WordPressAdapter(site).createPost({
+        title: 'T',
+        html: '<p>x</p>',
+        status: input,
+        ...(input === 'scheduled' ? { publish_at: SCHEDULED } : {}),
+      });
+      const body = JSON.parse(String(calls.find((c) => c.init?.method === 'POST')!.init!.body));
+      expect(body.status, `${input} should map to ${wire}`).toBe(wire);
+    }
+  });
+});
+
+describe('WordPressAdapter.siteTimezone', () => {
+  const root = (body: Record<string, unknown>) =>
+    stub((url) => {
+      if (url.endsWith('/wp-json/') || url.endsWith('/wp-json')) {
+        return new Response(JSON.stringify(body), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    });
+
+  // Measured 2026-08-03: the probed install returns gmt_offset as the STRING
+  // "0", despite WordPress documenting it as a number. A `typeof === 'number'`
+  // check would reject this exact real site, and arithmetic on "0" would
+  // concatenate rather than add.
+  it('accepts gmt_offset as a string, which is what a real install returned', async () => {
+    root({ timezone_string: '', gmt_offset: '0' });
+    expect(await new WordPressAdapter(site).siteTimezone()).toEqual({
+      kind: 'fixed',
+      offsetMinutes: 0,
+      label: 'UTC+00:00',
+    });
+  });
+
+  it('accepts gmt_offset as a number too', async () => {
+    root({ timezone_string: '', gmt_offset: -8 });
+    expect(await new WordPressAdapter(site).siteTimezone()).toEqual({
+      kind: 'fixed',
+      offsetMinutes: -480,
+      label: 'UTC-08:00',
+    });
+  });
+
+  // Half- and quarter-hour offsets are real: India 5.5, Nepal 5.75,
+  // Chatham 12.75. Truncating hours would put those blogs 30-45 min out.
+  it.each([
+    ['5.5', 330, 'UTC+05:30'],
+    ['5.75', 345, 'UTC+05:45'],
+    ['-9.5', -570, 'UTC-09:30'],
+  ])('handles the fractional offset %s', async (raw, offsetMinutes, label) => {
+    root({ timezone_string: '', gmt_offset: raw });
+    expect(await new WordPressAdapter(site).siteTimezone()).toEqual({ kind: 'fixed', offsetMinutes, label });
+  });
+
+  // An IANA name knows about daylight saving; a fixed offset cannot. When
+  // WordPress offers both, the name has to win.
+  it('prefers timezone_string over gmt_offset when the site is configured by city', async () => {
+    root({ timezone_string: 'America/New_York', gmt_offset: '-5' });
+    expect(await new WordPressAdapter(site).siteTimezone()).toEqual({
+      kind: 'iana',
+      zone: 'America/New_York',
+    });
+  });
+
+  // Never UTC-by-default: that publishes at the wrong hour while reporting
+  // success. A refusal sends the caller to an explicit offset instead.
+  it('throws rather than assuming UTC when neither field is usable', async () => {
+    root({ timezone_string: '', gmt_offset: null });
+    await expect(new WordPressAdapter(site).siteTimezone()).rejects.toMatchObject({
+      code: 'NO_SITE_TIMEZONE',
+    });
+  });
+});

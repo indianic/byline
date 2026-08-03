@@ -1,6 +1,12 @@
 import type { SiteConfig } from '../../../config/sites.js';
 import { ToolError } from '../../../errors.js';
 import { ghostToken } from './auth.js';
+import {
+  assertScheduleApplied,
+  normaliseStoredTime,
+  publishTimeWarning,
+  type SiteTimezone,
+} from '../schedule.js';
 import type { HealthResult, PlatformAdapter, PostInput, PostResult } from '../types.js';
 
 interface GhostErrorBody {
@@ -44,6 +50,23 @@ export class GhostAdapter implements PlatformAdapter {
   }
 
   private async request(path: string, init: RequestInit = {}, json = true): Promise<unknown> {
+    return (await this.requestFull(path, init, json)).body;
+  }
+
+  /**
+   * As `request`, but also hands back Ghost's `Date` response header.
+   *
+   * Only the post-writing paths need it, and only to diagnose a scheduling
+   * result: if Ghost stores a different publish time than was sent, the useful
+   * question is what Ghost's own clock said at that moment, and the answer has
+   * to come from the same response rather than from a second call made later.
+   * `request` stays the shape every other call site already uses.
+   */
+  private async requestFull(
+    path: string,
+    init: RequestInit = {},
+    json = true,
+  ): Promise<{ body: unknown; serverDate: string | null }> {
     const url = `${this.base}/${path}`;
     let res: Response;
     try {
@@ -78,13 +101,19 @@ export class GhostAdapter implements PlatformAdapter {
           (res.status === 401
             ? `Ghost rejected the JWT for "${this.slug}"`
             : `Ghost returned ${res.status} for ${path}`),
+        // `context` carries Ghost's actual reason on a 422 while `message` is
+        // the generic "Validation error, cannot save post." — measured
+        // 2026-08-03, where the two scheduling refusals ("Value in
+        // published_at cannot be blank.", "Date must be at least -2 minutes in
+        // the future.") appear ONLY in `context`. Without it a caller sees a
+        // validation failure with nothing naming the field.
         hint:
           res.status === 401
             ? `Check the admin key for "${this.slug}" is the Admin API Key in id:secret form`
-            : 'Run health_check to test all configured APIs',
+            : (first?.context ?? 'Run health_check to test all configured APIs'),
       });
     }
-    return body;
+    return { body, serverDate: res.headers.get('date') };
   }
 
   /**
@@ -165,6 +194,33 @@ export class GhostAdapter implements PlatformAdapter {
   }
 
   /**
+   * The blog's timezone, from `GET /settings/`.
+   *
+   * Measured 2026-08-03: `settings` is a flat array of `{ key, value }` pairs
+   * (113 of them on the probed install), and `timezone` holds an IANA zone
+   * name — `"Asia/Kolkata"` on one probed blog, `"Asia/Dubai"` on another.
+   * Always an IANA name, never a numeric offset, which is what lets daylight
+   * saving be resolved per instant rather than sampled once.
+   *
+   * Throws rather than falling back to UTC — see `PlatformAdapter.siteTimezone`.
+   */
+  async siteTimezone(): Promise<SiteTimezone> {
+    const body = (await this.request('settings/')) as {
+      settings?: Array<{ key?: string; value?: unknown }>;
+    };
+    const zone = body.settings?.find((s) => s.key === 'timezone')?.value;
+    if (typeof zone !== 'string' || zone.trim() === '') {
+      throw new ToolError({
+        api: `ghost:${this.slug}`,
+        code: 'NO_SITE_TIMEZONE',
+        message: `Ghost returned no timezone setting for "${this.slug}".`,
+        hint: 'Set the site timezone in Ghost (Settings → General → Publication language & timezone), or pass publish_at with an explicit offset.',
+      });
+    }
+    return { kind: 'iana', zone: zone.trim() };
+  }
+
+  /**
    * Ghost wants tags and authors as objects, and rejects explicit nulls.
    *
    * `feature_image_id` is dropped here rather than sent: it exists only for
@@ -172,6 +228,13 @@ export class GhostAdapter implements PlatformAdapter {
    * rejects unknown fields silently rather than erroring — sending it would
    * do nothing except risk `droppedFields` below misreporting it as
    * discarded content.
+   *
+   * `publish_at` is renamed to Ghost's own `published_at`. That rename is
+   * explicit, and has to be: this loop copies every key it does not recognise
+   * straight through, which is precisely how the field used to reach Ghost
+   * back when `PostInput` called it `published_at` too — forwarded by
+   * coincidence rather than by decision, unmentioned in any adapter, and
+   * simultaneously reported as unsupported by the WordPress one.
    */
   private toGhostPost(post: Partial<PostInput>): Record<string, unknown> {
     const out: Record<string, unknown> = {};
@@ -179,9 +242,76 @@ export class GhostAdapter implements PlatformAdapter {
       if (v === undefined || k === 'feature_image_id') continue;
       if (k === 'tags') out.tags = (v as string[]).map((name) => ({ name }));
       else if (k === 'authors') out.authors = (v as string[]).map((id) => ({ id }));
+      // Ghost's status vocabulary already contains `scheduled`, so
+      // `PostStatus` maps onto it one-for-one and needs no translation table.
+      else if (k === 'publish_at') out.published_at = v;
       else out[k] = v;
     }
     return out;
+  }
+
+  /**
+   * Everything a written post needs checked after the fact, in one place so
+   * `createPost` and `updatePost` cannot verify it differently.
+   *
+   * `serverDate` is Ghost's own clock at the moment it handled the write —
+   * only consulted when something went wrong, and only so the resulting error
+   * names a real reading instead of speculating about whose clock was off.
+   */
+  private verifyWrite(
+    sent: Partial<PostInput>,
+    returned: Record<string, unknown>,
+    serverDate: string | null,
+  ): string[] {
+    const warnings: string[] = [];
+    const dropped = this.droppedFields(sent, returned);
+    if (dropped.length > 0) {
+      warnings.push(
+        `Ghost discarded these fields: ${dropped.join(', ')}. Check the field names against the Ghost Admin API.`,
+      );
+    }
+
+    if (sent.publish_at !== undefined) {
+      const storedAt = returned.published_at;
+      if (sent.status === 'scheduled') {
+        assertScheduleApplied({
+          api: `ghost:${this.slug}`,
+          platform: 'Ghost',
+          scheduledToken: 'scheduled',
+          requestedIso: sent.publish_at,
+          returnedStatus: String(returned.status),
+          id: String(returned.id),
+          url: String(returned.url),
+          serverDate,
+        });
+      }
+      const timeWarning = publishTimeWarning(
+        sent.publish_at,
+        typeof storedAt === 'string' ? storedAt : null,
+        'Ghost',
+      );
+      if (timeWarning) warnings.push(timeWarning);
+    }
+    return warnings;
+  }
+
+  /**
+   * The `publish_at` fragment of a `PostResult`, present only when a publish
+   * time was asked for and Ghost echoed a readable one back.
+   *
+   * Routed through the shared `normaliseStoredTime` rather than passing
+   * Ghost's own string through, so that the same instant reports identically
+   * whether it came from Ghost or from WordPress — the two platforms echo it
+   * in different shapes.
+   */
+  private storedPublishAt(
+    sent: Partial<PostInput>,
+    returned: Record<string, unknown>,
+  ): { publish_at?: string } {
+    if (sent.publish_at === undefined) return {};
+    const raw = returned.published_at;
+    const stored = normaliseStoredTime(typeof raw === 'string' ? raw : null);
+    return stored === null ? {} : { publish_at: stored };
   }
 
   private assertResolved(html: string | undefined): void {
@@ -212,12 +342,19 @@ export class GhostAdapter implements PlatformAdapter {
       // 'feature_image_id' is never sent to Ghost (see toGhostPost) — checking
       // it here would always find it "missing" from the response and
       // misreport a field Ghost was never asked to store.
+      //
+      // 'publish_at' is sent, but under Ghost's name (`published_at`), so this
+      // loop's `returned[key]` lookup would find nothing and report a field
+      // Ghost stored correctly as discarded. It is verified by value instead —
+      // see `verifyWrite`, which compares the stored instant against the one
+      // that was sent rather than merely checking the key came back non-empty.
       if (
         value === undefined ||
         key === 'html' ||
         key === 'tags' ||
         key === 'authors' ||
-        key === 'feature_image_id'
+        key === 'feature_image_id' ||
+        key === 'publish_at'
       )
         continue;
       const back = returned[key];
@@ -230,10 +367,11 @@ export class GhostAdapter implements PlatformAdapter {
 
   async createPost(post: PostInput): Promise<PostResult> {
     this.assertResolved(post.html);
-    const body = (await this.request('posts/?source=html', {
+    const { body: raw, serverDate } = await this.requestFull('posts/?source=html', {
       method: 'POST',
       body: JSON.stringify({ posts: [this.toGhostPost(post)] }),
-    })) as { posts?: Array<Record<string, unknown>> };
+    });
+    const body = raw as { posts?: Array<Record<string, unknown>> };
     const created = body.posts?.[0];
     if (!created) {
       throw new ToolError({
@@ -242,18 +380,13 @@ export class GhostAdapter implements PlatformAdapter {
         message: 'Ghost returned no post object',
       });
     }
-    const dropped = this.droppedFields(post, created);
+    const warnings = this.verifyWrite(post, created, serverDate);
     return {
       id: String(created.id),
       url: String(created.url),
       status: String(created.status),
-      ...(dropped.length > 0
-        ? {
-            warnings: [
-              `Ghost discarded these fields: ${dropped.join(', ')}. Check the field names against the Ghost Admin API.`,
-            ],
-          }
-        : {}),
+      ...this.storedPublishAt(post, created),
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
 
@@ -271,10 +404,11 @@ export class GhostAdapter implements PlatformAdapter {
       });
     }
 
-    const body = (await this.request(`posts/${id}/?source=html`, {
+    const { body: raw, serverDate } = await this.requestFull(`posts/${id}/?source=html`, {
       method: 'PUT',
       body: JSON.stringify({ posts: [{ ...this.toGhostPost(patch), updated_at: updatedAt }] }),
-    })) as { posts?: Array<Record<string, unknown>> };
+    });
+    const body = raw as { posts?: Array<Record<string, unknown>> };
     const updated = body.posts?.[0];
     if (!updated) {
       throw new ToolError({
@@ -283,18 +417,13 @@ export class GhostAdapter implements PlatformAdapter {
         message: 'Ghost returned no post object after update',
       });
     }
-    const dropped = this.droppedFields(patch, updated);
+    const warnings = this.verifyWrite(patch, updated, serverDate);
     return {
       id: String(updated.id),
       url: String(updated.url),
       status: String(updated.status),
-      ...(dropped.length > 0
-        ? {
-            warnings: [
-              `Ghost discarded these fields: ${dropped.join(', ')}. Check the field names against the Ghost Admin API.`,
-            ],
-          }
-        : {}),
+      ...this.storedPublishAt(patch, updated),
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
 

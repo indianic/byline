@@ -9,6 +9,7 @@ import { loadPersonas } from '../src/config/personas.js';
 import { SLUG_PATTERN, loadSites, usableSites } from '../src/config/sites.js';
 import { type Context, loadContext } from '../src/context.js';
 import { buildServer } from '../src/index.js';
+import { MIN_SCHEDULE_LEAD_MS, clearTimezoneCache } from '../src/plugins/platforms/schedule.js';
 import type { PlatformPlugin } from '../src/plugins/platforms/types.js';
 import { PLATFORM_PLUGINS } from '../src/plugins/registry.js';
 import { TavilyResearch } from '../src/plugins/research/tavily/index.js';
@@ -2429,5 +2430,274 @@ describe('score_draft findings survive the tool layer', () => {
     const check = r.checks.find((c: { name: string }) => c.name === 'citation_provenance');
     expect(check.detail).toContain('not evaluated');
     expect(check.ok).toBe(true);
+  });
+});
+
+// The MCP SDK silently strips any key the input schema does not declare, so a
+// field can exist on `PostInput`, be mapped correctly by every adapter, pass
+// `tsc`, and still never reach the adapter from a real client. That is exactly
+// how `feature_image_id` shipped doing nothing. These go through the real tool
+// layer for that reason — the adapter suites cannot see this class of defect.
+describe('create_post scheduling, through the real tool layer', () => {
+  const ghostStub = (respond: (body: any) => unknown) => {
+    let sent: any;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: string, i: RequestInit = {}) => {
+        if (i.body) sent = JSON.parse(String(i.body));
+        return new Response(JSON.stringify(respond(sent)), { status: 201 });
+      }),
+    );
+    return () => sent;
+  };
+
+  it('forwards publish_at to the adapter as Ghost’s published_at', async () => {
+    const when = new Date(Date.now() + 3_600_000);
+    when.setMilliseconds(0);
+    const iso = when.toISOString();
+    const sent = ghostStub(() => ({
+      posts: [{ id: 'p1', url: 'u', title: 'T', status: 'scheduled', published_at: iso }],
+    }));
+
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      images: 'none',
+      schema: false,
+      status: 'scheduled',
+      publish_at: iso,
+    });
+
+    expect(sent().posts[0].status).toBe('scheduled');
+    expect(sent().posts[0].published_at).toBe(iso);
+    expect(r.ok).toBe(true);
+    expect(r.publish_at).toBe(iso);
+  });
+
+  // Each of these must be refused BEFORE any request is made — a guard that
+  // only runs after the post exists is not a guard.
+  it.each([
+    ['scheduled with no publish_at', { status: 'scheduled' }, 'SCHEDULE_TIME_REQUIRED'],
+    // A bare date is refused whatever the blog's timezone turns out to be, so
+    // it must not cost a timezone lookup — see `needsSiteTimezone`.
+    ['a bare date', { status: 'scheduled', publish_at: '2026-08-04' }, 'PUBLISH_AT_UNPARSEABLE'],
+    ['a phrase', { status: 'scheduled', publish_at: 'next friday 9am' }, 'PUBLISH_AT_UNPARSEABLE'],
+  ])('refuses %s without contacting the platform', async (_label, args, code) => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      images: 'none',
+      ...(args as Record<string, unknown>),
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe(code);
+    expect(fetchSpy, 'the guard must run before any network call').not.toHaveBeenCalled();
+  });
+
+  it('refuses a too-soon time, and a future time paired with status "published"', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const soon = new Date(Date.now() + 30_000).toISOString();
+    const later = new Date(Date.now() + 3_600_000).toISOString();
+    const base = { site: 'personal', title: 'T', html: '<p>x</p>', images: 'none' };
+
+    expect((await call('create_post', { ...base, status: 'scheduled', publish_at: soon })).code).toBe(
+      'SCHEDULE_TIME_TOO_SOON',
+    );
+    expect((await call('create_post', { ...base, status: 'published', publish_at: later })).code).toBe(
+      'SCHEDULE_STATUS_MISMATCH',
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('backdates with a past time and status "published"', async () => {
+    const past = new Date(Date.now() - 30 * 86_400_000);
+    past.setMilliseconds(0);
+    const iso = past.toISOString();
+    const sent = ghostStub(() => ({
+      posts: [{ id: 'p1', url: 'u', title: 'T', status: 'published', published_at: iso }],
+    }));
+
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      images: 'none',
+      schema: false,
+      status: 'published',
+      publish_at: iso,
+    });
+    expect(sent().posts[0].published_at).toBe(iso);
+    expect(r.ok).toBe(true);
+  });
+
+  // The floor is a measured number, not a slogan. If the constant moves, the
+  // sentence the host model reads has to move with it — a description
+  // promising a floor the guard no longer enforces is repeated to the user as
+  // fact.
+  it('states the real lead-time floor in the tool description', async () => {
+    const tools = (await client.listTools()).tools;
+    for (const name of ['create_post', 'update_post']) {
+      const desc = (tools.find((t) => t.name === name)!.inputSchema as any).properties.publish_at
+        .description as string;
+      expect(desc, name).toContain(`at least ${MIN_SCHEDULE_LEAD_MS / 60_000} minutes in the future`);
+    }
+  });
+});
+
+describe('update_post scheduling', () => {
+  it('refuses publish_at with no status, since what it means depends on the post’s current state', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const r = await call('update_post', {
+      site: 'personal',
+      post_id: 'p1',
+      publish_at: '2026-09-04T09:00:00Z',
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('PUBLISH_AT_NEEDS_STATUS');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('schedules an existing draft', async () => {
+    const when = new Date(Date.now() + 3_600_000);
+    when.setMilliseconds(0);
+    const iso = when.toISOString();
+    let put: any;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: string, i: RequestInit = {}) => {
+        if (i.method === 'PUT') {
+          put = JSON.parse(String(i.body));
+          return new Response(
+            JSON.stringify({ posts: [{ id: 'p1', url: 'u', status: 'scheduled', published_at: iso }] }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({ posts: [{ id: 'p1', updated_at: '2026-08-01T10:00:00.000Z' }] }),
+          { status: 200 },
+        );
+      }),
+    );
+
+    const r = await call('update_post', {
+      site: 'personal',
+      post_id: 'p1',
+      status: 'scheduled',
+      publish_at: iso,
+    });
+    expect(put.posts[0].published_at).toBe(iso);
+    expect(put.posts[0].status).toBe('scheduled');
+    expect(r.publish_at).toBe(iso);
+  });
+});
+
+// The rule the user asked for, proven through the real tool layer: "10am
+// tomorrow" is 10am ON THE BLOG. Nothing about this machine may enter into it.
+describe('a wall-clock publish_at is read in the blog’s timezone', () => {
+  beforeEach(() => clearTimezoneCache());
+
+  /** Ghost, answering /settings/ with a timezone and echoing the post back. */
+  function ghostInZone(zone: string) {
+    const calls: string[] = [];
+    let sent: any;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (u: string | URL, i: RequestInit = {}) => {
+        const url = String(u);
+        calls.push(url);
+        if (url.includes('settings/')) {
+          return new Response(
+            JSON.stringify({ settings: [{ key: 'title', value: 'T' }, { key: 'timezone', value: zone }] }),
+            { status: 200 },
+          );
+        }
+        sent = JSON.parse(String(i.body));
+        return new Response(
+          JSON.stringify({
+            posts: [
+              {
+                id: 'p1',
+                url: 'u',
+                title: 'T',
+                status: 'scheduled',
+                published_at: sent.posts[0].published_at,
+              },
+            ],
+          }),
+          { status: 201 },
+        );
+      }),
+    );
+    return { calls, sent: () => sent };
+  }
+
+  const post = (publish_at: string) => ({
+    site: 'personal',
+    title: 'T',
+    html: '<p>x</p>',
+    images: 'none' as const,
+    schema: false,
+    status: 'scheduled' as const,
+    publish_at,
+  });
+
+  it('converts 10am on an Asia/Kolkata blog to 04:30Z', async () => {
+    const g = ghostInZone('Asia/Kolkata');
+    const r = await call('create_post', post('2026-09-04T10:00'));
+    expect(r.ok).toBe(true);
+    expect(g.sent().posts[0].published_at).toBe('2026-09-04T04:30:00.000Z');
+    expect(r.publish_at).toBe('2026-09-04T04:30:00.000Z');
+    // What the user actually asked for, echoed back in their own terms.
+    expect(r.publish_at_local).toBe('2026-09-04 10:00:00 (Asia/Kolkata)');
+  });
+
+  // Same string, different blog timezone, different instant. This is the pair
+  // that makes the rule observable — either alone would also pass under a
+  // naive host-timezone implementation.
+  it('converts the SAME 10am to 06:00Z on an Asia/Dubai blog', async () => {
+    const g = ghostInZone('Asia/Dubai');
+    const r = await call('create_post', post('2026-09-04T10:00'));
+    expect(g.sent().posts[0].published_at).toBe('2026-09-04T06:00:00.000Z');
+    expect(r.publish_at_local).toBe('2026-09-04 10:00:00 (Asia/Dubai)');
+  });
+
+  it('takes an explicit offset at face value and does not consult the blog', async () => {
+    const g = ghostInZone('Asia/Kolkata');
+    const r = await call('create_post', post('2026-09-04T10:00:00Z'));
+    expect(g.sent().posts[0].published_at).toBe('2026-09-04T10:00:00.000Z');
+    expect(g.calls.some((u) => u.includes('settings/'))).toBe(false);
+  });
+
+  // A blog's timezone is a setting, not a per-request fact. Fetching it on
+  // every publish would add a round trip to every post.
+  it('fetches the blog timezone once, not once per post', async () => {
+    const g = ghostInZone('Asia/Kolkata');
+    await call('create_post', post('2026-09-04T10:00'));
+    await call('create_post', post('2026-09-05T10:00'));
+    expect(g.calls.filter((u) => u.includes('settings/'))).toHaveLength(1);
+  });
+
+  // Never silently assume UTC: that publishes five and a half hours early for
+  // a Kolkata blog while reporting success.
+  it('refuses rather than guessing when the blog reports no timezone', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (u: string | URL) =>
+        String(u).includes('settings/')
+          ? new Response(JSON.stringify({ settings: [{ key: 'title', value: 'T' }] }), { status: 200 })
+          : new Response(JSON.stringify({ posts: [{ id: 'p', url: 'u', status: 'scheduled' }] }), {
+              status: 201,
+            }),
+      ),
+    );
+    const r = await call('create_post', post('2026-09-04T10:00'));
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('NO_SITE_TIMEZONE');
   });
 });
