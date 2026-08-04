@@ -546,3 +546,75 @@ describe('GhostAdapter.siteTimezone', () => {
     });
   });
 });
+
+describe('GhostAdapter keeps the social card pointing at the hero', () => {
+  /** GET returns `before`; PUT captures what was actually sent. */
+  function stubUpdate(before: Record<string, unknown>) {
+    const sent: { body?: any } = {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (u: string | URL, i: RequestInit = {}) => {
+        if (i.method === 'PUT') {
+          sent.body = JSON.parse(String(i.body)).posts[0];
+          return new Response(
+            JSON.stringify({
+              posts: [{ id: 'p1', url: 'u', title: 'T', status: 'published', ...sent.body }],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({ posts: [{ id: 'p1', updated_at: '2026-08-01T10:00:00.000Z', ...before }] }),
+          { status: 200 },
+        );
+      }),
+    );
+    return sent;
+  }
+
+  const OLD = 'https://x/old-hero.png';
+  const NEW = 'https://x/new-hero.png';
+
+  // The measured defect: create_post defaults og_image to feature_image, so
+  // changing the hero later left four live posts showing distinct in-article
+  // images and one shared social card.
+  it('moves og_image and twitter_image with the hero when they were defaulted', async () => {
+    const sent = stubUpdate({ feature_image: OLD, og_image: OLD, twitter_image: OLD });
+    await new GhostAdapter(SITE).updatePost('p1', { feature_image: NEW });
+    expect(sent.body.og_image).toBe(NEW);
+    expect(sent.body.twitter_image).toBe(NEW);
+  });
+
+  // Silently overwriting a deliberate choice would be a worse bug than the one
+  // being fixed.
+  it('leaves a deliberately different social image alone, and says so', async () => {
+    const custom = 'https://x/custom-card.png';
+    const sent = stubUpdate({ feature_image: OLD, og_image: custom, twitter_image: custom });
+    const r = await new GhostAdapter(SITE).updatePost('p1', { feature_image: NEW });
+    expect(sent.body.og_image).toBeUndefined();
+    expect(r.warnings?.join(' ')).toContain('deliberate choice');
+    expect(r.warnings?.join(' ')).toContain(custom);
+  });
+
+  it('never overrides an og_image the caller passed explicitly', async () => {
+    const explicit = 'https://x/explicit.png';
+    const sent = stubUpdate({ feature_image: OLD, og_image: OLD, twitter_image: OLD });
+    await new GhostAdapter(SITE).updatePost('p1', { feature_image: NEW, og_image: explicit });
+    expect(sent.body.og_image).toBe(explicit);
+    expect(sent.body.twitter_image).toBe(NEW);
+  });
+
+  it('does nothing when the hero is not being changed', async () => {
+    const sent = stubUpdate({ feature_image: OLD, og_image: OLD, twitter_image: OLD });
+    const r = await new GhostAdapter(SITE).updatePost('p1', { title: 'New title' });
+    expect(sent.body.og_image).toBeUndefined();
+    expect(r.warnings ?? []).toEqual([]);
+  });
+
+  it('does nothing when the post had no social images to begin with', async () => {
+    const sent = stubUpdate({ feature_image: OLD });
+    const r = await new GhostAdapter(SITE).updatePost('p1', { feature_image: NEW });
+    expect(sent.body.og_image).toBeUndefined();
+    expect(r.warnings ?? []).toEqual([]);
+  });
+});

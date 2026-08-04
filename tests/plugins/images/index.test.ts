@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ToolError } from '../../../src/errors.js';
 import { AllProvidersFailed, defaultChain, generateImage } from '../../../src/plugins/images/index.js';
+import { GrokImages } from '../../../src/plugins/images/grok/index.js';
 import type { ImageProvider } from '../../../src/plugins/images/types.js';
+
+afterEach(() => vi.unstubAllGlobals());
 
 function provider(name: string, behaviour: 'ok' | 'throw' | 'unconfigured'): ImageProvider {
   return {
@@ -211,5 +214,55 @@ describe('AllProvidersFailed', () => {
   it('still reads as a ToolError to everything that already catches one', () => {
     const err = new AllProvidersFailed([{ provider: 'gemini', code: 'SAFETY', message: 'declined' }]);
     expect(err).toBeInstanceOf(ToolError);
+  });
+});
+
+describe('GrokImages targets a model that still exists', () => {
+  // grok-2-image-1212 was deprecated on 2026-02-24 and sat in this file for
+  // months. Every fallback generation failed, and nothing surfaced it because
+  // healthCheck probed /v1/models — which answers 200 for any valid key
+  // regardless of which models exist. Verified live 2026-08-03:
+  // /v1/image-generation-models returns grok-imagine-image.
+  it('does not use the deprecated grok-2 image model', async () => {
+    let sentModel: string | undefined;
+    vi.stubGlobal('fetch', async (_u: string, i: RequestInit = {}) => {
+      sentModel = JSON.parse(String(i.body)).model;
+      return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('x').toString('base64') }] }), {
+        status: 200,
+      });
+    });
+    await new GrokImages('xai-test').generate('a photograph', { aspect: '16:9' });
+    expect(sentModel).toBe('grok-imagine-image');
+    expect(sentModel).not.toMatch(/grok-2/);
+  });
+
+  // A 200 from a generic models list proves the key works, not that THIS model
+  // is callable — the same defect as Ghost's healthCheck probing /site/.
+  it('reports unhealthy when the model is absent from the account listing', async () => {
+    vi.stubGlobal('fetch', async () =>
+      new Response(JSON.stringify({ models: [{ id: 'grok-imagine-video' }] }), { status: 200 }),
+    );
+    const h = await new GrokImages('xai-test').healthCheck();
+    expect(h.ok).toBe(false);
+    expect(h.detail).toMatch(/not in this account's image models/);
+  });
+
+  it('reports healthy only when the model is actually listed', async () => {
+    vi.stubGlobal('fetch', async () =>
+      new Response(JSON.stringify({ models: [{ id: 'grok-imagine-image' }] }), { status: 200 }),
+    );
+    const h = await new GrokImages('xai-test').healthCheck();
+    expect(h.ok).toBe(true);
+    expect(h.detail).toContain('available');
+  });
+
+  it('probes the image-model endpoint, not the generic one', async () => {
+    let url = '';
+    vi.stubGlobal('fetch', async (u: string) => {
+      url = String(u);
+      return new Response(JSON.stringify({ models: [{ id: 'grok-imagine-image' }] }), { status: 200 });
+    });
+    await new GrokImages('xai-test').healthCheck();
+    expect(url).toContain('image-generation-models');
   });
 });

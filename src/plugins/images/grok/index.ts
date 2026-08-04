@@ -1,7 +1,30 @@
 import { ToolError } from '../../../errors.js';
 import type { Aspect, ImageProvider, ProviderHealth } from '../types.js';
 
-const MODEL = 'grok-2-image-1212';
+/**
+ * The image model, verified against the live API on 2026-08-03.
+ *
+ * `grok-2-image-1212` was here until then, and xAI had **deprecated it on
+ * 2026-02-24**. Every fallback generation had been failing for months with
+ * "no longer accessible via the API" — and nothing surfaced it, because the
+ * fallback only runs when Gemini fails and `healthCheck` was reporting the
+ * provider as fine (see below). Confirmed live: `GET /v1/image-generation-models`
+ * returns exactly `grok-imagine-image` and `grok-imagine-image-quality`, and
+ * the old id is absent from the list entirely.
+ */
+const MODEL = 'grok-imagine-image';
+
+/**
+ * The endpoint that lists IMAGE models specifically.
+ *
+ * `healthCheck` used to probe `/v1/models`, which answers 200 for any valid
+ * key regardless of which models exist — so it reported "grok-2-image-1212
+ * reachable" for a model that had not existed since February. That is the same
+ * defect as Ghost's `healthCheck` probing an endpoint that needs no auth:
+ * checking something adjacent to the thing you actually depend on, and
+ * reporting the result as if it were proof.
+ */
+const MODELS_ENDPOINT = 'https://api.x.ai/v1/image-generation-models';
 const ENDPOINT = 'https://api.x.ai/v1/images/generations';
 
 interface GrokResponse {
@@ -33,12 +56,24 @@ export class GrokImages implements ImageProvider {
       return { provider: this.name, ok: false, detail: 'XAI_API_KEY is not set' };
     }
     try {
-      const res = await fetch('https://api.x.ai/v1/models', {
+      const res = await fetch(MODELS_ENDPOINT, {
         headers: { Authorization: `Bearer ${this.apiKey}` },
       });
-      return res.ok
-        ? { provider: this.name, ok: true, status: res.status, detail: `${MODEL} reachable` }
-        : { provider: this.name, ok: false, status: res.status, detail: await res.text() };
+      if (!res.ok) {
+        return { provider: this.name, ok: false, status: res.status, detail: await res.text() };
+      }
+      // A 200 proves the key works. It does not prove THIS model is one the
+      // account can still call, which is the only thing `generate` needs.
+      const body = (await res.json()) as { models?: Array<{ id?: string }>; data?: Array<{ id?: string }> };
+      const ids = (body.models ?? body.data ?? []).map((m) => m.id).filter(Boolean);
+      return ids.includes(MODEL)
+        ? { provider: this.name, ok: true, status: res.status, detail: `${MODEL} available` }
+        : {
+            provider: this.name,
+            ok: false,
+            status: res.status,
+            detail: `${MODEL} is not in this account's image models (${ids.join(', ') || 'none listed'}). It may have been deprecated — check console.x.ai.`,
+          };
     } catch (e) {
       return {
         provider: this.name,

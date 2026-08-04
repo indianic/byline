@@ -7,6 +7,30 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Grok image fallback had been broken since February.** `grok-2-image-1212` was
+  deprecated by xAI on 2026-02-24, so every fallback generation failed with "no longer
+  accessible via the API" — and nothing surfaced it, because the fallback only runs when
+  Gemini declines and `healthCheck` was reporting the provider as fine. Now
+  `grok-imagine-image`, verified against `GET /v1/image-generation-models` on 2026-08-04
+  rather than taken from the error text.
+- **`GrokImages.healthCheck` probed an endpoint that proved nothing.** It called
+  `/v1/models`, which answers 200 for any valid key regardless of which models exist, and
+  reported "grok-2-image-1212 reachable" for a model that had not existed for five months
+  — the same defect as Ghost's health check probing an endpoint needing no auth. It now
+  lists the account's image models and fails unless the model it actually calls is among
+  them, naming what was found instead.
+- **Changing a hero image left the social card pointing at the old one.** `create_post`
+  defaults `og_image` and `twitter_image` to `feature_image`; a later `update_post`
+  changing the hero did not move them, so the article showed the new picture while every
+  share showed the previous one. Measured on four live posts: distinct in-article images,
+  one shared social card. Ghost's `updatePost` now carries them forward — but only when
+  they still equal the outgoing hero, which is exactly the state defaulting produces. A
+  social image set to anything else is a deliberate choice; it is left alone and warned
+  about rather than silently overwritten, and an explicit `og_image` in the patch always
+  wins.
+
 ## [1.7.0] - 2026-08-03
 
 ### Added

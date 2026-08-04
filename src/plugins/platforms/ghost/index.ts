@@ -365,6 +365,51 @@ export class GhostAdapter implements PlatformAdapter {
     return dropped;
   }
 
+  /**
+   * Keep the social card pointing at the hero when the hero changes.
+   *
+   * `create_post` DEFAULTS `og_image` and `twitter_image` to `feature_image`
+   * (see post-tools.ts). Change the hero later with `update_post` and those two
+   * keep the old URL, so the article shows the new picture while every share on
+   * LinkedIn, X and WhatsApp shows the previous one. Measured on four live
+   * posts: the in-article images were all distinct and all four social cards
+   * still pointed at one shared image.
+   *
+   * The rule is deliberately narrow. A social image is only carried forward
+   * when it currently EQUALS the outgoing hero — which is exactly the state
+   * `create_post`'s defaulting produces. If it differs, somebody chose it on
+   * purpose, and silently overwriting a deliberate choice would be a worse bug
+   * than the one being fixed; that case warns instead. An explicit `og_image`
+   * in the patch always wins and is left alone.
+   *
+   * Ghost-only by design: WordPress core has no Open Graph fields at all and
+   * reports them as unsupported (`UNSUPPORTED_FIELD_REASONS`).
+   */
+  private carrySocialImages(
+    patch: Partial<PostInput>,
+    before: { feature_image?: string | null; og_image?: string | null; twitter_image?: string | null },
+  ): string[] {
+    const hero = patch.feature_image;
+    if (hero === undefined || hero === before.feature_image) return [];
+
+    const warnings: string[] = [];
+    const fields = [
+      ['og_image', before.og_image] as const,
+      ['twitter_image', before.twitter_image] as const,
+    ];
+    for (const [field, existing] of fields) {
+      if (patch[field] !== undefined) continue; // the caller decided; leave it.
+      if (existing && existing === before.feature_image) {
+        (patch as Record<string, unknown>)[field] = hero;
+      } else if (existing) {
+        warnings.push(
+          `${field}: left unchanged at ${existing}, because it was set to something other than the previous feature image and is therefore a deliberate choice. The social card will not match the new hero image — pass ${field} explicitly if it should.`,
+        );
+      }
+    }
+    return warnings;
+  }
+
   async createPost(post: PostInput): Promise<PostResult> {
     this.assertResolved(post.html);
     const { body: raw, serverDate } = await this.requestFull('posts/?source=html', {
@@ -392,10 +437,21 @@ export class GhostAdapter implements PlatformAdapter {
 
   async updatePost(id: string, patch: Partial<PostInput>): Promise<PostResult> {
     this.assertResolved(patch.html);
-    const current = (await this.request(`posts/${id}/?fields=id,updated_at`)) as {
-      posts?: Array<{ updated_at?: string }>;
+    // The social image fields are fetched alongside `updated_at` rather than in
+    // a second request: this GET already has to happen for the optimistic
+    // concurrency check, so carrying three more field names on it is free.
+    const current = (await this.request(
+      `posts/${id}/?fields=id,updated_at,feature_image,og_image,twitter_image`,
+    )) as {
+      posts?: Array<{
+        updated_at?: string;
+        feature_image?: string | null;
+        og_image?: string | null;
+        twitter_image?: string | null;
+      }>;
     };
-    const updatedAt = current.posts?.[0]?.updated_at;
+    const before = current.posts?.[0];
+    const updatedAt = before?.updated_at;
     if (!updatedAt) {
       throw new ToolError({
         api: `ghost:${this.slug}`,
@@ -403,6 +459,8 @@ export class GhostAdapter implements PlatformAdapter {
         message: `No post ${id} on site "${this.slug}"`,
       });
     }
+
+    const socialWarnings = this.carrySocialImages(patch, before ?? {});
 
     const { body: raw, serverDate } = await this.requestFull(`posts/${id}/?source=html`, {
       method: 'PUT',
@@ -417,7 +475,7 @@ export class GhostAdapter implements PlatformAdapter {
         message: 'Ghost returned no post object after update',
       });
     }
-    const warnings = this.verifyWrite(patch, updated, serverDate);
+    const warnings = [...socialWarnings, ...this.verifyWrite(patch, updated, serverDate)];
     return {
       id: String(updated.id),
       url: String(updated.url),
