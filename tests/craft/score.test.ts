@@ -4,6 +4,41 @@ import { HUMAN_TEXTURES, PERSONA_PRESENCES } from '../../src/craft/dimensions.js
 import { GHOST_HTML_PROFILE } from '../../src/plugins/platforms/ghost/html-profile.js';
 import { buildProfile } from '../../src/plugins/platforms/wordpress/html-profile.js';
 
+// A draft that satisfies ALL THIRTEEN checks at once, in blog mode against the
+// Ghost profile with no feature image and no research findings.
+//
+// It exists because nothing else in this suite proved a full `pass` was
+// reachable. Every other fixture here isolates one check, so the suite could
+// have stayed green while some combination of rules was jointly unsatisfiable —
+// and the rules genuinely do pull against each other (short punchy sentences
+// help `paragraph_uniformity` and hurt `burstiness`; the summary-block
+// container has to be one Ghost keeps styled). If a future threshold change
+// makes a clean article impossible to write, this is the test that fails.
+const CLEAN_BLOG_HTML = [
+  "<table style=\"border:1px solid #ddd;background:#fafafa;\"><tr><td>In short: our deploy took 41 minutes, and the fix had nothing to do with the build step.</td></tr></table>",
+  "<h2>What actually slows a deployment down?</h2>",
+  "<p>Our pipeline took 41 minutes. I assumed the compiler was the problem.</p>",
+  "<p>It wasn't. When we finally measured the thing properly, instead of trading theories about it across a standup that had been having the same argument for a month, the wait turned out to be 78% queueing. According to <a href=\"https://dora.dev/research/\" rel=\"noopener noreferrer\">the 2024 DORA report</a>, that split is ordinary rather than exceptional.</p>",
+  "<p>I had spent three weeks tuning a build that was never the bottleneck.</p>",
+  "<h2>How do you find the real bottleneck?</h2>",
+  "<p>Instrument the queue before you touch the build.</p>",
+  "<p>We added timestamps at four points: job created, runner assigned, checkout complete, artifact pushed. The gap between the first two was 31 minutes on a bad afternoon and under 40 seconds at 7am, which told us more in one day than the previous month of profiling had.</p>",
+  "<p>The team pushed back hard on that, and they were right to \u2014 instrumentation is not free, and I had already cried wolf once.</p>",
+  "<p>[[content_image]]</p>",
+  "<p>Research from <a href=\"https://www.thoughtworks.com/radar\" rel=\"noopener noreferrer\">Thoughtworks</a> says much the same thing about concurrency limits. Data from our own runner logs put the ceiling at 12 concurrent jobs against 40 developers.</p>",
+  "<h2>Is more compute the answer?</h2>",
+  "<p>Usually not, and it is the expensive way to find out.</p>",
+  "<p>We doubled the runner pool. Deploy time fell from 41 minutes to 22, which looked like a win until the bill arrived and we realised we had paid a 90% infrastructure increase for a 46% improvement that a scheduling change delivered for nothing two months later.</p>",
+  "<p>I killed that experiment in week six.</p>",
+  "<table style=\"border-collapse:collapse;\"><thead><tr><th style=\"border:1px solid #ccc;\">Change</th><th style=\"border:1px solid #ccc;\">Deploy time</th><th style=\"border:1px solid #ccc;\">Monthly cost</th></tr></thead><tbody><tr><td style=\"border:1px solid #ccc;\">Baseline</td><td style=\"border:1px solid #ccc;\">41 min</td><td style=\"border:1px solid #ccc;\">$1,200</td></tr><tr><td style=\"border:1px solid #ccc;\">Doubled runners</td><td style=\"border:1px solid #ccc;\">22 min</td><td style=\"border:1px solid #ccc;\">$2,280</td></tr><tr><td style=\"border:1px solid #ccc;\">Queue rewrite</td><td style=\"border:1px solid #ccc;\">6 min</td><td style=\"border:1px solid #ccc;\">$1,200</td></tr></tbody></table>",
+  "<p>The scheduling change won.</p>",
+  "<h2>Frequently asked questions</h2>",
+  "<h3>How long should a deploy take?</h3>",
+  "<p>Short enough that nobody batches changes to avoid it. For us that number was under ten minutes, and the study published by <a href=\"https://cloud.google.com/devops\" rel=\"noopener noreferrer\">Google Cloud</a> in 2024 reported similar thresholds across 3,000 teams.</p>",
+  "<h3>Does this apply to a small team?</h3>",
+  "<p>More so. We had 40 engineers and a ceiling of 12 concurrent jobs; a team of six on the same runner configuration hits the wall sooner per person, not later.</p>"
+].join('\n');
+
 const find = (html: string, name: string) =>
   scoreDraft(html, GHOST_HTML_PROFILE).checks.find((c) => c.name === name)!;
 
@@ -155,12 +190,34 @@ describe('verdict', () => {
     expect(scoreDraft('<p class="x">a</p>', GHOST_HTML_PROFILE).verdict).toBe('blocked');
   });
 
-  it('is revise when only advisory checks fail', () => {
+  it('is advisory, and still publishable, when only advisory checks fail', () => {
     const summary = '<table style="width:100%;"><tr><td>Summary</td></tr></table>';
     const html = `${summary}<h2>Heading</h2><p>${'We build things. '.repeat(30)}</p><p>[[content_image]]</p>`;
     const r = scoreDraft(html, GHOST_HTML_PROFILE);
     expect(r.checks.filter((c) => c.blocking).every((c) => c.ok)).toBe(true);
-    expect(r.verdict).toBe('revise');
+    expect(r.verdict).toBe('advisory');
+    // The whole point of the rename: an advisory-only scorecard must not read
+    // as a gate. A caller that publishes on `publishable` is correct to.
+    expect(r.publishable).toBe(true);
+    expect(r.summary).toContain('Publishable');
+    expect(r.summary).toContain('none of which blocks publication');
+  });
+
+  it('is blocked and not publishable when a blocking check fails', () => {
+    const r = scoreDraft('<p class="x">a</p>', GHOST_HTML_PROFILE);
+    expect(r.verdict).toBe('blocked');
+    expect(r.publishable).toBe(false);
+    expect(r.summary).toContain('NOT publishable');
+    // Naming the failing checks is what lets a caller fix them without
+    // re-reading all thirteen.
+    expect(r.summary).toContain('platform_html');
+  });
+
+  it('is pass and publishable when everything passes', () => {
+    const r = scoreDraft(CLEAN_BLOG_HTML, GHOST_HTML_PROFILE);
+    expect(r.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual([]);
+    expect(r.verdict).toBe('pass');
+    expect(r.publishable).toBe(true);
   });
 });
 

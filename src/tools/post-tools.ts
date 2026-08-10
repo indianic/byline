@@ -101,6 +101,12 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
             'Which of the hero image (feature_image) and the in-body <img> are required before publishing. Only enforced when an image provider is configured; pass "none" if this article genuinely has no image.',
           ),
 
+        slug: z
+          .string()
+          .optional()
+          .describe(
+            'The URL path segment, e.g. "legacy-modernisation-gulf". Omit it and the platform generates one from the full title, which turns a long headline into a long URL that cannot be changed through this API afterwards. Set it deliberately for anything that will be shared or indexed. The platform normalises what it is given and appends a counter on a collision, so the result warns if the stored slug differs from the one sent.',
+          ),
         custom_excerpt: z.string().max(300).optional().describe('Shown in listings and feeds'),
         meta_title: z.string().optional().describe('SEO title; defaults to title'),
         meta_description: z.string().optional(),
@@ -152,6 +158,7 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         status: PostStatus;
         publish_at?: string;
         images: 'both' | 'hero' | 'inline' | 'none';
+        slug?: string;
         custom_excerpt?: string;
         meta_title?: string;
         meta_description?: string;
@@ -275,6 +282,7 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
           html: a.html,
           status: timing.status,
           ...(timing.publishAtIso !== undefined ? { publish_at: timing.publishAtIso } : {}),
+          ...(a.slug !== undefined ? { slug: a.slug } : {}),
           ...(a.custom_excerpt !== undefined ? { custom_excerpt: a.custom_excerpt } : {}),
           ...(a.meta_title !== undefined ? { meta_title: a.meta_title } : {}),
           ...(a.meta_description !== undefined ? { meta_description: a.meta_description } : {}),
@@ -345,6 +353,12 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         post_id: z.string(),
         title: z.string().optional(),
         html: z.string().optional(),
+        slug: z
+          .string()
+          .optional()
+          .describe(
+            'Change the URL path segment. This CHANGES THE POST\'S URL — anything already linking to the old one breaks unless the platform redirects. The result warns if the platform stored a different slug than the one sent.',
+          ),
         status: z.enum(['published', 'draft', 'scheduled']).optional(),
         publish_at: z
           .string()

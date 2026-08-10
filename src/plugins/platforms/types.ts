@@ -46,6 +46,23 @@ export interface PostInput {
    */
   status: PostStatus;
 
+  /**
+   * The URL path segment, e.g. `legacy-modernisation-gulf`.
+   *
+   * Omit it and both platforms generate one from the title, which is how a
+   * seven-word headline becomes a seventy-character URL — and neither platform
+   * lets you change it afterwards through this API, so the only remedy was a
+   * manual trip into the admin UI before the post was indexed or shared.
+   *
+   * Both platforms NORMALISE what they are given (case, punctuation) and both
+   * resolve a collision by appending a counter, so the stored slug is not
+   * guaranteed to be the one sent. Each adapter therefore compares the two and
+   * warns on a difference rather than letting the post live at a URL the caller
+   * never asked for — the same silent-wrong-result the write-back diff exists
+   * to catch.
+   */
+  slug?: string;
+
   /** Shown in listings and feeds. Ghost's writable field — `excerpt` is read-only. */
   custom_excerpt?: string;
 

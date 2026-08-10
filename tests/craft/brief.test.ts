@@ -10,6 +10,13 @@ import {
   PERSONA_PRESENCES,
 } from '../../src/craft/dimensions.js';
 import { IMAGE_LOOKS } from '../../src/craft/image-style.js';
+import {
+  BANNED,
+  BANNED_CONSTRUCTIONS,
+  THRESHOLDS,
+  evidenceNeeded,
+  newsAttributionsNeeded,
+} from '../../src/craft/score.js';
 import { GHOST_HTML_PROFILE } from '../../src/plugins/platforms/ghost/html-profile.js';
 import type { Finding, ResearchResult } from '../../src/plugins/research/types.js';
 
@@ -826,5 +833,75 @@ describe('no section contradicts news mode', () => {
     expect(b).toContain('Authority in a report comes from sourcing');
     expect(b).toContain('at least one attributed claim per 200 words');
     expect(b).toContain('Write in the THIRD PERSON');
+  });
+});
+
+// The brief and the scorer are one standard stated twice — once as instruction,
+// once as measurement. For four releases they were two hand-maintained copies
+// and they drifted exactly the way SLUG_PATTERN and IMAGE_LOOKS did:
+// `geo_citability` and `burstiness` were graded and never stated in the
+// blog-mode brief at all, and became the two most frequent revision triggers in
+// production. These tests assert the brief renders the SCORER'S values, not a
+// number that happens to match today.
+describe('scorecard targets are rendered from the scorer, not restated', () => {
+  it('prints the evidence count computed for this article length, not a ratio', () => {
+    const b = buildBrief({ ...base, seed: 5, wordCount: 2000 }).brief;
+    expect(evidenceNeeded(2000)).toBe(8);
+    expect(b).toContain('at least 8 items for 2000 words');
+  });
+
+  it('recomputes that count when the word count changes', () => {
+    const b = buildBrief({ ...base, seed: 5, wordCount: 750 }).brief;
+    expect(b).toContain(`at least ${evidenceNeeded(750)} items for 750 words`);
+    expect(b).not.toContain('at least 8 items');
+  });
+
+  it('states the burstiness target that geo/burstiness revisions kept tripping', () => {
+    const b = buildBrief({ ...base, seed: 7 }).brief;
+    expect(b).toContain(`standard deviation`);
+    expect(b).toContain(`at least ${THRESHOLDS.burstinessSd} words`);
+  });
+
+  it('states the attribution-marker target, which blog mode never used to mention', () => {
+    const b = buildBrief({ ...base, seed: 7 }).brief;
+    expect(b).toContain(`at least ${THRESHOLDS.minAttributionMarkers} sentences that name where a claim came from`);
+  });
+
+  it('states the question-heading and paragraph-run targets', () => {
+    const b = buildBrief({ ...base, seed: 7 }).brief;
+    expect(b).toContain(`at least ${THRESHOLDS.minQuestionHeadings} H2 or H3 headings`);
+    expect(b).toContain(`more than ${THRESHOLDS.maxParagraphRun} consecutive paragraphs`);
+  });
+
+  // The one that matters most: every graded word must be printed. A writer who
+  // follows the brief exactly must not then be marked down for a term the brief
+  // never mentioned. `ever-changing`, `dive deep` and `seamlessly` were all in
+  // that gap.
+  it('prints every graded lexicon term, so the brief cannot warn about a different list', () => {
+    const b = buildBrief({ ...base, seed: 9 }).brief;
+    for (const word of BANNED) {
+      expect(b, `graded term missing from brief: ${word}`).toContain(word);
+    }
+  });
+
+  it('prints every graded construction label', () => {
+    const b = buildBrief({ ...base, seed: 9 }).brief;
+    for (const label of BANNED_CONSTRUCTIONS) {
+      expect(b, label).toContain(label);
+    }
+  });
+
+  it('gives news mode the inverted targets rather than the blog ones', () => {
+    const b = buildBrief({ ...base, mode: 'news' as const, seed: 9, wordCount: 1000 }).brief;
+    expect(b).toContain(`ATTRIBUTED CLAIMS — ${newsAttributionsNeeded(1000)} for 1000 words`);
+    expect(b).toContain('FIRST PERSON — ZERO');
+    expect(b).not.toContain('concrete first-hand moments, and at least one of them');
+  });
+
+  it('gives blog mode the experience target and requires first person', () => {
+    const b = buildBrief({ ...base, mode: 'blog' as const, seed: 9 }).brief;
+    expect(b).toContain(`at least ${THRESHOLDS.minAnecdotes} concrete first-hand moments`);
+    expect(b).toContain('FIRST PERSON — required');
+    expect(b).not.toContain('FIRST PERSON — ZERO');
   });
 });

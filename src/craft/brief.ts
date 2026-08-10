@@ -3,6 +3,13 @@ import type { ResearchResult } from '../plugins/research/types.js';
 import { tallyWindow } from '../plugins/research/window.js';
 import { dimensionsFor, type DimensionName } from './dimensions.js';
 import type { HtmlProfile } from './html-profile.js';
+import {
+  BANNED,
+  BANNED_CONSTRUCTIONS,
+  THRESHOLDS,
+  evidenceNeeded,
+  newsAttributionsNeeded,
+} from './score.js';
 
 interface BriefBase {
   persona: Persona;
@@ -182,14 +189,22 @@ const hasImageProvider = (imageProviders: readonly string[] | undefined): boolea
  * anything than through any individual word.
  */
 const HUMANISING = `=== NEVER USE THESE ===
-Words: delve, landscape (figurative), transformative, seamless, robust,
-revolutionary, tapestry, testament, realm, myriad, plethora, pivotal, crucial,
-vital, elevate, unlock, harness, streamline, cutting-edge, game-changer,
-navigate (figurative), foster, bolster, underscore, embark, leverage (as a verb),
-meticulous, intricate, multifaceted, holistic, paradigm, synergy.
+GRADED — score_draft reports every hit. The list below is not advice. It is the exact
+lexicon the check matches, printed from the same array the check uses, so what you are
+warned about and what you are marked down for cannot drift apart:
+${BANNED.join(', ')}.
 
-Constructions: "it's not just X, it's Y", "in today's world", "in the
-ever-evolving", "when it comes to", "it's worth noting that", "at the end of the
+Graded constructions: ${BANNED_CONSTRUCTIONS.join('; ')}.
+
+=== ALSO AVOID — NOT GRADED, SAME TELL ===
+These are not machine-checked, so nothing will flag them. They give a draft away
+just as fast: realm, myriad, plethora, pivotal, crucial, vital, elevate, harness,
+streamline, cutting-edge, foster, bolster, underscore, embark, meticulous,
+intricate, multifaceted, holistic, synergy, leverage (as a verb) — and the broader
+figurative forms of the graded terms ("landscape", "navigate", "unlock", "paradigm"
+on its own).
+
+Constructions: "when it comes to", "it's worth noting that", "at the end of the
 day", "in conclusion", "the fact that", "one thing is clear", "let's dive in",
 "buckle up", "the bottom line", "that said" used more than once, "moreover" and
 "furthermore" anywhere at all.
@@ -237,6 +252,70 @@ one, and it is the one mistake here that cannot be undone after publication.`;
  */
 function extrasOf(p: Persona): Record<string, string> {
   return p.extras ?? {};
+}
+
+/**
+ * The scorer's numeric targets, resolved against THIS article's word count.
+ *
+ * The brief already taught most of these qualitatively — "at least one per 250
+ * words", "at least two concrete first-hand moments" — and a writer following
+ * it still failed, repeatedly, for two reasons. The arithmetic depends on a
+ * word count that does not exist yet at writing time, so "one per 250 words"
+ * is not a target anyone can hit deliberately; and two graded checks
+ * (`geo_citability`, `burstiness`) had no counterpart in the blog-mode brief at
+ * all. Measured over one nine-article series, those two were the most frequent
+ * cause of a revision round.
+ *
+ * Every number below is imported from `score.ts`, never retyped. If a threshold
+ * moves, this block moves with it — that is the entire point of the block
+ * existing rather than more prose.
+ */
+function scorecardTargets(words: number, mode: 'blog' | 'news'): string {
+  const shared = [
+    `- EVIDENCE — at least ${evidenceNeeded(words)} items for ${words} words. A real figure or`,
+    `  percentage counts as one; an outbound citation link counts as one. They are added`,
+    `  together, so ${evidenceNeeded(words)} is the COMBINED total, not ${evidenceNeeded(words)} of each.`,
+    `- ATTRIBUTION MARKERS — at least ${THRESHOLDS.minAttributionMarkers} sentences that name where a claim came from,`,
+    `  using the words that mark it: "according to X", "X reported", "data from X", "the`,
+    `  2026 study found". A bare number with no marker does not count toward this.`,
+    `- QUESTION HEADINGS — at least ${THRESHOLDS.minQuestionHeadings} H2 or H3 headings phrased as the exact question a`,
+    `  reader would type, ending in a question mark.`,
+    `- SENTENCE RHYTHM — sentence lengths must vary enough to give a standard deviation`,
+    `  of at least ${THRESHOLDS.burstinessSd} words across the whole article. Uniformly medium sentences fail`,
+    `  this even when every individual sentence is good. Put a four-word sentence next`,
+    `  to a thirty-word one.`,
+    `- PARAGRAPH SHAPE — never more than ${THRESHOLDS.maxParagraphRun} consecutive paragraphs with the same`,
+    `  sentence count.`,
+  ];
+
+  const modeSpecific =
+    mode === 'news'
+      ? [
+          `- ATTRIBUTED CLAIMS — ${newsAttributionsNeeded(words)} for ${words} words. That is the density score_draft`,
+          `  measures in news mode: at least one attributed claim per ${THRESHOLDS.newsAttributionPerWords} words. It is the`,
+          `  news-mode counterpart to first-hand experience, and is counted separately from`,
+          `  the attribution markers above.`,
+          `- FIRST PERSON — ZERO. Any "I", "we", "my" or "our" is counted as a defect in news`,
+          `  mode. The reporter is the byline, not a character.`,
+          `- VAGUE ATTRIBUTION — ZERO. "experts say", "sources say", "reports suggest", "it is`,
+          `  understood", "studies show" are each counted against you. Name the source or cut`,
+          `  the claim.`,
+        ]
+      : [
+          `- EXPERIENCE — at least ${THRESHOLDS.minAnecdotes} concrete first-hand moments, and at least one of them`,
+          `  AFTER the halfway point of the article. A named scenario, a specific trade-off,`,
+          `  a decision you regretted — anchored to a time, a party in the room, or an act`,
+          `  you took.`,
+          `- FIRST PERSON — required. An article with no "I"/"we"/"my"/"our" anywhere is`,
+          `  treated as one written without this brief.`,
+        ];
+
+  return `=== SCORECARD TARGETS — EXACT, MEASURED, COMPUTED FOR THIS ARTICLE ===
+score_draft counts these mechanically. They are printed here as absolute numbers,
+already resolved against your ${words}-word target, so you can satisfy them in the
+FIRST draft instead of discovering them in a revision round. Hitting them is
+cheaper while writing than after.
+${[...shared, ...modeSpecific].join('\n')}`;
 }
 
 /**
@@ -753,17 +832,21 @@ Generative engines cite what they can attribute and verify. Write to be quotable
 - Meta description: 155-160 characters, primary keyword, subtle CTA.
 - H2 headings carry keywords naturally; H3 supports its H2. Never skip a level.
 - Primary keyword in the first paragraph, 1-2% density, LSI terms throughout.
-- Paragraphs of 2-4 sentences.
+- ${input.mode === 'news' ? 'Paragraph length is set by the REGISTER section above (one to two sentences), not here — but still vary it enough that no more than ' + THRESHOLDS.maxParagraphRun + ' in a row share a sentence count.' : 'Paragraphs of 2-4 sentences.'}
 - Reference the current year at least once.
 
 ${htmlRules(input.profile)}
 
+${scorecardTargets(words, input.mode)}
+
 === EVIDENCE ===
-- Include real figures, percentages, or comparative data, at least one per 250 words.
+The counts live in SCORECARD TARGETS above — this section is about what makes an
+evidence item worth citing, not how many you need.
+- Include real figures, percentages, or comparative data rather than adjectives.
 - One data table: benchmarks, tool comparison, case-study metrics, before/after, cost-benefit, or timeline.
 - Cite recognised sources and hyperlink them.
 ${ex(p, 'citation_preference', '- Prefer these sources, in this order: $')}${ex(p, 'fact_checking_level', '- Fact-checking level: $. A claim you cannot source is cut, not softened.')}${ex(p, 'preferred_quotes_from', '- If you quote a thinker, prefer: $')}${ex(p, 'quote_usage_frequency', '- Quotation frequency: $. Never open the article with someone else\'s words.')}
-- ${input.mode === 'news' ? 'Every substantive fact carries its source in the same sentence or the next. Aim for at least one attributed claim per 200 words — that density is what score_draft measures in news mode.' : 'Include at least two concrete first-hand moments — a named scenario, a specific trade-off, a decision you regretted. Spread them; at least one after the midpoint.'}
+- ${input.mode === 'news' ? 'Every substantive fact carries its source in the same sentence or the next.' : 'A first-hand moment means a named scenario, a specific trade-off, or a decision you regretted — not a general claim about your experience.'}
 
 === TEXTURE — APPLY THROUGHOUT ===
 ${picked.humanTexture}

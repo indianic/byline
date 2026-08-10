@@ -4,17 +4,100 @@ import type { HtmlProfile } from './html-profile.js';
 export interface Check {
   name: string;
   ok: boolean;
-  /** Blocking checks make the verdict `blocked`; advisory ones make it `revise`. */
+  /** Blocking checks make the verdict `blocked`; advisory ones make it `advisory`. */
   blocking: boolean;
+  /**
+   * Whether this check had the inputs it needs to reach a real conclusion.
+   *
+   * Absent means yes. `false` means the check ran but verified nothing — it is
+   * NOT a pass, and callers that summarise or filter must keep it visible.
+   * `citation_provenance` reports this when no research findings were supplied:
+   * with nothing to compare against it cannot confirm a single citation, and
+   * `ok: true` alone would read as "the citations were checked and were fine".
+   *
+   * A structured flag rather than a caller sniffing the English in `detail` for
+   * "not evaluated". Deciding control flow by substring-matching a human
+   * message is the specific mistake this codebase has shipped repeatedly — it
+   * is why `AllProvidersFailed` carries per-provider codes.
+   */
+  evaluated?: boolean;
   score?: number;
   detail: string;
   findings: string[];
 }
 
 export interface Scorecard {
-  verdict: 'pass' | 'revise' | 'blocked';
+  /**
+   * `blocked` — a BLOCKING check failed; the draft is not publishable as written.
+   * `advisory` — every blocking check passed and at least one advisory check did
+   * not. `pass` — everything passed.
+   *
+   * The middle value used to be called `revise`, and the name was the single
+   * most expensive word in this codebase. Ten of the thirteen checks are
+   * declared `blocking: false` precisely because they are improvements rather
+   * than defects, and then the verdict handed all of them the same imperative a
+   * genuine violation gets. A host model reads an imperative as a gate: measured
+   * across one nine-article series, `revise` triggered two to three full-article
+   * rewrites per article, none of which was required to publish. Naming the
+   * state after what it IS rather than what it demands is the whole fix. No
+   * check changed severity, and no gate was weakened — `blocked` still means
+   * blocked.
+   */
+  verdict: 'pass' | 'advisory' | 'blocked';
+  /**
+   * Whether this draft may be published as it stands.
+   *
+   * False only when a blocking check failed. This is a plain restatement of
+   * what the `blocking` flags already decide, hoisted to the top level because
+   * the verdict alone was being read as a gate by callers who never looked at
+   * them. Advisory findings never make this false — if one ever should, the
+   * honest fix is to mark that check `blocking: true`, not to soften this.
+   */
+  publishable: boolean;
   wordCount: number;
+  /** One sentence naming what state the draft is in and what, if anything, is required. */
+  summary: string;
   checks: Check[];
+}
+
+/**
+ * Every numeric target the scorer applies, in one place.
+ *
+ * These exist as an export because `brief.ts` has to teach a writer the same
+ * numbers this file grades them against, and for four releases it did so from a
+ * second, hand-maintained copy. The copies drifted exactly the way
+ * `SLUG_PATTERN` and `IMAGE_LOOKS` did: `geo_citability` and `burstiness` were
+ * graded here and never stated in the blog-mode brief at all, and they became
+ * the two most frequent revision triggers in production. One rule, one
+ * definition — the brief now renders these values rather than restating them.
+ */
+export const THRESHOLDS = {
+  /** Minimum sentence-length standard deviation, in words. */
+  burstinessSd: 6,
+  /** Longest permitted run of paragraphs sharing a sentence count. */
+  maxParagraphRun: 4,
+  /** One evidence item (figure or citation link) per this many words. */
+  evidencePerWords: 250,
+  /** NEWS ONLY: one attributed claim per this many words. */
+  newsAttributionPerWords: 200,
+  /** NEWS ONLY: floor on attributed claims regardless of length. */
+  minNewsAttributions: 2,
+  /** BLOG ONLY: concrete first-hand moments, at least one after the midpoint. */
+  minAnecdotes: 2,
+  /** Headings phrased as the question a reader would type. */
+  minQuestionHeadings: 2,
+  /** Sentences carrying an attribution marker, both modes. */
+  minAttributionMarkers: 3,
+} as const;
+
+/** Evidence items (figures + citation links) required for a draft of `words` words. */
+export function evidenceNeeded(words: number): number {
+  return Math.max(1, Math.ceil(words / THRESHOLDS.evidencePerWords));
+}
+
+/** NEWS ONLY: attributed claims required for a draft of `words` words. */
+export function newsAttributionsNeeded(words: number): number {
+  return Math.max(THRESHOLDS.minNewsAttributions, Math.ceil(words / THRESHOLDS.newsAttributionPerWords));
 }
 
 /**
@@ -28,7 +111,16 @@ export function hasInlineImage(html: string): boolean {
   return /<img\s[^>]*src\s*=/i.test(html);
 }
 
-const BANNED = [
+/**
+ * The AI-tell lexicon this file grades against, exported so the writing brief
+ * can print the real list rather than a second hand-written one.
+ *
+ * Before this was exported, `brief.ts` carried its own 32-term list and the two
+ * overlapped without matching: `ever-changing`, `dive deep` and `seamlessly`
+ * were graded here and never warned about there, so a writer could follow the
+ * brief exactly and still be marked down.
+ */
+export const BANNED = [
   'delve',
   'transformative',
   'seamless',
@@ -53,6 +145,14 @@ const BANNED_PATTERNS: Array<[RegExp, string]> = [
   [/it['’]s not just [^,.]{2,40}, it['’]s/i, '"it\'s not just X, it\'s Y" construction'],
   [/\bnot only [^,.]{2,40} but also\b/i, '"not only X but also Y" construction'],
 ];
+
+/**
+ * The human-readable label of every graded construction, for the brief.
+ *
+ * Derived from `BANNED_PATTERNS` rather than retyped: the label a writer is
+ * warned about is then necessarily the label they would be marked down with.
+ */
+export const BANNED_CONSTRUCTIONS: readonly string[] = BANNED_PATTERNS.map(([, label]) => label);
 
 const stripTags = (html: string): string =>
   html
@@ -195,11 +295,14 @@ export function scoreDraft(
   const sd = Number(stdev(lengths).toFixed(2));
   checks.push({
     name: 'burstiness',
-    ok: sd >= 6,
+    ok: sd >= THRESHOLDS.burstinessSd,
     blocking: false,
     score: sd,
-    detail: `Sentence-length sd ${sd} words (target >= 6)`,
-    findings: sd >= 6 ? [] : ['Sentences are too uniform — break some short, let others run long'],
+    detail: `Sentence-length sd ${sd} words (target >= ${THRESHOLDS.burstinessSd})`,
+    findings:
+      sd >= THRESHOLDS.burstinessSd
+        ? []
+        : ['Sentences are too uniform — break some short, let others run long'],
   });
 
   // --- Paragraph uniformity (advisory) ---
@@ -214,19 +317,21 @@ export function scoreDraft(
   }
   checks.push({
     name: 'paragraph_uniformity',
-    ok: worstRun <= 4,
+    ok: worstRun <= THRESHOLDS.maxParagraphRun,
     blocking: false,
     score: worstRun,
-    detail: `Longest run of identically shaped paragraphs: ${worstRun} (max 4)`,
+    detail: `Longest run of identically shaped paragraphs: ${worstRun} (max ${THRESHOLDS.maxParagraphRun})`,
     findings:
-      worstRun > 4 ? [`${worstRun} consecutive paragraphs have the same sentence count`] : [],
+      worstRun > THRESHOLDS.maxParagraphRun
+        ? [`${worstRun} consecutive paragraphs have the same sentence count`]
+        : [],
   });
 
   // --- Evidence density (advisory) ---
   const figures = (text.match(/\b\d[\d,.]*\s?(%|percent|x\b|million|billion|bn|k\b)/gi) ?? []).length;
   const links = (html.match(/<a\s[^>]*href="https?:/gi) ?? []).length;
   const evidence = figures + links;
-  const needed = Math.max(1, Math.ceil(words / 250));
+  const needed = evidenceNeeded(words);
   checks.push({
     name: 'evidence_density',
     ok: evidence >= needed,
@@ -300,7 +405,10 @@ export function scoreDraft(
   // score zero first-hand moments. So news is judged on the opposite: first
   // person is a DEFECT, and what matters instead is attribution density,
   // measured below.
-  const expOk = mode === 'news' ? firstPerson === 0 : anecdote >= 2 && lateAnecdote && firstPerson > 0;
+  const expOk =
+    mode === 'news'
+      ? firstPerson === 0
+      : anecdote >= THRESHOLDS.minAnecdotes && lateAnecdote && firstPerson > 0;
   checks.push({
     name: mode === 'news' ? 'reporter_voice' : 'experience_markers',
     ok: expOk,
@@ -317,7 +425,9 @@ export function scoreDraft(
           firstPerson === 0
             ? 'No first-person voice anywhere — the brief requires the article be written in first person as the persona. A draft with none was almost certainly written without build_writing_brief, and will read as generic no matter how good the prose is.'
             : '',
-          anecdote < 2 ? 'Fewer than 2 concrete first-hand moments' : '',
+          anecdote < THRESHOLDS.minAnecdotes
+            ? `Fewer than ${THRESHOLDS.minAnecdotes} concrete first-hand moments`
+            : '',
           lateAnecdote ? '' : 'No first-hand moment after the midpoint',
         ].filter(Boolean),
   });
@@ -340,7 +450,7 @@ export function scoreDraft(
     const VAGUE = /\b(?:experts say|sources say|reports suggest|it is understood|some believe|many argue|studies show)\b/gi;
     const attributions = (text.match(ATTRIB) ?? []).length;
     const vague = (text.match(VAGUE) ?? []).length;
-    const needed = Math.max(2, Math.ceil(words / 200));
+    const needed = newsAttributionsNeeded(words);
     checks.push({
       name: 'attribution',
       ok: attributions >= needed && vague === 0,
@@ -606,13 +716,13 @@ export function scoreDraft(
     stripTags(m[1] ?? ''),
   );
   const questionHeadings = headingTexts.filter((h) => h.trim().endsWith('?'));
-  const aeoOk = questionHeadings.length >= 2;
+  const aeoOk = questionHeadings.length >= THRESHOLDS.minQuestionHeadings;
   checks.push({
     name: 'aeo_answerability',
     ok: aeoOk,
     blocking: false,
     score: questionHeadings.length,
-    detail: `${questionHeadings.length} question-form heading(s) of ${headingTexts.length} (target >= 2)`,
+    detail: `${questionHeadings.length} question-form heading(s) of ${headingTexts.length} (target >= ${THRESHOLDS.minQuestionHeadings})`,
     findings: aeoOk
       ? []
       : [
@@ -629,13 +739,13 @@ export function scoreDraft(
       /\b(according to|per|reports?|reported|found that|survey(?:ed)?|study|research|data from|figures from|says?|said)\b/gi,
     ) ?? []
   ).length;
-  const geoOk = attributions >= 3;
+  const geoOk = attributions >= THRESHOLDS.minAttributionMarkers;
   checks.push({
     name: 'geo_citability',
     ok: geoOk,
     blocking: false,
     score: attributions,
-    detail: `${attributions} attributed claim marker(s) (target >= 3)`,
+    detail: `${attributions} attributed claim marker(s) (target >= ${THRESHOLDS.minAttributionMarkers})`,
     findings: geoOk
       ? []
       : [
@@ -660,6 +770,7 @@ export function scoreDraft(
   // citations were verified" when nothing was.
   const provenanceFindings: string[] = [];
   let provenanceDetail: string;
+  let provenanceEvaluated = true;
 
   // `findings?.length` rather than `findings`: an empty array is a real
   // research_topic outcome (a caller who threads the field through
@@ -667,6 +778,7 @@ export function scoreDraft(
   // honesty as the absent case, not "0 traceable of 0".
   if (!findings || findings.length === 0) {
     provenanceDetail = 'no research findings passed — not evaluated, no citation was verified';
+    provenanceEvaluated = false;
   } else {
     const researchUrls = new Set(findings.map((f) => sameUrl(f.url)));
     // Both quote styles, matching the precedent set by the alt-text regex
@@ -710,16 +822,36 @@ export function scoreDraft(
     name: 'citation_provenance',
     ok: provenanceFindings.length === 0,
     blocking: false,
+    evaluated: provenanceEvaluated,
     detail: provenanceDetail,
     findings: provenanceFindings,
   });
 
-  const blocked = checks.some((c) => c.blocking && !c.ok);
-  const advisory = checks.some((c) => !c.blocking && !c.ok);
+  const blockingFailures = checks.filter((c) => c.blocking && !c.ok);
+  const advisoryFailures = checks.filter((c) => !c.blocking && !c.ok);
+  const blocked = blockingFailures.length > 0;
+  const advisory = advisoryFailures.length > 0;
+
+  // The summary says, in one sentence, the thing callers were getting wrong by
+  // reading the verdict alone. It states publishability FIRST because that is
+  // the decision being made, and names the advisory checks as optional in the
+  // same breath, so a host model cannot infer a gate that does not exist.
+  const summary = blocked
+    ? `NOT publishable — ${blockingFailures.length} blocking failure(s): ${blockingFailures
+        .map((c) => c.name)
+        .join(', ')}. Fix these, then re-score.` +
+      (advisory ? ` ${advisoryFailures.length} advisory suggestion(s) also listed.` : '')
+    : advisory
+      ? `Publishable as it stands. ${advisoryFailures.length} advisory suggestion(s) — ${advisoryFailures
+          .map((c) => c.name)
+          .join(', ')} — none of which blocks publication. Apply the cheap ones inline; do NOT rewrite the article for them.`
+      : `Publishable. All ${checks.length} checks pass.`;
 
   return {
-    verdict: blocked ? 'blocked' : advisory ? 'revise' : 'pass',
+    verdict: blocked ? 'blocked' : advisory ? 'advisory' : 'pass',
+    publishable: !blocked,
     wordCount: words,
+    summary,
     checks,
   };
 }

@@ -75,7 +75,14 @@ coverage/
 *.log
 .omc/
 .superpowers/
-.claude/
+# Local Claude Code state — settings.local.json records machine-specific
+# permission grants. Shared slash commands are the exception: they describe the
+# project's own workflow and belong with it.
+# Excludes the CONTENTS, not the directory itself: git cannot re-include a path
+# whose parent directory is excluded, so `.claude/` followed by a negation
+# silently does nothing.
+.claude/*
+!.claude/commands/
 
 # Throwaway scripts. Anything named zz-* in the repo root is a scratch probe
 # written during a session; several in this project loaded real credentials in

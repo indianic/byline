@@ -28,7 +28,16 @@ const MODELS_ENDPOINT = 'https://api.x.ai/v1/image-generation-models';
 const ENDPOINT = 'https://api.x.ai/v1/images/generations';
 
 interface GrokResponse {
-  data?: Array<{ b64_json?: string }>;
+  /**
+   * `mime_type` is xAI's own statement of what the bytes are, and it is not
+   * decoration: measured live on 2026-08-10, `grok-imagine-image` returned
+   * `"image/jpeg"` with a JFIF header (`ffd8ffe0...`, 1280x720) for a plain
+   * photographic prompt. This adapter previously hardcoded `image/png` for
+   * every response, so every Grok fallback image was a JPEG announced as a
+   * PNG — and since both platform adapters derive the upload `Content-Type`
+   * from the filename extension, it was then uploaded as one too.
+   */
+  data?: Array<{ b64_json?: string; mime_type?: string }>;
   error?: string | { message?: string };
 }
 
@@ -108,7 +117,8 @@ export class GrokImages implements ImageProvider {
       });
     }
 
-    const b64 = body.data?.[0]?.b64_json;
+    const first = body.data?.[0];
+    const b64 = first?.b64_json;
     if (!b64) {
       throw new ToolError({
         api: 'grok',
@@ -117,6 +127,10 @@ export class GrokImages implements ImageProvider {
         message: 'xAI returned no image data',
       });
     }
-    return { data: Buffer.from(b64, 'base64'), mime: 'image/png' };
+    // xAI's own `mime_type`, not an assumption. It answers `image/jpeg` for
+    // this model — verified live — and the `image/png` default is kept only
+    // for the case where the field is absent, which is the same shape the
+    // response had before xAI began sending it.
+    return { data: Buffer.from(b64, 'base64'), mime: first.mime_type ?? 'image/png' };
   }
 }

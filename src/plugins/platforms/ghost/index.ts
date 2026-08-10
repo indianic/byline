@@ -5,6 +5,7 @@ import {
   assertScheduleApplied,
   normaliseStoredTime,
   publishTimeWarning,
+  slugWarning,
   type SiteTimezone,
 } from '../schedule.js';
 import type { HealthResult, PlatformAdapter, PostInput, PostResult } from '../types.js';
@@ -269,6 +270,11 @@ export class GhostAdapter implements PlatformAdapter {
       warnings.push(
         `Ghost discarded these fields: ${dropped.join(', ')}. Check the field names against the Ghost Admin API.`,
       );
+    }
+
+    if (sent.slug !== undefined) {
+      const w = slugWarning(sent.slug, returned.slug, 'Ghost');
+      if (w) warnings.push(w);
     }
 
     if (sent.publish_at !== undefined) {

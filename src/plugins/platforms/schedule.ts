@@ -525,3 +525,32 @@ export function publishTimeWarning(
   if (Date.parse(normalised) === Date.parse(requestedIso)) return null;
   return `publish_at: sent ${requestedIso} but ${platform} stored ${normalised}.`;
 }
+
+/**
+ * Warn when the stored slug is not the one that was sent.
+ *
+ * Advisory, never fatal — by the time this runs the post exists, and failing
+ * the call would leave the caller with a published article and an error. What
+ * they need is to be told the real URL.
+ *
+ * Both platforms normalise a slug (case, punctuation, length) and both resolve
+ * a collision by appending a counter, so `my-post` can legitimately come back
+ * as `my-post-2` pointing at a different URL than the one the caller is about
+ * to share. Nothing else would surface that: Ghost's `droppedFields` only asks
+ * whether a field came back non-empty, and a substituted slug is non-empty.
+ *
+ * Lives here, beside `publishTimeWarning`, and is shared by both adapters for
+ * the same reason that one is: two platforms checking the same invariant in two
+ * places is how they end up checking it differently.
+ */
+export function slugWarning(
+  requested: string,
+  stored: unknown,
+  platform: string,
+): string | null {
+  if (typeof stored !== 'string' || stored === '') {
+    return `slug: ${platform} returned no slug, so the "${requested}" that was sent could not be verified.`;
+  }
+  if (stored === requested) return null;
+  return `slug: sent "${requested}" but ${platform} stored "${stored}", so the post's URL ends in "${stored}". A counter suffix means the slug was already taken.`;
+}

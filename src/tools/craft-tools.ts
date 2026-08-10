@@ -215,7 +215,11 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
     {
       title: 'Score draft',
       description:
-        'Mechanically score a draft for human-voice quality: burstiness, AI-tell phrasing, paragraph uniformity, evidence density, target-platform HTML validity, and — when `findings` is passed — whether every cited URL actually came from the research. Pass `mode` matching how the draft was written: blog is scored for first-hand experience and first person, news for third-person reporter voice and attribution density instead. Verdict blocked means fix before publishing. No external API is called.',
+        'Mechanically score a draft for human-voice quality: burstiness, AI-tell phrasing, paragraph uniformity, evidence density, target-platform HTML validity, and — when `findings` is passed — whether every cited URL actually came from the research. Pass `mode` matching how the draft was written: blog is scored for first-hand experience and first person, news for third-person reporter voice and attribution density instead. No external API is called. ' +
+        'READ `publishable` AND `summary`, NOT the verdict alone. Only three of the thirteen checks can block. ' +
+        'verdict "blocked" (publishable: false) means fix and re-score. ' +
+        'verdict "advisory" means the draft IS publishable and the listed items are optional improvements — apply the cheap ones as inline edits if you like, but DO NOT rewrite the article and DO NOT re-score in a loop chasing them. ' +
+        'verdict "pass" means everything passed.',
       inputSchema: {
         html: z.string(),
         site: z
@@ -246,6 +250,12 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
           .describe(
             'Must match the mode the draft was written in. News reports are judged by the OPPOSITE standard to blog posts: a blog needs first-hand experience and first person, a report forbids both and is judged on attribution density instead. Scoring a news report as a blog reports its correct third-person voice as a failure.',
           ),
+        verbose: z
+          .boolean()
+          .default(false)
+          .describe(
+            'Return the full detail of every check, including the ones that passed. Off by default: a passing check has nothing actionable in it, and returning all thirteen with their prose every call was roughly a thousand wasted tokens per score. With this off you still get every FAILING check in full, plus the names of the ones that passed.',
+          ),
       },
     },
     handler(
@@ -256,9 +266,21 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
         feature_image?: FeatureImageInput;
         findings?: Finding[];
         mode: 'blog' | 'news';
+        verbose: boolean;
       }) => {
         const profile = await profileFor(ctx, a.site);
-        return ok(scoreDraft(a.html, profile, a.feature_image, a.findings, a.mode));
+        const card = scoreDraft(a.html, profile, a.feature_image, a.findings, a.mode);
+        if (a.verbose) return ok(card);
+        // Kept in full: every FAILING check, because it is the only actionable
+        // part, and every UNEVALUATED one, because "nothing verified this" is
+        // not a pass and must never vanish into a count. Everything genuinely
+        // passing collapses to its name.
+        const kept = card.checks.filter((c) => !c.ok || c.evaluated === false);
+        return ok({
+          ...card,
+          checks: kept,
+          passed: card.checks.filter((c) => c.ok && c.evaluated !== false).map((c) => c.name),
+        });
       },
     ),
   );

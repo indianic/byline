@@ -5,6 +5,7 @@ import {
   assertScheduleApplied,
   normaliseStoredTime,
   publishTimeWarning,
+  slugWarning,
   type PostStatus,
   type SiteTimezone,
 } from '../schedule.js';
@@ -28,6 +29,8 @@ interface WordPressPostResponse {
    * knowing the site's offset.
    */
   date_gmt?: string;
+  /** The slug WordPress actually stored, which may be normalised or counter-suffixed. */
+  slug?: string;
   title?: { raw?: string; rendered?: string };
   content?: { raw?: string; rendered?: string };
 }
@@ -370,6 +373,10 @@ export class WordPressAdapter implements PlatformAdapter {
     // WordPress's own `excerpt` is writable, unlike Ghost's (where `custom_excerpt` is
     // the writable field and `excerpt` is read-only) — see the `PostInput` doc comment.
     if (input.custom_excerpt !== undefined) body.excerpt = input.custom_excerpt;
+    // WordPress core accepts `slug` directly and normalises it (lowercase,
+    // punctuation stripped), appending `-2` on a collision. The read-back
+    // comparison below is what turns that into a visible warning.
+    if (input.slug !== undefined) body.slug = input.slug;
     // `date_gmt`, not `date`. `date` is interpreted in the SITE's timezone, so
     // sending a UTC instant there would land the post at the wrong hour on any
     // site not set to UTC — and the site probed on 2026-08-03 was itself UTC
@@ -637,6 +644,13 @@ export class WordPressAdapter implements PlatformAdapter {
     // create response is the same request that would have been rewritten, and
     // the whole point here is to catch a rewrite.
     this.verifyPublishTime(post, { ...readBack, id: created.id, link: created.link }, serverDate, warnings);
+    // Checked against the read-back for the same reason the publish time is:
+    // it is what the post carries now, and a counter-suffixed slug is a
+    // different URL than the caller is about to share.
+    if (post.slug !== undefined) {
+      const w = slugWarning(post.slug, readBack.slug, 'WordPress');
+      if (w) warnings.push(w);
+    }
 
     return {
       id: String(created.id),
@@ -674,6 +688,10 @@ export class WordPressAdapter implements PlatformAdapter {
     const readBack = (await this.request(`wp/v2/posts/${id}?context=edit`)) as WordPressPostResponse;
     warnings.push(...this.diffReadBack({ title: patch.title, html: patch.html }, readBack));
     this.verifyPublishTime(patch, { ...readBack, id: updated.id, link: updated.link }, serverDate, warnings);
+    if (patch.slug !== undefined) {
+      const w = slugWarning(patch.slug, readBack.slug, 'WordPress');
+      if (w) warnings.push(w);
+    }
 
     return {
       id: String(updated.id),

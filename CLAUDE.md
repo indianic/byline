@@ -76,5 +76,10 @@ tests. Not one was caught by the suite. These rules are what they cost.
   key.
 
 See `CONTEXT.md` for architecture, `docs/ADDING-A-PLATFORM.md` for the extension gate, and
-`docs/GHOST-NOTES.md`, `docs/WORDPRESS-NOTES.md`, `docs/RESEARCH-NOTES.md` for measured
-remote behaviour — every line in those three is traceable to a real request.
+`docs/GHOST-NOTES.md`, `docs/WORDPRESS-NOTES.md`, `docs/RESEARCH-NOTES.md`,
+`docs/IMAGE-NOTES.md` for measured remote behaviour — every line in those four is
+traceable to a real request.
+
+- **Check the INSTALLED version before re-probing a provider.** A "the fix is in but the
+  behaviour persists" report on 2026-08-10 was the global `@indianic/byline@1.6.1` running
+  as the MCP server while the repo sat at 1.7.1. The live API was fine.

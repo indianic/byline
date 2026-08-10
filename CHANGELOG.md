@@ -7,6 +7,75 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-08-10
+
+The theme of this release is that the gates were right and the *reporting* was wrong.
+Nothing was made more permissive: the same three checks block, and they block on the
+same conditions.
+
+### Changed
+
+- **`score_draft`'s middle verdict is now `advisory`, not `revise`** — a breaking change
+  to the tool's output. Ten of the thirteen checks are declared `blocking: false` because
+  they are improvements rather than defects, and the verdict then handed all of them the
+  same imperative a genuine violation gets. A host model reads an imperative as a gate:
+  measured across one nine-article series, `revise` triggered two to three full-article
+  rewrites per article, none of which was required to publish, at roughly 12k tokens a
+  round. The scorecard now also carries **`publishable`** (false only when a blocking
+  check failed) and a one-sentence **`summary`** that leads with the decision. No check
+  changed severity.
+- **`score_draft` returns only failing checks by default.** All thirteen with their full
+  prose was about a thousand tokens of nothing actionable per call, and scores happen
+  repeatedly per article. Passing checks collapse to a `passed` array of names; pass
+  `verbose: true` for the old output. Checks that ran but *verified nothing* are kept in
+  full and marked `evaluated: false` — "not evaluated" is not "passed", and collapsing
+  `citation_provenance` into a name would report unverified citations as checked.
+- **The writing brief now renders the scorer's own thresholds** instead of restating them.
+  `THRESHOLDS`, `BANNED` and `BANNED_CONSTRUCTIONS` are exported from `score.ts` and
+  printed into the brief, with every count resolved against the requested word length —
+  "at least 8 items for 2000 words", not "one per 250 words" against a word count that
+  does not exist yet at writing time. The two copies had drifted exactly the way
+  `SLUG_PATTERN` and `IMAGE_LOOKS` did: `geo_citability` and `burstiness` were graded and
+  stated nowhere in the blog-mode brief, and were the most frequent revision triggers in
+  production, while `ever-changing`, `dive deep` and `seamlessly` were marked down and
+  never warned about.
+
+### Added
+
+- **`generate_images` and `upload_images`** — batch companions to the single-image tools.
+  Illustrating one article took twelve tool calls; it now takes two. One image failing
+  does not fail the batch: each entry reports `ok` with its own error naming the failing
+  API, so a safety-blocked prompt can be reworded and re-run on its own slot.
+- **`generate_image` reports `width`, `height`, `format` and `mime`**, read from the image
+  bytes (`src/plugins/images/inspect.ts`). Callers were reading whole generated images
+  back through a vision model to confirm dimensions that sit at a fixed offset in the
+  file. Unparsed formats report `null` rather than a guess.
+- **`slug` on `create_post` and `update_post`.** There was no way to set it, so a long
+  headline became a long URL that could only be shortened by hand in the platform's admin
+  UI — after publication. Both platforms normalise a slug and append a counter on a
+  collision, so the result now warns when the stored slug differs from the one sent; a
+  substituted slug is non-empty and Ghost's write-back diff could not see it.
+- `docs/IMAGE-NOTES.md`, recording the 2026-08-10 live probe of the xAI image API.
+- A `/write-series` slash command capturing the six-call article workflow.
+
+### Fixed
+
+- **Every Grok image was a JPEG announced as a PNG.** The adapter hardcoded
+  `mime: 'image/png'`; measured live on 2026-08-10, `grok-imagine-image` returns
+  `mime_type: "image/jpeg"` with a JFIF header. It now reads xAI's own field.
+- **Generated files were named `.png` regardless of their contents.** Both platform
+  adapters derive the upload `Content-Type` from the filename extension, so the
+  mislabelling propagated to the media store. The extension now follows the bytes.
+- The news-mode brief asked for paragraphs of one to two sentences in its register
+  section and two to four in its SEO section — both rendered in the same prompt.
+
+### Note
+
+The "Grok reports reachable but generation fails" report of 2026-08-10 was **not** a live
+API problem. The machine was running the globally installed `@indianic/byline@1.6.1`
+while the repository sat at 1.7.1, and the 1.7.1 fix had simply never been installed.
+Check the installed version before re-probing a provider.
+
 ## [1.7.1] - 2026-08-04
 
 ### Fixed

@@ -166,13 +166,14 @@ async function callWith(ctx: Context, name: string, args: Record<string, unknown
 }
 
 describe('tool registration', () => {
-  it('exposes all fourteen tools', async () => {
+  it('exposes all sixteen tools', async () => {
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'add_site',
       'build_writing_brief',
       'create_post',
       'generate_image',
+      'generate_images',
       'get_persona',
       'health_check',
       'list_authors',
@@ -183,6 +184,7 @@ describe('tool registration', () => {
       'score_draft',
       'update_post',
       'upload_image',
+      'upload_images',
     ]);
   });
 
@@ -2719,5 +2721,355 @@ describe('a wall-clock publish_at is read in the blog’s timezone', () => {
     const r = await call('create_post', post('2026-09-04T10:00'));
     expect(r.ok).toBe(false);
     expect(r.code).toBe('NO_SITE_TIMEZONE');
+  });
+});
+
+// Fix 3: `score_draft` returned all thirteen checks with their full prose on
+// every call, passing ones included, which is roughly a thousand tokens of
+// nothing actionable per score — and scores happen repeatedly per article.
+// These go through the real tool layer because the trimming lives there, not in
+// `scoreDraft`, and a unit test calling `scoreDraft` directly cannot see it.
+describe('score_draft output trimming', () => {
+  const CLEAN = '<table style="border:1px solid #ddd;"><tr><td>In short.</td></tr></table><h2>A</h2><p>[[content_image]]</p>';
+
+  it('omits passing checks by default and lists them by name instead', async () => {
+    const r = await call('score_draft', { html: CLEAN });
+    const returned = r.checks.map((c: { name: string }) => c.name);
+    // Everything returned in full is either failing or unevaluated.
+    for (const c of r.checks) {
+      expect(c.ok === false || c.evaluated === false, c.name).toBe(true);
+    }
+    expect(Array.isArray(r.passed)).toBe(true);
+    // Nothing vanishes: every check is either returned in full or named.
+    expect(returned.length + r.passed.length).toBe(13);
+  });
+
+  it('returns every check in full when verbose is set', async () => {
+    const r = await call('score_draft', { html: CLEAN, verbose: true });
+    expect(r.checks).toHaveLength(13);
+    expect(r.passed).toBeUndefined();
+    expect(r.checks.some((c: { ok: boolean }) => c.ok)).toBe(true);
+  });
+
+  // The regression this nearly shipped: "not evaluated" is not "passed".
+  // citation_provenance with no findings verified nothing, and collapsing it
+  // into a name in `passed` would report unverified citations as checked.
+  it('keeps an unevaluated check visible even though it is ok', async () => {
+    const r = await call('score_draft', { html: CLEAN });
+    const prov = r.checks.find((c: { name: string }) => c.name === 'citation_provenance');
+    expect(prov).toBeDefined();
+    expect(prov.ok).toBe(true);
+    expect(prov.evaluated).toBe(false);
+    expect(prov.detail).toContain('not evaluated');
+    expect(r.passed).not.toContain('citation_provenance');
+  });
+
+  it('reports publishable and a summary through the tool layer', async () => {
+    const r = await call('score_draft', { html: CLEAN });
+    expect(r.publishable).toBe(true);
+    expect(r.verdict).toBe('advisory');
+    expect(r.summary).toContain('Publishable');
+  });
+
+  it('reports a blocking failure as not publishable', async () => {
+    const r = await call('score_draft', { html: '<p class="x">a</p>' });
+    expect(r.verdict).toBe('blocked');
+    expect(r.publishable).toBe(false);
+    expect(r.summary).toContain('NOT publishable');
+  });
+});
+
+// Fix 5: `slug` did not exist anywhere in the post path, so an auto-generated
+// seventy-character URL could only be shortened by hand in the platform's admin
+// UI — after publication, which is when it is already being shared. Declared in
+// the tool schema as well as on `PostInput`, because the MCP SDK strips
+// undeclared keys and that is precisely how `feature_image_id` shipped inert.
+describe('slug, through the real tool layer', () => {
+  const ghostStub = (respond: (body: any) => unknown) => {
+    let sent: any;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: string, i: RequestInit = {}) => {
+        if (i.body) sent = JSON.parse(String(i.body));
+        return new Response(JSON.stringify(respond(sent)), { status: 201 });
+      }),
+    );
+    return () => sent;
+  };
+
+  it('reaches the adapter from create_post and is sent to the platform', async () => {
+    const sent = ghostStub(() => ({
+      posts: [{ id: 'p1', url: 'u', title: 'T', status: 'published', slug: 'short-one' }],
+    }));
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'A very long headline that would otherwise become the whole URL',
+      html: '<p>x</p>',
+      images: 'none',
+      schema: false,
+      slug: 'short-one',
+    });
+    expect(sent().posts[0].slug).toBe('short-one');
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toBeUndefined();
+  });
+
+  // The silent-wrong-result this guards: both platforms append a counter on a
+  // collision, so the caller shares a URL the post does not live at. Ghost's
+  // droppedFields cannot see it — a substituted slug is non-empty.
+  it('warns when the platform stored a different slug than the one sent', async () => {
+    ghostStub(() => ({
+      posts: [{ id: 'p1', url: 'u', title: 'T', status: 'published', slug: 'short-one-2' }],
+    }));
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      images: 'none',
+      schema: false,
+      slug: 'short-one',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.warnings.join(' ')).toContain('short-one-2');
+    expect(r.warnings.join(' ')).toContain('already taken');
+  });
+
+  it('warns when the platform returns no slug at all', async () => {
+    ghostStub(() => ({ posts: [{ id: 'p1', url: 'u', title: 'T', status: 'published' }] }));
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      images: 'none',
+      schema: false,
+      slug: 'short-one',
+    });
+    expect(r.warnings.join(' ')).toContain('could not be verified');
+  });
+
+  // Ghost's updatePost does an optimistic-concurrency GET for `updated_at`
+  // before the PUT, so the stub has to answer both.
+  it('reaches the adapter from update_post too', async () => {
+    const sent = ghostStub(() => ({
+      posts: [
+        {
+          id: 'p1',
+          url: 'u',
+          title: 'T',
+          status: 'published',
+          slug: 'renamed',
+          updated_at: '2026-08-10T00:00:00.000Z',
+        },
+      ],
+    }));
+    const r = await call('update_post', { site: 'personal', post_id: 'p1', slug: 'renamed' });
+    expect(r.ok).toBe(true);
+    expect(sent().posts[0].slug).toBe('renamed');
+  });
+
+  it('is not sent when the caller omits it, so the platform keeps generating one', async () => {
+    const sent = ghostStub(() => ({
+      posts: [{ id: 'p1', url: 'u', title: 'T', status: 'published', slug: 'auto-generated' }],
+    }));
+    const r = await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      images: 'none',
+      schema: false,
+    });
+    expect(sent().posts[0].slug).toBeUndefined();
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toBeUndefined();
+  });
+});
+
+// Fix 4: illustrating one article took twelve tool calls — generate, read back
+// to check, upload, four times over. The batch pair makes it two. These go
+// through the real tool layer because that is where the batching, the
+// per-image error isolation and the filename live.
+describe('generate_images / upload_images — the batch pair', () => {
+  const savedGemini = process.env.GEMINI_API_KEY;
+  const savedXai = process.env.XAI_API_KEY;
+
+  beforeEach(() => {
+    process.env.GEMINI_API_KEY = 'test-key';
+    delete process.env.XAI_API_KEY;
+  });
+
+  afterEach(() => {
+    // Restored per key. Reassigning process.env detaches it from the real
+    // process environment and os.homedir() goes stale for the whole worker.
+    if (savedGemini === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = savedGemini;
+    if (savedXai === undefined) delete process.env.XAI_API_KEY;
+    else process.env.XAI_API_KEY = savedXai;
+  });
+
+  /** A real PNG header, so the dimensions in the result are genuinely parsed. */
+  function pngBytes(w: number, h: number): Buffer {
+    const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const ihdr = Buffer.alloc(25);
+    ihdr.writeUInt32BE(13, 0);
+    ihdr.write('IHDR', 4, 'ascii');
+    ihdr.writeUInt32BE(w, 8);
+    ihdr.writeUInt32BE(h, 12);
+    return Buffer.concat([sig, ihdr]);
+  }
+
+  const geminiOk = (data: Buffer, mimeType = 'image/png') =>
+    new Response(
+      JSON.stringify({
+        candidates: [{ content: { parts: [{ inlineData: { mimeType, data: data.toString('base64') } }] } }],
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+
+  it('generates every image in one call and reports dimensions read from the bytes', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => geminiOk(pngBytes(1344, 768))));
+
+    const r = await call('generate_images', {
+      images: [
+        { prompt: 'a control room at shift change', slot: 'hero' },
+        { prompt: 'an engineer at a terminal', slot: 'inline' },
+        { prompt: 'a server aisle', slot: 'gallery', style: 'photoreal_scene' },
+      ],
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.generated).toBe(3);
+    expect(r.failed).toBe(0);
+    expect(r.images).toHaveLength(3);
+    for (const img of r.images) {
+      expect(img.ok).toBe(true);
+      expect(img.width).toBe(1344);
+      expect(img.height).toBe(768);
+      expect(img.format).toBe('png');
+      expect(img.path).toMatch(/\.png$/);
+    }
+    // Order is preserved, so a caller can match results back to its own slots.
+    expect(r.images.map((i: { slot: string }) => i.slot)).toEqual(['hero', 'inline', 'gallery']);
+  });
+
+  // The defect this closes: every file was written `.png` regardless of what
+  // came back, and both adapters read the upload Content-Type off the
+  // extension — so a Gemini JPEG was uploaded declaring itself a PNG.
+  it('names the file for the format the provider actually returned', async () => {
+    const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, ...Array(14).fill(0)]);
+    vi.stubGlobal('fetch', vi.fn(async () => geminiOk(jpegBytes, 'image/jpeg')));
+
+    const r = await call('generate_image', { prompt: 'a warehouse aisle', slot: 'hero' });
+    expect(r.ok).toBe(true);
+    expect(r.format).toBe('jpeg');
+    expect(r.mime).toBe('image/jpeg');
+    expect(r.path).toMatch(/\.jpg$/);
+    expect(r.path).not.toMatch(/\.png$/);
+  });
+
+  // One safety-blocked prompt in a gallery of four must not throw away the
+  // three that worked — that is the whole reason the batch reports per item
+  // instead of failing as a unit.
+  it('isolates a failure to its own image and keeps the rest', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: unknown, init?: RequestInit) => {
+        const prompt = String(init?.body ?? '');
+        if (prompt.includes('protest')) {
+          return new Response(JSON.stringify({ promptFeedback: { blockReason: 'SAFETY' } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return geminiOk(pngBytes(1344, 768));
+      }),
+    );
+
+    const r = await call('generate_images', {
+      images: [
+        { prompt: 'a quiet office', slot: 'a', style: 'photoreal_scene' },
+        { prompt: 'a protest outside a building', slot: 'b', style: 'photoreal_scene' },
+        { prompt: 'a boardroom', slot: 'c', style: 'photoreal_scene' },
+      ],
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.generated).toBe(2);
+    expect(r.failed).toBe(1);
+    const failedEntry = r.images.find((i: { ok: boolean }) => !i.ok);
+    expect(failedEntry.slot).toBe('b');
+    // Nothing fails silently: the error names the API and a real code.
+    expect(failedEntry.error.api).toBeTruthy();
+    expect(failedEntry.error.code).toBeTruthy();
+    expect(r.note).toContain('1 of 3');
+    // The successes are still usable.
+    for (const good of r.images.filter((i: { ok: boolean }) => i.ok)) {
+      expect(good.path).toBeTruthy();
+    }
+  });
+
+  // The setup gate is resolved when the context is built, not read from the
+  // live environment on each call, so this needs its own empty context rather
+  // than deleting the env var mid-test.
+  it('refuses the whole batch when no image provider is configured', async () => {
+    const ctx = loadContext({ BYLINE_HOME: mkdtempSync(join(tmpdir(), 'wb-img-batch-')) });
+    const r = await callWith(ctx, 'generate_images', { images: [{ prompt: 'x', slot: 'hero' }] });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('SETUP_INCOMPLETE');
+  });
+
+  it('uploads several files in one call and reports each result', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => geminiOk(pngBytes(800, 600))));
+    const gen = await call('generate_images', {
+      images: [
+        { prompt: 'one', slot: 'hero' },
+        { prompt: 'two', slot: 'inline' },
+      ],
+    });
+    const paths = gen.images.map((i: { path: string }) => i.path);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ images: [{ url: 'https://cdn.test/x.png' }] }), { status: 201 }),
+      ),
+    );
+    const r = await call('upload_images', {
+      site: 'personal',
+      images: [
+        { path: paths[0], alt: 'first' },
+        { path: paths[1], alt: 'second' },
+      ],
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.uploaded).toBe(2);
+    expect(r.failed).toBe(0);
+    for (const up of r.images) {
+      expect(up.ok).toBe(true);
+      expect(up.url).toBe('https://cdn.test/x.png');
+      // The local path comes back so a caller can match a URL to the slot it
+      // generated, without tracking array positions itself.
+      expect(up.path).toBeTruthy();
+    }
+  });
+
+  it('isolates an unreadable file to its own entry rather than failing the upload batch', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ images: [{ url: 'https://cdn.test/x.png' }] }), { status: 201 }),
+      ),
+    );
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ images: [{ url: 'https://cdn.test/x.png' }] }), { status: 201 })));
+    const r = await call('upload_images', {
+      site: 'personal',
+      images: [{ path: '/nonexistent/definitely-not-here.png' }],
+    });
+    expect(r.ok).toBe(true);
+    expect(r.failed).toBe(1);
+    expect(r.images[0].ok).toBe(false);
+    expect(r.images[0].error.code).toBe('FILE_NOT_FOUND');
   });
 });

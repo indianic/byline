@@ -266,3 +266,36 @@ describe('GrokImages targets a model that still exists', () => {
     expect(url).toContain('image-generation-models');
   });
 });
+
+// Measured live against api.x.ai on 2026-08-10: `grok-imagine-image` answered
+// `mime_type: "image/jpeg"` with a JFIF header (ffd8ffe0…, 1280x720) for a
+// plain photographic prompt. The adapter had hardcoded `image/png` for every
+// response since it was written, so every Grok fallback image was a JPEG
+// announced as a PNG — and both platform adapters derive the upload
+// Content-Type from the filename extension, so it was uploaded as one too.
+describe('GrokImages reports the mime xAI actually returned', () => {
+  const reply = (payload: Record<string, unknown>) =>
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify(payload), { status: 200 }));
+
+  it('uses the response mime_type rather than assuming PNG', async () => {
+    reply({ data: [{ b64_json: Buffer.from('x').toString('base64'), mime_type: 'image/jpeg' }] });
+    const out = await new GrokImages('xai-test').generate('a photograph', { aspect: '16:9' });
+    expect(out.mime).toBe('image/jpeg');
+  });
+
+  it('passes through whatever mime the API states, not a whitelist', async () => {
+    reply({ data: [{ b64_json: Buffer.from('x').toString('base64'), mime_type: 'image/webp' }] });
+    expect((await new GrokImages('xai-test').generate('a photograph', { aspect: '16:9' })).mime).toBe(
+      'image/webp',
+    );
+  });
+
+  // The field's absence is the shape the response had before xAI began sending
+  // it, so the old default stays for that case only.
+  it('falls back to image/png only when the field is absent', async () => {
+    reply({ data: [{ b64_json: Buffer.from('x').toString('base64') }] });
+    expect((await new GrokImages('xai-test').generate('a photograph', { aspect: '16:9' })).mime).toBe(
+      'image/png',
+    );
+  });
+});
