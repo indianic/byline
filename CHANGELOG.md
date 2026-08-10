@@ -5,11 +5,6 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.8.0] - 2026-08-10
-
-- fix(score,brief,images): stop advisory findings reading as a gate
-- docs: fold npmnic's stub into the real 1.7.1 entry
-
 ## [Unreleased]
 
 ## [1.8.0] - 2026-08-10
