@@ -55,18 +55,30 @@ export function nearestAspect(width: number, height: number): Aspect {
 }
 
 /**
- * Lowercase alphanumeric runs of two or more characters, extension stripped.
+ * Lowercase alphanumeric runs of two or more characters.
  *
- * The trailing `.ext` is dropped before splitting so a call on a bare filename
- * (as `scanLibrary` makes twice-over, and as the direct unit tests make once)
- * never yields a spurious `jpg`/`png` token alongside the real ones.
+ * Deliberately does no extension handling: `tokenise` has two callers with
+ * different input shapes — `scanLibrary`'s folder segments (never have an
+ * extension to strip; `2026.08` and `v1.2-final` are real tokens, not a name
+ * plus a suffix) and the filename call site, which goes through
+ * `tokeniseFilename` below instead. Stripping a trailing `.xxx` here would be
+ * correct for the second caller and silently destructive for the first.
  */
 export function tokenise(text: string): string[] {
   return text
-    .replace(/\.[^.]+$/, '')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter((t) => t.length > 1);
+}
+
+/**
+ * `tokenise`, but for a real filename: the trailing `.ext` is dropped first so
+ * it never contributes a spurious `jpg`/`png` token alongside the real ones.
+ * Use this at the one call site that has an actual filename with an extension
+ * to strip; use plain `tokenise` for anything else (e.g. folder segments).
+ */
+export function tokeniseFilename(filename: string): string[] {
+  return tokenise(filename.replace(/\.[^.]+$/, ''));
 }
 
 function extensionOf(filename: string): string {
@@ -149,6 +161,13 @@ export function scanLibrary(
     if (declared.kind === 'image') {
       // Magic bytes, never the filename. A `.png` that is really a JPEG must
       // upload as a JPEG, or the platform is told the wrong Content-Type.
+      //
+      // Exception, UNVERIFIED: `inspectImage` has no AVIF signature branch, so
+      // an `.avif` file gets `info.mime === null` and `mime` here keeps the
+      // extension-derived `image/avif` from `MEDIA_EXTENSIONS` below. That is
+      // exactly the filename-as-truth shortcut this comment says we don't
+      // take, narrowed to one format. Whether a real AVIF file's bytes match
+      // its extension has not been checked against live bytes.
       const info = inspectImage(readFileSync(full));
       width = info.width;
       height = info.height;
@@ -171,7 +190,7 @@ export function scanLibrary(
       scanned_at: scannedAt,
       mtime_ms: stat.mtimeMs,
       source: {
-        filename_tokens: tokenise(filename.replace(/\.[^.]+$/, '')),
+        filename_tokens: tokeniseFilename(filename),
         folder_tokens: folders.flatMap(tokenise),
         // EXIF is Plan 2. Recording WHERE the date came from keeps the weaker
         // claim visible instead of letting an mtime pass as a capture time.

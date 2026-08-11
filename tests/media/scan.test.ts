@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { nearestAspect, scanLibrary, tokenise } from '../../src/media/scan.js';
+import { nearestAspect, scanLibrary, tokenise, tokeniseFilename } from '../../src/media/scan.js';
 import type { LibraryConfig } from '../../src/media/types.js';
 
 /** A real 1x1 PNG. Byte-accurate, so inspectImage reads genuine magic bytes. */
@@ -22,8 +22,12 @@ function libWith(files: Record<string, Buffer | string>): LibraryConfig {
 }
 
 describe('tokenise', () => {
-  it('lowercases and splits on non-alphanumerics', () => {
-    expect(tokenise('Team_Standup-01.JPG')).toEqual(['team', 'standup', '01']);
+  it('lowercases and splits on non-alphanumerics, with no extension handling', () => {
+    // tokenise is a pure splitter: it does not know "JPG" is an extension.
+    // Extension stripping lives in tokeniseFilename (see below), because
+    // tokenise's other caller — folder segments — has no extension to strip
+    // and must not have one guessed at and removed.
+    expect(tokenise('Team_Standup-01.JPG')).toEqual(['team', 'standup', '01', 'jpg']);
   });
 
   it('drops single-character fragments', () => {
@@ -32,6 +36,31 @@ describe('tokenise', () => {
 
   it('returns an empty array for text with no usable tokens', () => {
     expect(tokenise('__--__')).toEqual([]);
+  });
+
+  it('keeps both segments of a dotted folder-style name, not just the first', () => {
+    // A folder named `2026.08` is never extension-stripped by any caller;
+    // `tokenise` must not treat the `.08` as a trailing extension.
+    expect(tokenise('2026.08')).toEqual(['2026', '08']);
+  });
+
+  it('keeps a real word that happens to follow a dot', () => {
+    // The lone '2' between the dots is a single character and is correctly
+    // dropped by the length filter — but 'final' must survive, which it does
+    // not today: the extension-strip regex eats '.2-final' as a whole.
+    expect(tokenise('v1.2-final')).toEqual(['v1', 'final']);
+  });
+});
+
+describe('tokeniseFilename', () => {
+  it('strips a trailing extension and tokenises what remains', () => {
+    expect(tokeniseFilename('Team_Standup-01.JPG')).toEqual(['team', 'standup', '01']);
+  });
+
+  it('does not drop real tokens in a multi-dot filename', () => {
+    // Only the trailing `.png` is an extension; `.08.11-standup` is filename,
+    // and `tokenise` (with no extension-stripping of its own) must keep it whole.
+    expect(tokeniseFilename('2026.08.11-standup.png')).toEqual(['2026', '08', '11', 'standup']);
   });
 });
 
@@ -164,6 +193,21 @@ describe('scanLibrary', () => {
     };
     const second = scanLibrary(lib, stale);
     expect(second.assets.map((a) => a.path)).toEqual(['a.png']);
+  });
+
+  it('tokenises a dotted folder name without losing the segment after the dot', () => {
+    const lib = libWith({ '2026.08/team-standup.png': PNG_1x1 });
+    const idx = scanLibrary(lib, null);
+    const a = idx.assets[0]!;
+    expect(a.source.folder_tokens).toEqual(expect.arrayContaining(['2026', '08']));
+  });
+
+  it('tokenises a multi-dot filename without losing the segment before the extension', () => {
+    const lib = libWith({ '2026.08.11-standup.png': PNG_1x1 });
+    const idx = scanLibrary(lib, null);
+    const a = idx.assets[0]!;
+    expect(a.source.filename_tokens).toEqual(expect.arrayContaining(['11', 'standup']));
+    expect(a.source.filename_tokens).not.toContain('png');
   });
 
   it('sorts assets by path so the written index is stable', () => {
