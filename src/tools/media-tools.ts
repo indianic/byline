@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { Context } from '../context.js';
 import { ToolError, ok } from '../errors.js';
 import { getLibrary, indexFileFor, ledgerFileFor } from '../media/library.js';
-import { staleReservations } from '../media/ledger.js';
+import { isUsed, staleReservations } from '../media/ledger.js';
 import { scanLibrary } from '../media/scan.js';
 import { searchAssets } from '../media/search.js';
 import { readIndex, readLedger, writeIndex } from '../media/store.js';
@@ -48,7 +48,7 @@ function requireIndex(ctx: MediaCtx, lib: LibraryConfig): MediaIndex {
 
 export async function listMediaLibraries(
   ctx: MediaCtx,
-  a: { scan?: boolean; library?: string },
+  a: { scan?: boolean; library?: string; site?: string },
 ): Promise<{
   libraries: {
     name: string;
@@ -59,7 +59,14 @@ export async function listMediaLibraries(
     images: number;
     videos: number;
     enriched: number;
-    unused: number;
+    /**
+     * Absent, not a guess, when reuse_scope is "site" and no `site` was given:
+     * "unused" means something different per site under that scope, and
+     * inventing a library-wide number would silently disagree with what
+     * find_media excludes for any particular site. See `unused_note`.
+     */
+    unused?: number;
+    unused_note?: string;
     stale_reservations: number;
     unavailable?: string;
   }[];
@@ -108,8 +115,17 @@ export async function listMediaLibraries(
     }
 
     const ledger = readLedger(ledgerFileFor(lib, ctx.paths.home), lib.name);
-    const usedIds = new Set(ledger.records.map((r) => r.id));
     const assets = index?.assets ?? [];
+
+    // Under "site" scope, "unused" is only answerable for a specific site —
+    // the same asset can be used on site B and still free for site A. Without
+    // a `site` to resolve against, report that honestly instead of quietly
+    // computing a library-wide figure that would disagree with what
+    // find_media actually excludes for any one site.
+    const canCountUnused = ctx.media.reuseScope === 'global' || a.site !== undefined;
+    const unused = canCountUnused
+      ? assets.filter((x) => !isUsed(ledger, x.id, a.site ?? '', ctx.media.reuseScope)).length
+      : undefined;
 
     return {
       name,
@@ -120,7 +136,12 @@ export async function listMediaLibraries(
       images: assets.filter((x) => x.kind === 'image').length,
       videos: assets.filter((x) => x.kind === 'video').length,
       enriched: assets.filter((x) => x.enriched).length,
-      unused: assets.filter((x) => !usedIds.has(x.id)).length,
+      ...(unused !== undefined
+        ? { unused }
+        : {
+            unused_note:
+              'reuse_scope is "site" and no `site` was given, so "unused" cannot be answered library-wide. Pass `site` to get a count for that site.',
+          }),
       stale_reservations: staleReservations(ledger).length,
     };
   });
@@ -168,12 +189,27 @@ export async function findMedia(
   const ledger = readLedger(ledgerFileFor(lib, ctx.paths.home), lib.name);
 
   const unusedOnly = a.unused_only !== false;
-  const site = a.site ?? '';
+
+  // Under "site" scope, "used" means used-on-that-site — a missing `site`
+  // has no real record to compare against, so `''` would match nothing and
+  // unused_only would silently exclude nothing, offering every already-
+  // published photo again. Refuse instead of no-opping the one guarantee
+  // this tool exists to provide. "global" scope needs no site at all.
+  if (unusedOnly && ctx.media.reuseScope === 'site' && !a.site) {
+    throw new ToolError({
+      api: 'media',
+      code: 'SITE_REQUIRED',
+      message:
+        'unused_only requires `site` when reuse_scope is "site": without it, "already used" cannot be resolved to any real record, so nothing would be excluded.',
+      hint: 'Pass `site` naming which site this is for, or pass `unused_only: false` if you deliberately want everything, including already-used assets.',
+    });
+  }
+
   const excludeIds = unusedOnly
     ? new Set(
-        ledger.records
-          .filter((r) => ctx.media.reuseScope === 'global' || r.site === site)
-          .map((r) => r.id),
+        [...new Set(ledger.records.map((r) => r.id))].filter((id) =>
+          isUsed(ledger, id, a.site ?? '', ctx.media.reuseScope),
+        ),
       )
     : undefined;
 
@@ -220,16 +256,22 @@ export function registerMediaTools(server: McpServer, ctx: Context): void {
     {
       title: 'List media libraries',
       description:
-        'List the local media libraries byline is configured to use, with asset counts, how many are still unused, and whether the index is up to date. Pass scan: true to walk the folder and rebuild the index first — that is how a new or changed library becomes searchable. Byline never writes inside your library folder.',
+        'List the local media libraries byline is configured to use, with asset counts, how many are still unused, and whether the index is up to date. Pass scan: true to walk the folder and rebuild the index first — that is how a new or changed library becomes searchable. When reuse_scope is "site", the `unused` count is only reported if you pass `site` — otherwise the response explains why in `unused_note` instead of guessing. Byline never writes inside your library folder.',
       inputSchema: {
         library: z.string().optional().describe('Limit to one library. Omit for all of them.'),
         scan: z
           .boolean()
           .default(false)
           .describe('Walk the folder and rebuild the index before reporting.'),
+        site: z
+          .string()
+          .optional()
+          .describe(
+            'The site to count "unused" for. Only needed when reuse_scope is "site" — without it, the `unused` count for that library is omitted (see `unused_note`) rather than guessed. Ignored when reuse_scope is "global".',
+          ),
       },
     },
-    handler('list_media_libraries', (a: { library?: string; scan?: boolean }) =>
+    handler('list_media_libraries', (a: { library?: string; scan?: boolean; site?: string }) =>
       listMediaLibraries(ctx, a).then(ok),
     ),
   );
@@ -258,7 +300,9 @@ export function registerMediaTools(server: McpServer, ctx: Context): void {
         site: z
           .string()
           .optional()
-          .describe('The site this is for. Decides what counts as already used when reuse_scope is "site".'),
+          .describe(
+            'The site this is for. REQUIRED when unused_only is in effect (the default true) and reuse_scope is "site" — the tool throws rather than silently skip the exclusion. Not required when reuse_scope is "global" (used anywhere excludes it everywhere), or when unused_only: false.',
+          ),
         limit: z.number().int().min(1).max(50).default(10),
       },
     },
