@@ -28,7 +28,9 @@ generating a variation *from* one.
   caption, filename and folder. A vector store is a new dependency, a new build step and a
   new staleness problem, for libraries that are typically a few hundred files. Revisit when
   a real library demonstrates that ranking is the bottleneck.
-- **No editing of media.** No cropping, resizing, transcoding, or watermarking.
+- **No transcoding, and no video processing of any kind.** Video is uploaded byte-for-byte
+  as it sits on disk. See "Video".
+- **No SVG output.** Considered and rejected; see "Aspect fitting" for why.
 - **No writing to the user's library folder, ever.** See "Usage lifecycle".
 
 ---
@@ -146,6 +148,7 @@ src/media/
   index.ts     read/write the index, atomically
   ledger.ts    read/write usage, atomically
   search.ts    rank assets against a query
+  fit.ts       fit a still image to a target aspect ratio
   enrich.ts    vision keywording, through the images provider family
   types.ts
 ```
@@ -221,29 +224,44 @@ platform does with a `<video>` element on ingest. Both `build_writing_brief` and
 `score_draft` read `HtmlProfile`, so the measured behaviour drives what writers are asked
 to produce and what `platform_html` accepts.
 
-### The probe gate — BLOCKING
+### Video: no client-side validation
 
-**No video code ships before these five probes run against real installs, and no claim
-about video appears in any tool description, brief or doc until the probe that proves it is
-recorded.** Each result goes into `docs/GHOST-NOTES.md` or `docs/WORDPRESS-NOTES.md` with
-its date, per the standing rule that every line in those files traces to a real request.
+**Byline validates nothing about a video and changes nothing about it.** No size check, no
+MIME sniffing, no codec inspection, no duration limit, no transcode. The bytes on disk are
+the bytes uploaded.
 
-| # | Probe | Decides |
-|---|---|---|
-| 1 | Ghost `POST /media/upload/` with a small MP4 | Whether Ghost accepts video at all, and the response shape |
-| 2 | Publish HTML containing `<video src>` to Ghost, read the post back | Whether the tag survives, becomes a native card, or is stripped |
-| 3 | WordPress `POST /wp/v2/media` with an MP4 | Acceptance, and the `source_url` shape |
-| 4 | WordPress read-back of `<video>`, with and without `unfiltered_html` | Whether KSES strips it on a restricted account |
-| 5 | Upload size limits, both platforms | The pre-flight refusal threshold |
+When a platform refuses the upload, its own error surfaces through the existing `ToolError`
+envelope, naming the API and its HTTP status — the same treatment every other remote
+failure already gets. A client-side size limit would only duplicate the server's answer,
+go stale the moment an install changes its `upload_max_filesize`, and refuse files the
+platform would have accepted.
 
-If probe 2 shows Ghost strips `<video>` from HTML source, the video half of this design
-changes shape and must be re-agreed before implementation continues.
+### How a silently dropped `<video>` is caught
 
-Probe 4's restricted-account arm inherits the existing limitation recorded in `CONTEXT.md`:
-no account without `unfiltered_html` has ever been available. If one cannot be obtained,
-that arm stays **UNVERIFIED** and is marked as such in the code and in
-`docs/WORDPRESS-NOTES.md`. It is not promoted on the strength of the administrator-account
-probe.
+The real risk with video is not rejection — a rejection is loud. It is a platform accepting
+the post with a 201 and discarding the `<video>` element, which is precisely the failure
+mode of the `?source=html` and `excerpt` defects in `CONTEXT.md`.
+
+**No new machinery is needed for this.** `create_post` and `update_post` already diff what
+was sent against what the platform echoed back and return `warnings` naming any field that
+was quietly dropped. Video needs one addition: `<video>` elements join what that diff
+inspects, so a stripped tag is reported rather than discovered by a reader.
+
+### What still must be measured
+
+Byline does not block on answering these up front. The first real upload answers
+acceptance, response shape and limits, and what it returns is recorded. One honesty rule
+applies regardless:
+
+**No tool description, brief, README or doc claims byline publishes video to a platform
+until a video has been watched to land on that platform and read back.** Behaviour observed
+during implementation goes into `docs/GHOST-NOTES.md` and `docs/WORDPRESS-NOTES.md` with its
+date, per the standing rule that every line in those files traces to a real request.
+
+WordPress without `unfiltered_html` remains **UNVERIFIED**, exactly as it is today. Whether
+KSES strips `<video>` for a restricted account is undetermined, and no account of that kind
+has ever been available to this project. The write-back diff covers the case in practice: a
+restricted user gets a warning naming the dropped element rather than a silent hole.
 
 ---
 
@@ -272,8 +290,17 @@ it came from.
 ### `use_media`
 
 Uploads chosen assets to a site, returns hosted URLs and native ids, and writes the ledger.
-Batched, mirroring `upload_images`. Refuses before uploading when an asset exceeds the
-platform's measured size limit, rather than surfacing a 413.
+Batched, mirroring `upload_images`.
+
+Two optional parameters control fitting, and they apply to still images only:
+
+- `fit` — a target aspect (`'16:9'`, `'4:3'`, `'1:1'`), or omitted for no fitting.
+- `fit_mode` — `'cover'` (default) or `'contain'`.
+
+The result reports, per asset, whether it was fitted, and from what aspect to what. A
+pass-through says so rather than reporting a no-op as a successful fit.
+
+Video is uploaded untouched and refuses no file. See "Video: no client-side validation".
 
 ### `generate_image` and `generate_images` — extended
 
@@ -336,6 +363,61 @@ An un-enriched library still searches, on filename and folder alone. It works ba
 
 ---
 
+## Aspect fitting
+
+A real photograph is rarely the aspect an article slot wants. `src/media/fit.ts` composites
+a still image onto a canvas at the target aspect and returns a real raster file.
+
+**Still images only. Video is never fitted, cropped, or re-encoded.**
+
+### Why not SVG
+
+An SVG frame was the first proposal and was rejected on three findings:
+
+1. **The hero image is the social card.** `feature_image` becomes `og:image` and
+   `twitter:image`, and no major social platform renders SVG for either. An SVG hero would
+   look correct on the blog and produce a blank preview everywhere the post is shared —
+   breaking the one image the brief calls out as "the one everybody sees".
+2. **WordPress core rejects SVG uploads by default.** The same feature would work on Ghost
+   and 415 on WordPress. (Documented WordPress default. **UNVERIFIED** against any install
+   here — no probe was run, because the finding above already settled the decision.)
+3. **An SVG loaded through `<img src>` cannot fetch an external image**, so the photo would
+   have to be base64-inlined, adding roughly a third to the file size for no benefit.
+
+Rasterising has none of these problems and needs no probe on either platform.
+
+### Behaviour
+
+| Input | Output |
+|---|---|
+| Aspect already within 2% of target | **Passed through untouched.** No re-encode |
+| Aspect differs, `mode: 'cover'` (default) | Centre-cropped to fill the target. No bars |
+| Aspect differs, `mode: 'contain'` | Letterboxed, bars filled with a colour sampled from the source's edge pixels |
+
+The 2% pass-through matters: re-encoding a JPEG that already fits would lose quality to
+achieve nothing.
+
+`cover` is the default because it is what every CMS theme does to a feature image anyway,
+and letterbox bars on a hero read as a mistake. `contain` exists for images where a crop
+would cut the subject out.
+
+Output is JPEG at quality 88, or PNG when the source carries an alpha channel. Files are
+written to `ctx.runsDir` — the same place generated images go — never back into the library.
+
+### Dependency
+
+Fitting needs decode, resample and encode, which is a real image library.
+
+**`jimp`** — pure JavaScript, no native build step, so an `npx @indianic/byline` launch
+cannot fail on a platform with no prebuilt binary. `sharp` is considerably faster but ships
+per-platform native binaries, and this package is distributed to be run through `npx` by
+people who will never see the install log.
+
+Speed is not the constraint here: fitting runs on a handful of images per article, not
+thousands. Install weight is the constraint, and it must be measured before this lands —
+if `jimp` proves unacceptably heavy, the fallback is `jpeg-js` plus `pngjs` with a
+hand-written box resample, which is more code and fewer megabytes.
+
 ## Usage lifecycle
 
 **Byline never writes to the user's library folder.** No moving, no renaming, no sidecar
@@ -371,7 +453,9 @@ standing rule that nothing fails silently.
 | Library path missing or unreadable | Collected into `SetupState`; `loadContext()` still does not throw, so `doctor` still runs |
 | Index stale (files changed since scan) | `find_media` returns results with `stale: true` and the changed count. It never serves known-wrong data silently |
 | Indexed file deleted from disk | `use_media` fails naming the path; the asset is marked missing in the index |
-| Asset exceeds platform size limit | Refused before upload, quoting the measured limit |
+| Platform refuses an upload (size, type, anything) | The platform's own error and HTTP status surface verbatim. Byline pre-validates nothing |
+| Platform accepts a post but drops `<video>` | Caught by the existing write-back diff and returned as a `warning` naming the element |
+| `fit` requested on a video | Rejected as a caller error. Fitting is a still-image operation |
 | `generateFrom` unsupported by provider | Explicit refusal naming the provider. Never a silent derived-look substitution |
 | No image provider configured | `scan` works fully; `enrich` refuses with a hint. Search degrades to filename and folder tokens and says so |
 
@@ -387,13 +471,20 @@ code does what it was told.
 Integration tests, behind `RUN_INTEGRATION=1`, are the ones that count:
 
 - Upload a real image and a real MP4 to Ghost and to WordPress.
-- Publish a post embedding each, **read the post back off the live site**, and assert the
-  element survived in the form the probe recorded.
+- Publish a post embedding each, **read the post back off the live site**, and assert what
+  actually survived — including the case where `<video>` did not, which must produce a
+  warning rather than a pass.
 - Self-cleaning: create, read back, assert, delete.
 
 **No mocked platform for video.** A mocked video upload would encode the same assumption
 the code encodes and pass for the same wrong reason — the exact shape of the
 `feature_image_id` defect recorded in `CONTEXT.md`.
+
+Fitting is tested on real image bytes: assert output dimensions, assert the 2% window
+passes a file through byte-identical, and assert `contain` produces the target aspect with
+the sampled background. Comparing pixels against a golden file is not required; comparing
+dimensions and encoded format is, because those are what the platforms and social cards
+actually read.
 
 `npm test` stays network-free. The unit-test floor stated in `CLAUDE.md` rises with this
 change and must be updated there, in the one place it is stated.
@@ -404,10 +495,20 @@ change and must be updated there, in the one place it is stated.
 
 Stated plainly so nothing is promoted by accident.
 
-- **All five video probes are unrun.** Every statement in this document about what Ghost or
-  WordPress does with video or with `<video>` is a question to be answered, not a claim.
-- **WordPress without `unfiltered_html` remains unmeasured**, as it is today. Probe 4's
-  restricted arm may not be runnable.
+- **Nothing about video on either platform has been measured.** Every statement in this
+  document about what Ghost or WordPress does with an uploaded video or with a `<video>`
+  element is a question, not a claim. Byline no longer gates on answering it up front — the
+  first real upload answers it — but nothing may be *written down as fact* until it has been
+  watched to happen.
+- **WordPress without `unfiltered_html` remains unmeasured**, as it is today. Whether KSES
+  strips `<video>` for a restricted account is undetermined, and no such account has ever
+  been available to this project.
+- **WordPress rejecting SVG uploads is the documented default and was never probed here.**
+  It contributed to the decision against SVG but is not first-hand knowledge, and is marked
+  UNVERIFIED in the "Why not SVG" section for that reason.
+- **`jimp`'s installed weight has not been measured.** The choice over `sharp` rests on
+  avoiding native binaries under `npx`, which is sound; the size trade-off behind it is not
+  yet a number. Measure before it lands.
 - **Frame extraction for video enrichment depends on `ffmpeg` being present.** When it is
   absent, video assets get metadata-only indexing — duration, dimensions, filename and
   folder tokens — and `enrich` reports them as skipped with the reason. Byline does not
@@ -421,10 +522,13 @@ Stated plainly so nothing is promoted by accident.
 2. `scan` + `index` + `list_media_libraries` — images only, no API key needed
 3. `search` + `find_media`
 4. `ledger` + `use_media` + `create_post` promotion
-5. `describe` capability + `enrich` + `byline media enrich`
-6. `reference` / `reference_mode` on the generate tools
-7. `media` parameter on `build_writing_brief`
-8. **Probe gate** — the five video probes, results written to the NOTES files
-9. Video: `uploadMedia`, `HtmlProfile` video descriptor, `platform_html` rule, integration tests
+5. `fit` — aspect fitting, the `jimp` decision measured and confirmed
+6. `describe` capability + `enrich` + `byline media enrich`
+7. `reference` / `reference_mode` on the generate tools
+8. `media` parameter on `build_writing_brief`
+9. Video: `uploadMedia` dispatching on MIME, `<video>` added to the write-back diff,
+   `HtmlProfile` video descriptor, `platform_html` rule, live integration tests. Behaviour
+   observed here is written into the NOTES files as it is observed
 
-Steps 1–7 deliver a complete, useful images-only feature. Step 8 decides the shape of step 9.
+Steps 1–8 deliver a complete, useful images-only feature that can ship on its own. Step 9
+adds video and is where the platforms' real behaviour gets recorded for the first time.
