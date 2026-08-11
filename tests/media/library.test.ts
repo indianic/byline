@@ -69,6 +69,77 @@ describe('loadMedia', () => {
     expect(cfg.reuseScope).toBe('site');
     expect(cfg.problems.join(' ')).toMatch(/reuse_scope/);
   });
+
+  it('marks a library unavailable when index_path equals its own path', () => {
+    const root = realDir();
+    const cfg = loadMedia(
+      fixture(`media:\n  libraries:\n    - name: shots\n      path: ${root}\n      index_path: ${root}\n`),
+      {},
+    );
+    expect(cfg.libraries.shots?.unavailable).toMatch(/index_path/i);
+    expect(cfg.libraries.shots?.unavailable).toContain(root);
+    expect(cfg.problems.join(' ')).toMatch(/index_path/i);
+  });
+
+  it('marks a library unavailable when index_path is nested inside its own path', () => {
+    const root = realDir();
+    const nested = join(root, 'sub');
+    const cfg = loadMedia(
+      fixture(`media:\n  libraries:\n    - name: shots\n      path: ${root}\n      index_path: ${nested}\n`),
+      {},
+    );
+    expect(cfg.libraries.shots?.unavailable).toMatch(/index_path/i);
+    expect(cfg.libraries.shots?.unavailable).toContain(root);
+    expect(cfg.libraries.shots?.unavailable).toContain(nested);
+  });
+
+  it('does not flag a sibling directory that merely shares a path prefix', () => {
+    const root = realDir();
+    const sibling = `${root}-backup`;
+    const cfg = loadMedia(
+      fixture(`media:\n  libraries:\n    - name: shots\n      path: ${root}\n      index_path: ${sibling}\n`),
+      {},
+    );
+    expect(cfg.libraries.shots?.unavailable).toBeUndefined();
+  });
+
+  it('marks a library unavailable when path is empty', () => {
+    const cfg = loadMedia(
+      fixture('media:\n  libraries:\n    - name: shots\n      path: ""\n'),
+      {},
+    );
+    expect(cfg.libraries.shots?.unavailable).toMatch(/path/i);
+  });
+
+  it('marks a library unavailable when path is whitespace-only', () => {
+    const cfg = loadMedia(
+      fixture('media:\n  libraries:\n    - name: shots\n      path: "   "\n'),
+      {},
+    );
+    expect(cfg.libraries.shots?.unavailable).toMatch(/path/i);
+  });
+
+  it('does not fall back to cwd for an empty path', () => {
+    const cfg = loadMedia(
+      fixture('media:\n  libraries:\n    - name: shots\n      path: ""\n'),
+      {},
+    );
+    expect(cfg.libraries.shots?.path).not.toBe(process.cwd());
+  });
+
+  it('records a problem when two libraries share a name, and keeps the last one', () => {
+    const root1 = realDir();
+    const root2 = realDir();
+    const cfg = loadMedia(
+      fixture(
+        `media:\n  libraries:\n    - name: shots\n      path: ${root1}\n    - name: shots\n      path: ${root2}\n`,
+      ),
+      {},
+    );
+    expect(cfg.libraries.shots?.path).toBe(root2);
+    expect(cfg.problems.join(' ')).toMatch(/shots/);
+    expect(cfg.problems.join(' ')).toMatch(/more than once|duplicate/i);
+  });
 });
 
 describe('getLibrary', () => {
@@ -89,6 +160,11 @@ describe('getLibrary', () => {
       {},
     );
     expect(() => getLibrary(cfg, 'shots')).toThrow(ToolError);
+    try {
+      getLibrary(cfg, 'shots');
+    } catch (e) {
+      expect((e as ToolError).code).toBe('LIBRARY_UNAVAILABLE');
+    }
   });
 
   it('falls back to default_library when no name is given', () => {

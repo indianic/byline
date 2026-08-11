@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { parse } from 'yaml';
 import { SLUG_PATTERN, SLUG_RULE } from '../config/sites.js';
 import { ToolError } from '../errors.js';
@@ -12,6 +12,20 @@ function expandPath(raw: string, env: NodeJS.ProcessEnv): string {
   const home = env.HOME ?? env.USERPROFILE ?? '';
   const expanded = raw === '~' ? home : raw.startsWith('~/') ? join(home, raw.slice(2)) : raw;
   return isAbsolute(expanded) ? expanded : resolve(expanded);
+}
+
+/**
+ * Whether `child`, once resolved and normalised, is `parent` itself or sits
+ * somewhere underneath it.
+ *
+ * `relative()` — not a string-prefix check — is what keeps `/media/shots-backup`
+ * from reading as nested inside `/media/shots`: a prefix match would treat the
+ * two as parent/child purely because one name starts with the other's
+ * characters, when they are unrelated siblings.
+ */
+function isPathInside(child: string, parent: string): boolean {
+  const rel = relative(resolve(parent), resolve(child));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
 /**
@@ -69,7 +83,12 @@ export function loadMedia(configFile: string, env: NodeJS.ProcessEnv): MediaConf
       continue;
     }
 
-    const path = typeof e.path === 'string' ? expandPath(e.path, env) : '';
+    // A whitespace-only path must never fall through to expandPath: resolve('')
+    // returns process.cwd() — an existing directory almost always — so an empty
+    // `path:` would silently accept byline's own working directory as the
+    // library root instead of being rejected as "no path".
+    const rawPath = typeof e.path === 'string' ? e.path : '';
+    const path = rawPath.trim() ? expandPath(rawPath, env) : '';
     const lib: LibraryConfig = {
       name,
       path,
@@ -87,9 +106,20 @@ export function loadMedia(configFile: string, env: NodeJS.ProcessEnv): MediaConf
       lib.unavailable = `Media library "${name}" points at ${path}, which does not exist.`;
     } else if (!statSync(path).isDirectory()) {
       lib.unavailable = `Media library "${name}" points at ${path}, which is not a directory.`;
+    } else if (lib.indexPath && isPathInside(lib.indexPath, path)) {
+      // Byline must never write inside a user's library folder. A library
+      // whose configured index_path resolves to its own path (or somewhere
+      // under it) would put the derived index and usage ledger there, so it
+      // is refused rather than silently honoured.
+      lib.unavailable = `Media library "${name}" has index_path ${lib.indexPath} inside its own path ${path}; byline must never write inside a library folder.`;
     }
 
     if (lib.unavailable) problems.push(lib.unavailable);
+    if (libraries[name]) {
+      problems.push(
+        `Media library "${name}" is defined more than once in config.yaml; using the last definition.`,
+      );
+    }
     libraries[name] = lib;
   }
 
