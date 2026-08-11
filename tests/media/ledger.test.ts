@@ -87,3 +87,181 @@ describe('staleReservations', () => {
     expect(staleReservations(mixed).map((r) => r.id)).toEqual(['sha256:b']);
   });
 });
+
+describe('non-mutation invariant: every operation returns a new ledger', () => {
+  describe('reserve', () => {
+    it('does not mutate the input ledger via structural cloning check', () => {
+      const ledger = { version: 1 as const, library: 'shots', records: [] };
+      const snapshot = structuredClone(ledger);
+
+      reserve(ledger, {
+        id: 'sha256:test',
+        site: 'personal',
+        hosted_url: 'https://blog/test.png',
+        at: '2026-08-11T00:00:00.000Z',
+        slot: 'hero',
+      });
+
+      expect(ledger).toEqual(snapshot);
+    });
+
+    it('does not mutate the input record object', () => {
+      const rec = {
+        id: 'sha256:test',
+        site: 'personal',
+        hosted_url: 'https://blog/test.png',
+        at: '2026-08-11T00:00:00.000Z',
+        slot: 'hero',
+      };
+      const snapshot = structuredClone(rec);
+
+      reserve(empty, rec);
+
+      expect(rec).toEqual(snapshot);
+    });
+
+    it('accepts a frozen ledger without throwing', () => {
+      const ledger = {
+        version: 1 as const,
+        library: 'shots',
+        records: [] as UsageRecord[],
+      };
+      Object.freeze(ledger);
+      Object.freeze(ledger.records);
+
+      const result = reserve(ledger, {
+        id: 'sha256:frozen',
+        site: 'personal',
+        hosted_url: 'https://blog/frozen.png',
+        at: '2026-08-11T00:00:00.000Z',
+      });
+
+      expect(result.records).toHaveLength(1);
+      expect(result.records[0]!.state).toBe('reserved');
+    });
+  });
+
+  describe('promote', () => {
+    it('does not mutate the input ledger via structural cloning check', () => {
+      const snapshot = structuredClone(withOne);
+
+      promote(withOne, ['https://blog/1.png'], 'https://blog/post/');
+
+      expect(withOne).toEqual(snapshot);
+    });
+
+    it('accepts a fully frozen ledger without throwing', () => {
+      const ledger = {
+        version: 1 as const,
+        library: 'shots',
+        records: [
+          Object.freeze({
+            id: 'sha256:frozen',
+            site: 'personal',
+            state: 'reserved' as const,
+            hosted_url: 'https://blog/frozen.png',
+            at: '2026-08-11T00:00:00.000Z',
+          }),
+        ],
+      };
+      Object.freeze(ledger);
+      Object.freeze(ledger.records);
+
+      const result = promote(ledger, ['https://blog/frozen.png'], 'https://blog/post/');
+
+      expect(result.promoted).toBe(1);
+      expect(result.ledger.records[0]!.state).toBe('published');
+    });
+
+    it('does not mutate reserved records that are not promoted', () => {
+      const snapshot = structuredClone(withOne);
+
+      promote(withOne, ['https://different.png'], 'https://blog/post/');
+
+      expect(withOne).toEqual(snapshot);
+    });
+  });
+
+  describe('release', () => {
+    it('does not mutate the input ledger via structural cloning check', () => {
+      const snapshot = structuredClone(withOne);
+
+      release(withOne, 'sha256:a');
+
+      expect(withOne).toEqual(snapshot);
+    });
+
+    it('accepts a fully frozen ledger without throwing', () => {
+      const ledger = {
+        version: 1 as const,
+        library: 'shots',
+        records: [
+          Object.freeze({
+            id: 'sha256:frozen',
+            site: 'personal',
+            state: 'reserved' as const,
+            hosted_url: 'https://blog/frozen.png',
+            at: '2026-08-11T00:00:00.000Z',
+          }),
+        ],
+      };
+      Object.freeze(ledger);
+      Object.freeze(ledger.records);
+
+      const result = release(ledger, 'sha256:frozen');
+
+      expect(result.released).toBe(1);
+      expect(result.ledger.records).toHaveLength(0);
+    });
+
+    it('does not mutate published records even when attempting to release them', () => {
+      const published = promote(withOne, ['https://blog/1.png'], 'https://blog/post/').ledger;
+      const snapshot = structuredClone(published);
+
+      release(published, 'sha256:a');
+
+      expect(published).toEqual(snapshot);
+    });
+  });
+
+  describe('staleReservations', () => {
+    it('does not mutate the input ledger via structural cloning check', () => {
+      const snapshot = structuredClone(withOne);
+
+      staleReservations(withOne);
+
+      expect(withOne).toEqual(snapshot);
+    });
+
+    it('accepts a fully frozen ledger without throwing', () => {
+      const ledger = {
+        version: 1 as const,
+        library: 'shots',
+        records: [
+          Object.freeze({
+            id: 'sha256:frozen1',
+            site: 'personal',
+            state: 'reserved' as const,
+            hosted_url: 'https://blog/frozen1.png',
+            at: '2026-08-11T00:00:00.000Z',
+          }),
+          Object.freeze({
+            id: 'sha256:frozen2',
+            site: 'personal',
+            state: 'published' as const,
+            hosted_url: 'https://blog/frozen2.png',
+            post_url: 'https://blog/post/',
+            at: '2026-08-11T00:00:00.000Z',
+          }),
+        ],
+      };
+      Object.freeze(ledger);
+      Object.freeze(ledger.records);
+
+      const stale = staleReservations(ledger);
+
+      expect(stale).toHaveLength(1);
+      expect(stale[0]!.id).toBe('sha256:frozen1');
+    });
+  });
+});
