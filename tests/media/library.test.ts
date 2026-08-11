@@ -1,9 +1,36 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ToolError } from '../../src/errors.js';
 import { getLibrary, indexFileFor, ledgerFileFor, loadMedia } from '../../src/media/library.js';
+
+// Lets one test force `statSync` to throw for a specific path, simulating a
+// directory that vanishes between the `existsSync` check and the `statSync`
+// call (deletion, an unmounted network volume) without relying on an actual,
+// non-deterministic race. `vi.hoisted` is required because `vi.mock` factories
+// run before the rest of the module body, so the mutable flag they close over
+// has to be created through it rather than declared as an ordinary variable.
+const fsMockState = vi.hoisted(() => ({ throwStatFor: null as string | null }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    statSync: (p: unknown, ...rest: unknown[]) => {
+      if (fsMockState.throwStatFor !== null && p === fsMockState.throwStatFor) {
+        const err = new Error(`ENOENT: no such file or directory, stat '${String(p)}'`);
+        (err as NodeJS.ErrnoException).code = 'ENOENT';
+        throw err;
+      }
+      return (actual as typeof import('node:fs')).statSync(p as never, ...(rest as []));
+    },
+  };
+});
+
+afterEach(() => {
+  fsMockState.throwStatFor = null;
+});
 
 function fixture(yaml: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'bl-media-'));
@@ -125,6 +152,45 @@ describe('loadMedia', () => {
       {},
     );
     expect(cfg.libraries.shots?.path).not.toBe(process.cwd());
+  });
+
+  it('treats an empty index_path as absent, defaulting to <bylineHome>/media', () => {
+    const root = realDir();
+    const cfg = loadMedia(
+      fixture(`media:\n  libraries:\n    - name: shots\n      path: ${root}\n      index_path: ""\n`),
+      {},
+    );
+    const lib = cfg.libraries.shots!;
+    expect(lib.unavailable).toBeUndefined();
+    expect(lib.indexPath).toBeUndefined();
+    expect(indexFileFor(lib, '/home/u/.byline')).toBe('/home/u/.byline/media/shots.index.json');
+  });
+
+  it('treats a whitespace-only index_path as absent, defaulting to <bylineHome>/media', () => {
+    const root = realDir();
+    const cfg = loadMedia(
+      fixture(`media:\n  libraries:\n    - name: shots\n      path: ${root}\n      index_path: "   "\n`),
+      {},
+    );
+    const lib = cfg.libraries.shots!;
+    expect(lib.unavailable).toBeUndefined();
+    expect(lib.indexPath).toBeUndefined();
+    expect(indexFileFor(lib, '/home/u/.byline')).toBe('/home/u/.byline/media/shots.index.json');
+  });
+
+  it('does not throw when the path check itself fails partway through (statSync throws after existsSync passes)', () => {
+    const root = realDir();
+    fsMockState.throwStatFor = root;
+    const configFile = fixture(`media:\n  libraries:\n    - name: shots\n      path: ${root}\n`);
+
+    let cfg: ReturnType<typeof loadMedia> | undefined;
+    expect(() => {
+      cfg = loadMedia(configFile, {});
+    }).not.toThrow();
+
+    expect(cfg?.libraries.shots?.unavailable).toMatch(/could not be checked/i);
+    expect(cfg?.libraries.shots?.unavailable).toContain(root);
+    expect(cfg?.problems.join(' ')).toMatch(/could not be checked/i);
   });
 
   it('records a problem when two libraries share a name, and keeps the last one', () => {

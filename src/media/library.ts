@@ -22,6 +22,17 @@ function expandPath(raw: string, env: NodeJS.ProcessEnv): string {
  * from reading as nested inside `/media/shots`: a prefix match would treat the
  * two as parent/child purely because one name starts with the other's
  * characters, when they are unrelated siblings.
+ *
+ * UNVERIFIED: this comparison is a plain string comparison after `resolve()`,
+ * not case-fold aware. This repo's primary platform is macOS, where APFS is
+ * case-insensitive by default, so `/Users/x/Media/Shots` and
+ * `/users/x/media/shots` are the same directory on disk but compare here as
+ * unrelated — the index-path-inside-library guard would not catch that case.
+ * Deliberately not fixed with `realpathSync`: it requires the path to exist,
+ * and probing a path that may not exist would trade this gap for a new
+ * failure mode inside a function that must never throw. Whether a
+ * case-differing config actually slips past the guard has not been verified
+ * against a real case-insensitive volume.
  */
 function isPathInside(child: string, parent: string): boolean {
   const rel = relative(resolve(parent), resolve(child));
@@ -89,11 +100,18 @@ export function loadMedia(configFile: string, env: NodeJS.ProcessEnv): MediaConf
     // library root instead of being rejected as "no path".
     const rawPath = typeof e.path === 'string' ? e.path : '';
     const path = rawPath.trim() ? expandPath(rawPath, env) : '';
+    // Same trap as `path` above: `typeof e.index_path === 'string'` is true
+    // for `index_path: ""`, and expandPath('') → resolve('') → process.cwd().
+    // A whitespace-only index_path must behave as if the field were absent
+    // so indexFileFor/ledgerFileFor's `<bylineHome>/media` default applies,
+    // instead of silently writing the index and the unrecoverable usage
+    // ledger into whatever directory the MCP host happened to launch in.
+    const rawIndexPath = typeof e.index_path === 'string' ? e.index_path : '';
     const lib: LibraryConfig = {
       name,
       path,
       recursive: e.recursive === undefined ? true : e.recursive === true,
-      ...(typeof e.index_path === 'string' ? { indexPath: expandPath(e.index_path, env) } : {}),
+      ...(rawIndexPath.trim() ? { indexPath: expandPath(rawIndexPath, env) } : {}),
     };
 
     // Order matters: report the name problem first, because a library with an
@@ -102,16 +120,28 @@ export function loadMedia(configFile: string, env: NodeJS.ProcessEnv): MediaConf
       lib.unavailable = `Media library "${name}" has an illegal name. ${SLUG_RULE}`;
     } else if (!path) {
       lib.unavailable = `Media library "${name}" has no \`path\`.`;
-    } else if (!existsSync(path)) {
-      lib.unavailable = `Media library "${name}" points at ${path}, which does not exist.`;
-    } else if (!statSync(path).isDirectory()) {
-      lib.unavailable = `Media library "${name}" points at ${path}, which is not a directory.`;
-    } else if (lib.indexPath && isPathInside(lib.indexPath, path)) {
-      // Byline must never write inside a user's library folder. A library
-      // whose configured index_path resolves to its own path (or somewhere
-      // under it) would put the derived index and usage ledger there, so it
-      // is refused rather than silently honoured.
-      lib.unavailable = `Media library "${name}" has index_path ${lib.indexPath} inside its own path ${path}; byline must never write inside a library folder.`;
+    } else {
+      // existsSync and statSync are two separate syscalls; the directory can
+      // vanish between them (deletion, an unmounted network volume), and
+      // statSync throws ENOENT when it does. loadMedia must never throw, so
+      // any filesystem error here becomes an `unavailable` message naming
+      // the path and the error, the same way the YAML parse failure above
+      // is turned into a problem instead of propagating.
+      try {
+        if (!existsSync(path)) {
+          lib.unavailable = `Media library "${name}" points at ${path}, which does not exist.`;
+        } else if (!statSync(path).isDirectory()) {
+          lib.unavailable = `Media library "${name}" points at ${path}, which is not a directory.`;
+        } else if (lib.indexPath && isPathInside(lib.indexPath, path)) {
+          // Byline must never write inside a user's library folder. A library
+          // whose configured index_path resolves to its own path (or somewhere
+          // under it) would put the derived index and usage ledger there, so it
+          // is refused rather than silently honoured.
+          lib.unavailable = `Media library "${name}" has index_path ${lib.indexPath} inside its own path ${path}; byline must never write inside a library folder.`;
+        }
+      } catch (e2) {
+        lib.unavailable = `Media library "${name}" points at ${path}, which could not be checked: ${(e2 as Error).message}`;
+      }
     }
 
     if (lib.unavailable) problems.push(lib.unavailable);
