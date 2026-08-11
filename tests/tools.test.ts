@@ -166,17 +166,19 @@ async function callWith(ctx: Context, name: string, args: Record<string, unknown
 }
 
 describe('tool registration', () => {
-  it('exposes all sixteen tools', async () => {
+  it('exposes all eighteen tools', async () => {
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'add_site',
       'build_writing_brief',
       'create_post',
+      'find_media',
       'generate_image',
       'generate_images',
       'get_persona',
       'health_check',
       'list_authors',
+      'list_media_libraries',
       'list_personas',
       'list_sites',
       'remove_site',
