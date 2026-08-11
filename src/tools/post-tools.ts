@@ -8,7 +8,7 @@ import { buildArticleSchema } from '../craft/schema.js';
 import { hasInlineImage } from '../craft/score.js';
 import { ToolError, ok } from '../errors.js';
 import { getPlugin, makeAdapter } from '../plugins/registry.js';
-import { promoteUsedMedia } from './media-tools.js';
+import { extractImgSrcs, promoteUsedMedia } from './media-tools.js';
 import {
   MIN_SCHEDULE_LEAD_MS,
   cachedTimezone,
@@ -332,7 +332,7 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         // kept rather than what the caller intended it to keep.
         const referenced = [
           ...(a.feature_image ? [a.feature_image] : []),
-          ...[...a.html.matchAll(/<img[^>]+src="([^"]+)"/g)].map((m) => m[1]!),
+          ...extractImgSrcs(a.html),
         ];
         const promotion = promoteUsedMedia(ctx, referenced, result.url);
         warnings.push(...promotion.problems);
@@ -450,9 +450,7 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         // are guarded rather than assumed present.
         const referenced = [
           ...(typeof a.feature_image === 'string' ? [a.feature_image] : []),
-          ...(typeof a.html === 'string'
-            ? [...a.html.matchAll(/<img[^>]+src="([^"]+)"/g)].map((m) => m[1]!)
-            : []),
+          ...(typeof a.html === 'string' ? extractImgSrcs(a.html) : []),
         ];
         const promotion = promoteUsedMedia(ctx, referenced, result.url);
         const warnings = [...(result.warnings ?? []), ...promotion.problems];

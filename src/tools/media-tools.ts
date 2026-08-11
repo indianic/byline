@@ -325,6 +325,21 @@ export async function useMedia(
 }
 
 /**
+ * Extract the `src` values from all `<img>` tags in HTML.
+ *
+ * Both `create_post` and `update_post` must extract the same set of image
+ * references when confirming that library assets reached a published page.
+ * A future change to what counts as a referenced image must land in one place,
+ * not duplicated in two. This helper is that one place.
+ *
+ * @param html The article HTML.
+ * @returns An array of `src` values in order of appearance, empty if no `<img>` tags.
+ */
+export function extractImgSrcs(html: string): string[] {
+  return [...html.matchAll(/<img[^>]+src="([^"]+)"/g)].map((m) => m[1]!);
+}
+
+/**
  * Confirm reservations that made it into a published post.
  *
  * Called by `create_post` and `update_post`. Never throws: a publish that

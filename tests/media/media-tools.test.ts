@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { findMedia, listMediaLibraries } from '../../src/tools/media-tools.js';
+import { extractImgSrcs, findMedia, listMediaLibraries } from '../../src/tools/media-tools.js';
 import type { MediaCtx } from '../../src/tools/media-tools.js';
 import { ledgerFileFor, loadMedia } from '../../src/media/library.js';
 import { writeLedger } from '../../src/media/store.js';
@@ -211,5 +211,51 @@ describe('findMedia', () => {
     const out = await findMedia(ctx, { query: '', unused_only: false });
     expect(out.results).toHaveLength(1);
     expect(out.results[0]!.id).toBe(id);
+  });
+});
+
+describe('extractImgSrcs', () => {
+  it('extracts multiple img src values in order from HTML', () => {
+    const html =
+      '<p>First image:</p><img src="https://example.com/first.png" alt="first"><p>Second:</p><img src="https://example.com/second.jpg">';
+    const srcs = extractImgSrcs(html);
+    expect(srcs).toEqual(['https://example.com/first.png', 'https://example.com/second.jpg']);
+  });
+
+  it('returns empty array when HTML has no img tags', () => {
+    const html = '<p>Just some text with no images</p>';
+    const srcs = extractImgSrcs(html);
+    expect(srcs).toEqual([]);
+  });
+
+  it('matches img tags with other attributes before src', () => {
+    const html =
+      '<img alt="description" class="featured" src="https://example.com/image.png" title="title">';
+    const srcs = extractImgSrcs(html);
+    expect(srcs).toEqual(['https://example.com/image.png']);
+  });
+
+  it('handles img tags with attributes after src', () => {
+    const html = '<img src="https://example.com/image.png" alt="description" class="featured">';
+    const srcs = extractImgSrcs(html);
+    expect(srcs).toEqual(['https://example.com/image.png']);
+  });
+
+  it('does not match img tags with src in single quotes (only double quotes)', () => {
+    const html = "<img src='https://example.com/image.png'>";
+    const srcs = extractImgSrcs(html);
+    expect(srcs).toEqual([]);
+  });
+
+  it('extracts src values even with complex URLs containing query parameters', () => {
+    const html =
+      '<img src="https://example.com/image.png?v=1&size=large" alt="img">';
+    const srcs = extractImgSrcs(html);
+    expect(srcs).toEqual(['https://example.com/image.png?v=1&size=large']);
+  });
+
+  it('handles empty HTML string', () => {
+    const srcs = extractImgSrcs('');
+    expect(srcs).toEqual([]);
   });
 });
