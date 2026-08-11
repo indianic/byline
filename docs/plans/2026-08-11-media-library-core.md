@@ -24,6 +24,43 @@
 - **Never write `process.env = { ...saved }`** in a test. Restore per key.
 - Run after every task: `npm run typecheck && npm test`.
 
+## Two rulings made before execution
+
+Both resolve a conflict between an earlier draft of this plan and `CLAUDE.md`. They bind every task.
+
+**1. No `as Context` casts in tests. Narrow the parameter instead.**
+
+`CLAUDE.md`: *"test files are not typechecked. A double can cast past an interface it does not satisfy."* A test that casts a three-field object to `Context` keeps passing on the day the function starts reading `ctx.personas`.
+
+So the media functions take exactly what they use, declared field by field. A real `Context` satisfies both structurally, and a test object needs no cast at all — not even for `paths`, which is why this is `Pick<Paths, 'home'>` rather than the whole `Paths`:
+
+```ts
+/** Everything the read-only media tools touch. A real Context satisfies this. */
+export interface MediaCtx {
+  paths: Pick<Paths, 'home'>;
+  media: MediaConfig;
+}
+
+/** …plus sites, for the tools that upload. */
+export interface UploadCtx extends MediaCtx {
+  sites: SitesConfig;
+}
+```
+
+Any test that still needs `as` after this has found a function reading something it did not declare. Fix the declaration, not the test.
+
+This also requires widening one existing signature in `src/tools/shared.ts`:
+
+```ts
+export function adapterFor(ctx: Pick<Context, 'sites'>, slug: string): PlatformAdapter {
+```
+
+Narrowing a parameter type is backwards-compatible — every existing caller still passes a full `Context`.
+
+**2. `promoteUsedMedia` reports its failures. No empty catch.**
+
+`CLAUDE.md`: *"Nothing fails silently."* It returns `{ promoted: number; problems: string[] }`, and `create_post`/`update_post` fold `problems` into the `warnings` array they already return. The publish still succeeds; the ledger failure becomes visible instead of invisible.
+
 ## Deviations from the spec, and why
 
 Two, both deliberate. Raise them with the spec author if either looks wrong.
@@ -1709,7 +1746,9 @@ ranking is diagnosable instead of a score nobody can see into."
 
 **Interfaces:**
 - Consumes: everything from Tasks 1–6; `handler`/`json` from `src/tools/shared.js`; `ok` from `src/errors.js`.
-- Produces: `registerMediaTools(server: McpServer, ctx: Context): void`, and two live MCP tools.
+- Produces: `type MediaCtx = Pick<Context, 'paths' | 'media'>`; `listMediaLibraries(ctx: MediaCtx, a)`; `findMedia(ctx: MediaCtx, a)`; `registerMediaTools(server: McpServer, ctx: Context): void`, and two live MCP tools.
+
+**Ruling 1 applies:** both exported functions take `MediaCtx`, not `Context`. The test builds a plain object with `paths` and `media` and needs no cast — if that object is missing a field the function reads, `tsc` is not what catches it, so the narrow type is the only guard there is.
 
 Read `src/tools/site-tools.ts` first for the exact `registerTool` call shape used in this repo.
 
@@ -1723,7 +1762,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { findMedia, listMediaLibraries } from '../../src/tools/media-tools.js';
-import type { Context } from '../../src/context.js';
+import type { MediaCtx } from '../../src/tools/media-tools.js';
 import { loadMedia } from '../../src/media/library.js';
 
 const PNG_1x1 = Buffer.from(
@@ -1731,7 +1770,7 @@ const PNG_1x1 = Buffer.from(
   'base64',
 );
 
-function ctxWith(files: string[]): Context {
+function ctxWith(files: string[]): MediaCtx {
   const home = mkdtempSync(join(tmpdir(), 'bl-home-'));
   const root = join(home, 'shots');
   mkdirSync(root, { recursive: true });
@@ -1742,10 +1781,9 @@ function ctxWith(files: string[]): Context {
   const configFile = join(home, 'config.yaml');
   writeFileSync(configFile, `sites: {}\nmedia:\n  libraries:\n    - name: shots\n      path: ${root}\n`);
 
-  return {
-    paths: { home } as Context['paths'],
-    media: loadMedia(configFile, {}),
-  } as Context;
+  // No cast. If this object is missing something the functions read, the
+  // narrow MediaCtx is the only thing that will say so — tests are not typechecked.
+  return { paths: { home }, media: loadMedia(configFile, {}) };
 }
 
 describe('listMediaLibraries', () => {
@@ -1770,7 +1808,7 @@ describe('listMediaLibraries', () => {
     const home = mkdtempSync(join(tmpdir(), 'bl-home-'));
     const configFile = join(home, 'config.yaml');
     writeFileSync(configFile, 'sites: {}\nmedia:\n  libraries:\n    - name: gone\n      path: /nope\n');
-    const ctx = { paths: { home }, media: loadMedia(configFile, {}) } as Context;
+    const ctx: MediaCtx = { paths: { home }, media: loadMedia(configFile, {}) };
     const out = await listMediaLibraries(ctx, {});
     expect(out.libraries[0]!.unavailable).toMatch(/does not exist/i);
   });
@@ -1820,8 +1858,29 @@ import { staleReservations } from '../media/ledger.js';
 import { scanLibrary } from '../media/scan.js';
 import { searchAssets } from '../media/search.js';
 import { readIndex, readLedger, writeIndex } from '../media/store.js';
-import type { LibraryConfig, MediaIndex } from '../media/types.js';
+import type { LibraryConfig, MediaConfig, MediaIndex } from '../media/types.js';
+import type { Paths } from '../config/paths.js';
+import type { SitesConfig } from '../config/sites.js';
 import { handler } from './shared.js';
+
+/**
+ * Exactly what the read-only media tools touch.
+ *
+ * Declared field by field rather than as `Context`, because test files are NOT
+ * typechecked in this repo: a test that casts a small object to `Context` keeps
+ * passing on the day a function starts reading a field that object never had.
+ * A real `Context` satisfies this structurally, so production callers are
+ * unchanged, and a test builds `{ paths: { home }, media }` with no cast.
+ */
+export interface MediaCtx {
+  paths: Pick<Paths, 'home'>;
+  media: MediaConfig;
+}
+
+/** …plus sites, for the tools that upload. */
+export interface UploadCtx extends MediaCtx {
+  sites: SitesConfig;
+}
 
 /** The index for a library, refusing with a fix rather than returning nothing. */
 function requireIndex(ctx: Context, lib: LibraryConfig): MediaIndex {
@@ -1838,7 +1897,7 @@ function requireIndex(ctx: Context, lib: LibraryConfig): MediaIndex {
 }
 
 export async function listMediaLibraries(
-  ctx: Context,
+  ctx: MediaCtx,
   a: { scan?: boolean; library?: string },
 ): Promise<{
   libraries: {
@@ -1924,7 +1983,7 @@ export async function listMediaLibraries(
 }
 
 export async function findMedia(
-  ctx: Context,
+  ctx: MediaCtx,
   a: {
     query: string;
     library?: string;
@@ -2118,7 +2177,9 @@ that reports why it is broken."
 
 **Interfaces:**
 - Consumes: `reserve`/`promote` from `src/media/ledger.js`; `adapterFor` from `src/tools/shared.js`.
-- Produces: `useMedia(ctx, a)`; `promoteUsedMedia(ctx: Context, hostedUrls: string[], postUrl: string): { promoted: number }` — called by `create_post` and `update_post`.
+- Produces: `type UploadCtx = Pick<Context, 'paths' | 'media' | 'sites'>`; `useMedia(ctx: UploadCtx, a)`; `promoteUsedMedia(ctx: MediaCtx, hostedUrls: string[], postUrl: string): { promoted: number; problems: string[] }` — called by `create_post` and `update_post`.
+
+**Both rulings apply here.** `useMedia` takes `UploadCtx`, which means widening `adapterFor` in `src/tools/shared.ts` to `ctx: Pick<Context, 'sites'>` — a one-line change that every existing caller still satisfies. And `promoteUsedMedia` returns `problems` rather than swallowing anything.
 
 In `src/tools/post-tools.ts` the published URL is `result.url` — `result` is the `PostResult` returned by `adapter.createPost` (`src/tools/post-tools.ts:280`) and by `adapter.updatePost` (`:434`). `PostResult.url` is a required `string` (`src/plugins/platforms/types.ts:128`), so it needs no guard.
 
@@ -2136,21 +2197,21 @@ import { promoteUsedMedia } from '../../src/tools/media-tools.js';
 import { readLedger } from '../../src/media/store.js';
 import { ledgerFileFor } from '../../src/media/library.js';
 import { loadMedia } from '../../src/media/library.js';
-import type { Context } from '../../src/context.js';
+import type { UploadCtx } from '../../src/tools/media-tools.js';
 
 const PNG_1x1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64',
 );
 
-function ctxWith(): Context {
+function ctxWith(): UploadCtx {
   const home = mkdtempSync(join(tmpdir(), 'bl-use-'));
   const root = join(home, 'shots');
   mkdirSync(root, { recursive: true });
   writeFileSync(join(root, 'a.png'), PNG_1x1);
   const configFile = join(home, 'config.yaml');
   writeFileSync(configFile, `sites: {}\nmedia:\n  libraries:\n    - name: shots\n      path: ${root}\n`);
-  return { paths: { home }, media: loadMedia(configFile, {}) } as Context;
+  return { paths: { home }, media: loadMedia(configFile, {}), sites: { sites: {} } };
 }
 
 /** Stand in for the platform adapter. Asserted at runtime, since tests are not typechecked. */
@@ -2248,7 +2309,7 @@ Then append:
 
 ```ts
 export async function useMedia(
-  ctx: Context,
+  ctx: UploadCtx,
   a: {
     site: string;
     library?: string;
@@ -2328,11 +2389,12 @@ export async function useMedia(
  * problem here is returned as a count of zero and the post stands.
  */
 export function promoteUsedMedia(
-  ctx: Context,
+  ctx: MediaCtx,
   hostedUrls: string[],
   postUrl: string,
-): { promoted: number } {
+): { promoted: number; problems: string[] } {
   let total = 0;
+  const problems: string[] = [];
 
   for (const lib of Object.values(ctx.media.libraries)) {
     if (lib.unavailable) continue;
@@ -2344,15 +2406,20 @@ export function promoteUsedMedia(
         writeLedger(file, ledger);
         total += promoted;
       }
-    } catch {
-      // Swallowed on purpose, and ONLY here. The post is already live; failing
-      // the tool now would tell the user their publish failed when it did not.
-      // The cost is a reservation that stays reserved, which
-      // list_media_libraries reports and `byline media release` clears.
+    } catch (e) {
+      // Never rethrown: the post is already live, and failing the tool now
+      // would report a successful publish as a failure. Never swallowed
+      // either — the caller folds this into the warnings it already returns,
+      // so a ledger that stopped recording is visible the moment it happens.
+      problems.push(
+        `Could not update the usage ledger for media library "${lib.name}": ${
+          e instanceof Error ? e.message : String(e)
+        }. The post published fine, but this asset may be offered again. Run \`byline media status\` to check.`,
+      );
     }
   }
 
-  return { promoted: total };
+  return { promoted: total, problems };
 }
 ```
 
@@ -2401,10 +2468,16 @@ In the `create_post` handler, after the post is created and its URL is known, an
         ...(a.feature_image ? [a.feature_image] : []),
         ...[...a.html.matchAll(/<img[^>]+src="([^"]+)"/g)].map((m) => m[1]!),
       ];
-      promoteUsedMedia(ctx, referenced, result.url);
+      const promotion = promoteUsedMedia(ctx, referenced, result.url);
 ```
 
-Apply the identical block in the `update_post` handler. If `update_post` does not receive `html` on every call, guard the `matchAll` with `a.html ? … : []` rather than assuming it is present.
+Then add `promotion.problems` to the existing `warnings` array — that array is already the channel for "the publish worked, but something about it did not":
+
+```ts
+        const warnings = [...localWarnings, ...(result.warnings ?? []), ...promotion.problems];
+```
+
+Apply the identical pair of changes in the `update_post` handler. `update_post` takes a partial patch, so guard the HTML scan there with `a.html ? [...a.html.matchAll(…)].map(…) : []` rather than assuming `html` is present. Check whether `update_post` already builds a `warnings` array; if it returns `result` directly, add one rather than dropping the problems.
 
 - [ ] **Step 5: Run the tests**
 
@@ -2460,7 +2533,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadContext } from '../../src/context.js';
+import { loadMedia } from '../../src/media/library.js';
 import { listMediaLibraries, findMedia, useMedia } from '../../src/tools/media-tools.js';
+import type { UploadCtx } from '../../src/tools/media-tools.js';
 
 const SITE = 'personal';
 const PNG_1x1 = Buffer.from(
@@ -2486,7 +2561,13 @@ describe('media library against a live site', () => {
         `sites: {}\nmedia:\n  libraries:\n    - name: probe\n      path: ${root}\n`,
       );
 
-      const mediaCtx = { ...ctx, paths: { ...ctx.paths, home }, media: loadContext({ ...process.env, BYLINE_HOME: home }).media };
+      // Real sites from the real config; a temp home so the index and ledger
+      // land in scratch rather than the user's ~/.byline.
+      const mediaCtx: UploadCtx = {
+        paths: { home },
+        media: loadMedia(join(home, 'config.yaml'), process.env),
+        sites: ctx.sites,
+      };
 
       await listMediaLibraries(mediaCtx, { scan: true });
 
