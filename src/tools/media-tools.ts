@@ -1,17 +1,18 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { z } from 'zod';
 import type { Context } from '../context.js';
 import { ToolError, ok } from '../errors.js';
 import { getLibrary, indexFileFor, ledgerFileFor } from '../media/library.js';
-import { isUsed, staleReservations } from '../media/ledger.js';
+import { isUsed, promote, reserve, staleReservations } from '../media/ledger.js';
 import { scanLibrary } from '../media/scan.js';
 import { searchAssets } from '../media/search.js';
-import { readIndex, readLedger, writeIndex } from '../media/store.js';
+import { readIndex, readLedger, writeIndex, writeLedger } from '../media/store.js';
 import type { LibraryConfig, MediaConfig, MediaIndex } from '../media/types.js';
 import type { Paths } from '../config/paths.js';
 import type { SitesConfig } from '../config/sites.js';
-import { handler } from './shared.js';
+import { adapterFor, handler } from './shared.js';
 
 /**
  * Exactly what the read-only media tools touch.
@@ -250,6 +251,120 @@ export async function findMedia(
   };
 }
 
+export async function useMedia(
+  ctx: UploadCtx,
+  a: {
+    site: string;
+    library?: string;
+    assets: { path: string; alt?: string }[];
+  },
+): Promise<{
+  library: string;
+  images: { ok: boolean; path: string; url?: string; id?: string; error?: string }[];
+  uploaded: number;
+  failed: number;
+}> {
+  const lib = getLibrary(ctx.media, a.library);
+  const index = requireIndex(ctx, lib);
+  const adapter = adapterFor(ctx, a.site);
+  const ledgerFile = ledgerFileFor(lib, ctx.paths.home);
+
+  const byPath = new Map(index.assets.map((x) => [x.path, x]));
+
+  // Resolve EVERY asset before uploading anything. A batch that uploads two
+  // files and then discovers the third is a typo has already spent two
+  // reservations on an article that will not be written.
+  const resolved = a.assets.map((want) => {
+    const asset = byPath.get(want.path);
+    if (!asset) {
+      throw new ToolError({
+        api: 'media',
+        code: 'ASSET_NOT_FOUND',
+        message: `"${want.path}" is not in the index for media library "${lib.name}".`,
+        hint: 'Use the `path` exactly as find_media returned it, or rescan if the file is new.',
+      });
+    }
+    return { asset, alt: want.alt };
+  });
+
+  const images: { ok: boolean; path: string; url?: string; id?: string; error?: string }[] = [];
+  let ledger = readLedger(ledgerFile, lib.name);
+
+  for (const { asset, alt } of resolved) {
+    const full = join(lib.path, asset.path);
+    try {
+      const bytes = readFileSync(full);
+      const uploaded = await adapter.uploadImage(bytes, basename(asset.path), alt);
+      images.push({
+        ok: true,
+        path: asset.path,
+        url: uploaded.url,
+        ...(uploaded.id ? { id: uploaded.id } : {}),
+      });
+      // Reserved only AFTER the bytes reached the platform. Reserving a failed
+      // upload would retire a photograph that was never published.
+      ledger = reserve(ledger, {
+        id: asset.id,
+        site: a.site,
+        hosted_url: uploaded.url,
+        at: new Date().toISOString(),
+      });
+    } catch (e) {
+      images.push({
+        ok: false,
+        path: asset.path,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  writeLedger(ledgerFile, ledger);
+
+  const failed = images.filter((i) => !i.ok).length;
+  return { library: lib.name, images, uploaded: images.length - failed, failed };
+}
+
+/**
+ * Confirm reservations that made it into a published post.
+ *
+ * Called by `create_post` and `update_post`. Never throws: a publish that
+ * succeeded must not be reported as failed because a ledger write did, so a
+ * problem here is returned as a count of zero and the post stands.
+ */
+export function promoteUsedMedia(
+  ctx: MediaCtx,
+  hostedUrls: string[],
+  postUrl: string,
+): { promoted: number; problems: string[] } {
+  let total = 0;
+  const problems: string[] = [];
+
+  for (const lib of Object.values(ctx.media.libraries)) {
+    if (lib.unavailable) continue;
+    const file = ledgerFileFor(lib, ctx.paths.home);
+    try {
+      const before = readLedger(file, lib.name);
+      const { ledger, promoted } = promote(before, hostedUrls, postUrl);
+      if (promoted > 0) {
+        writeLedger(file, ledger);
+        total += promoted;
+      }
+    } catch (e) {
+      // Never rethrown: the post is already live, and failing the tool now
+      // would report a successful publish as a failure. Never swallowed
+      // either — the caller folds this into the warnings it already returns,
+      // so a ledger that stopped recording is visible the moment it happens.
+      problems.push(
+        `Could not update the usage ledger for media library "${lib.name}": ${
+          e instanceof Error ? e.message : String(e)
+        }. The post published fine, but this asset may be offered again. Run \`byline media status\` to check.`,
+      );
+    }
+  }
+
+  return { promoted: total, problems };
+}
+
 export function registerMediaTools(server: McpServer, ctx: Context): void {
   server.registerTool(
     'list_media_libraries',
@@ -307,5 +422,28 @@ export function registerMediaTools(server: McpServer, ctx: Context): void {
       },
     },
     handler('find_media', (a: Parameters<typeof findMedia>[1]) => findMedia(ctx, a).then(ok)),
+  );
+
+  server.registerTool(
+    'use_media',
+    {
+      title: 'Use local media',
+      description:
+        'Upload one or more local library assets to a site and record them as used, so the same file is never published twice. Pass the `path` values exactly as find_media returned them. Returns the hosted URL for each, ready for feature_image or an inline <img>. One failure does not fail the batch — check every entry.',
+      inputSchema: {
+        site: z.string().describe('Which site to upload to.'),
+        library: z.string().optional().describe('Which library. Defaults to the configured default.'),
+        assets: z
+          .array(
+            z.object({
+              path: z.string().describe('The `path` from a find_media result, not an absolute path.'),
+              alt: z.string().optional().describe('Alt text describing what is visible in the frame.'),
+            }),
+          )
+          .min(1)
+          .max(12),
+      },
+    },
+    handler('use_media', (a: Parameters<typeof useMedia>[1]) => useMedia(ctx, a).then(ok)),
   );
 }

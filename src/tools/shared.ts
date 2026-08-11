@@ -20,6 +20,6 @@ export function handler<A>(api: string, fn: (args: A) => Promise<unknown>) {
   };
 }
 
-export function adapterFor(ctx: Context, slug: string): PlatformAdapter {
+export function adapterFor(ctx: Pick<Context, 'sites'>, slug: string): PlatformAdapter {
   return makeAdapter(getSite(ctx.sites, slug));
 }

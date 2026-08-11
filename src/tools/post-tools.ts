@@ -8,6 +8,7 @@ import { buildArticleSchema } from '../craft/schema.js';
 import { hasInlineImage } from '../craft/score.js';
 import { ToolError, ok } from '../errors.js';
 import { getPlugin, makeAdapter } from '../plugins/registry.js';
+import { promoteUsedMedia } from './media-tools.js';
 import {
   MIN_SCHEDULE_LEAD_MS,
   cachedTimezone,
@@ -325,6 +326,17 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         // class AEO/GEO cannot afford to join.
         const schemaInjected =
           Boolean(codeinjection) && !warnings.some((w) => w.includes('codeinjection_head'));
+
+        // Confirm any library assets this post really published. The hosted URL
+        // is what appears in the stored HTML, so this records what the platform
+        // kept rather than what the caller intended it to keep.
+        const referenced = [
+          ...(a.feature_image ? [a.feature_image] : []),
+          ...[...a.html.matchAll(/<img[^>]+src="([^"]+)"/g)].map((m) => m[1]!),
+        ];
+        const promotion = promoteUsedMedia(ctx, referenced, result.url);
+        warnings.push(...promotion.problems);
+
         return ok({
           ...result,
           // The time the caller actually asked for, in the blog's own words.
@@ -432,11 +444,25 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
           if (timing.publishAtIso !== undefined) clean.publish_at = timing.publishAtIso;
         }
         const result = await adapter.updatePost(post_id, clean);
+
+        // Same confirmation as create_post, applied to whatever this patch
+        // actually touched. update_post takes a partial patch, so both fields
+        // are guarded rather than assumed present.
+        const referenced = [
+          ...(typeof a.feature_image === 'string' ? [a.feature_image] : []),
+          ...(typeof a.html === 'string'
+            ? [...a.html.matchAll(/<img[^>]+src="([^"]+)"/g)].map((m) => m[1]!)
+            : []),
+        ];
+        const promotion = promoteUsedMedia(ctx, referenced, result.url);
+        const warnings = [...(result.warnings ?? []), ...promotion.problems];
+
         return ok({
           ...result,
           ...(timing?.publishAtLocal !== undefined
             ? { publish_at_local: timing.publishAtLocal }
             : {}),
+          ...(warnings.length > 0 ? { warnings } : {}),
         });
       },
     ),
