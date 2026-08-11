@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname } from 'node:path';
 import { ToolError } from '../errors.js';
 import type { MediaIndex, UsageLedger } from './types.js';
@@ -14,8 +21,21 @@ import type { MediaIndex, UsageLedger } from './types.js';
 function writeAtomic(file: string, data: unknown): void {
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);
-  renameSync(tmp, file);
+  try {
+    writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);
+    renameSync(tmp, file);
+  } catch (e) {
+    // Best-effort cleanup so a failed write doesn't leave `.tmp` debris on
+    // disk. The cleanup itself may fail (e.g. tmp was never created because
+    // writeFileSync threw first) — that must never mask the real failure,
+    // so it is swallowed and the original error is always rethrown.
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // ignore
+    }
+    throw e;
+  }
 }
 
 /**

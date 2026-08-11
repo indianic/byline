@@ -1,7 +1,8 @@
-import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { ToolError } from '../../src/errors.js';
 import { readIndex, readLedger, writeIndex, writeLedger } from '../../src/media/store.js';
 import type { MediaIndex, UsageLedger } from '../../src/media/types.js';
 
@@ -83,5 +84,71 @@ describe('readLedger', () => {
     };
     writeLedger(file, l);
     expect(readLedger(file, 'shots')).toEqual(l);
+  });
+
+  it('THROWS with LEDGER_UNREADABLE and a hint when version is not 1', () => {
+    const file = join(dir(), 'u.json');
+    writeFileSync(file, JSON.stringify({ ...LEDGER, version: 99 }));
+    try {
+      readLedger(file, 'shots');
+      expect.unreachable('readLedger should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      const err = e as ToolError;
+      expect(err.code).toBe('LEDGER_UNREADABLE');
+      expect(err.hint).toBeTruthy();
+    }
+  });
+
+  it('THROWS with LEDGER_UNREADABLE and a hint when records is not an array', () => {
+    const file = join(dir(), 'u.json');
+    writeFileSync(file, JSON.stringify({ version: 1, library: 'shots', records: {} }));
+    try {
+      readLedger(file, 'shots');
+      expect.unreachable('readLedger should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      const err = e as ToolError;
+      expect(err.code).toBe('LEDGER_UNREADABLE');
+      expect(err.hint).toBeTruthy();
+    }
+  });
+
+  it('THROWS with LEDGER_UNREADABLE and a hint when records is missing entirely', () => {
+    const file = join(dir(), 'u.json');
+    writeFileSync(file, JSON.stringify({ version: 1, library: 'shots' }));
+    try {
+      readLedger(file, 'shots');
+      expect.unreachable('readLedger should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      const err = e as ToolError;
+      expect(err.code).toBe('LEDGER_UNREADABLE');
+      expect(err.hint).toBeTruthy();
+    }
+  });
+});
+
+describe('writeAtomic (via writeLedger) failure cleanup', () => {
+  it('removes the .tmp file and rethrows the original error when renameSync fails', () => {
+    const d = dir();
+    const file = join(d, 'target.json');
+    // Force renameSync(tmp, file) to fail deterministically: make the
+    // destination path an existing directory, so writeFileSync(tmp, ...)
+    // succeeds but renameSync fails with EISDIR.
+    mkdirSync(file);
+
+    let thrown: unknown;
+    try {
+      writeLedger(file, LEDGER);
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as NodeJS.ErrnoException).code).toBe('EISDIR');
+
+    const entries = readdirSync(d);
+    expect(entries).not.toContain('target.json.tmp');
   });
 });
