@@ -3,6 +3,8 @@ import { loadSites, usableSites, type SitesConfig } from './config/sites.js';
 import { checkEnvPermissions, loadEnvFile } from './config/dotenv.js';
 import { resolvePaths, type Paths } from './config/paths.js';
 import { ToolError } from './errors.js';
+import { loadMedia } from './media/library.js';
+import type { MediaConfig } from './media/types.js';
 import { defaultChain } from './plugins/images/index.js';
 import { researchProviders } from './plugins/research/index.js';
 import type { SetupState } from './setup.js';
@@ -14,6 +16,8 @@ export interface Context {
   personasDir: string;
   sites: SitesConfig;
   personas: Map<string, Persona>;
+  /** Local media libraries. Empty when none are configured — never absent. */
+  media: MediaConfig;
   runsDir: string;
   setup: SetupState;
   /**
@@ -146,12 +150,18 @@ export function loadContext(env: NodeJS.ProcessEnv = process.env): Context {
     extraProblems.push(problemMessage(e));
   }
 
+  // loadMedia never throws by contract, so there is no try/catch here. Its
+  // complaints arrive as `media.problems` and are folded into SetupState below.
+  const media = loadMedia(paths.configFile, env);
+  extraProblems.push(...media.problems);
+
   return {
     paths,
     sitesFile: paths.configFile,
     personasDir: paths.personasDir,
     sites,
     personas,
+    media,
     runsDir: paths.runsDir,
     setup: buildSetupState(paths, sites, personas, extraProblems, env),
     env,
