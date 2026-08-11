@@ -100,4 +100,26 @@ describe('searchAssets', () => {
     const hits = searchAssets([KEYWORDED, FILENAMED, FOLDERED], { query: 'standup', limit: 2 });
     expect(hits).toHaveLength(2);
   });
+
+  it('returns empty array when limit is 0', () => {
+    const hits = searchAssets([KEYWORDED, FILENAMED, FOLDERED], { query: 'standup', limit: 0 });
+    expect(hits).toHaveLength(0);
+  });
+
+  it('filters by hasPeople: false, excluding un-enriched assets', () => {
+    const enrichedFalse = asset({
+      id: 'sha256:enriched-false',
+      enriched: {
+        by: 'gemini',
+        at: '2026-08-11T00:00:00.000Z',
+        caption: 'empty room',
+        keywords: [],
+        look: 'minimal',
+        has_people: false,
+        text_in_image: false,
+      },
+    });
+    const hits = searchAssets([enrichedFalse, FILENAMED], { query: '', hasPeople: false });
+    expect(hits.map((h) => h.asset.id)).toEqual(['sha256:enriched-false']);
+  });
 });

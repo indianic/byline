@@ -84,5 +84,5 @@ export function searchAssets(assets: Asset[], q: SearchQuery): SearchHit[] {
 
   hits.sort((a, b) => b.score - a.score || b.asset.captured_at.localeCompare(a.asset.captured_at));
 
-  return q.limit ? hits.slice(0, q.limit) : hits;
+  return q.limit !== undefined ? hits.slice(0, q.limit) : hits;
 }
