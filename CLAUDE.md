@@ -67,7 +67,7 @@ tests. Not one was caught by the suite. These rules are what they cost.
 
 - `npm test` (unit, no network), `npm run typecheck`, `npm run build`. Integration behind
   `RUN_INTEGRATION=1`.
-- **1115 passing tests is the floor, not the target.** Never delete a test to make a change
+- **1140 passing tests is the floor, not the target.** Never delete a test to make a change
   pass.
 - **`npm run typecheck` covers `src/**/*` only** — test files are not typechecked. A double
   can cast past an interface it does not satisfy. Assert behaviour at runtime.
