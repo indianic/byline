@@ -5,6 +5,41 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-08-12
+
+- fix(embed): close attribute-breakout XSS in embed_video's iframe src
+- docs: record the 2026-08-12 video embed probe, and the local media library
+- feat(media): embed video from YouTube, Vimeo, and Bunny Stream by URL
+- test(media): put allow_reuse through the MCP tool layer, and raise the floor
+- test(media): prove promotion works against a live platform
+- docs: document the media library for the people who use it
+- fix(media): report broken libraries and stale reservations honestly
+- fix(media): stop plain-object lookups answering with Object.prototype
+- fix(media): use_media consults the ledger, refuses video, and survives a failed ledger write
+- fix(media): stop naming CLI commands that do not exist
+- test(media): live integration test for the library round trip
+- refactor: extract img src regex into single helper
+- feat(media): use_media, and promotion on publish
+- fix(media): route find_media and list_media_libraries through isUsed
+- feat(media): list_media_libraries and find_media tools
+- fix(search): limit: 0 should return empty array, not all results
+- feat(media): deterministic keyword ranking
+- test(ledger): add explicit non-mutation invariant tests
+- feat(media): usage ledger operations
+- fix(media/store): test the ledger's throw branch, clean up tmp files on write failure
+- feat(media): atomic index and ledger store
+- fix(media/scan): stop tokenise's extension strip from eating real tokens
+- feat(media): library scanning with content-hash identity
+- feat(media): expose media config on Context
+- fix(media): close index_path empty-string gap, statSync throw, and document case-fold limit
+- fix(media): close the index_path-inside-library gap and two silent-failure cases
+- feat(media): library config types and resolution
+- docs(plan): narrow context types and report ledger failures
+- docs(plan): media library core implementation plan
+- docs(spec): raster aspect fitting, and video passes through unvalidated
+- docs(spec): local media library design
+- docs: fold npmnic's stub into the real 1.8.0 entry
+
 ## [Unreleased]
 
 ### Added
