@@ -9,11 +9,11 @@ import type { UsageLedger, UsageRecord } from './types.js';
  * Over-excluding is the recoverable direction; a duplicate on two live posts
  * is not.
  *
- * "Recoverable" is doing less work in THIS RELEASE than it looks: `release`
- * below has no production caller, so a reservation whose `create_post` failed
- * cannot be cleared through any tool or command. The remedy today is editing
- * the ledger JSON by hand — `list_media_libraries` reports the count and names
- * the file. Exposing `release` is Plan 2.
+ * A reservation whose `create_post` failed is cleared with `byline media
+ * release <id> --library <name>` (`src/cli/media.ts`), which calls `release`
+ * below directly. `list_media_libraries` still reports the stale count and
+ * names the ledger file, for a caller with no terminal access — editing the
+ * JSON by hand remains a fallback, not the only remedy.
  */
 export function isUsed(
   ledger: UsageLedger,
@@ -60,12 +60,11 @@ export function promote(
 /**
  * Clear a reservation that never became a post.
  *
- * NO TOOL, AND NO CLI COMMAND, CALLS THIS in the current release — it is
- * exported and tested, and nothing in `src/tools/` or `src/cli/` reaches it.
- * A user whose publish failed after `use_media` succeeded clears the
- * reservation by editing the ledger file by hand; `list_media_libraries`
- * reports the count and names the path. Do not describe `release` to a user
- * as though it were reachable.
+ * Reached from `src/cli/media.ts`'s `byline media release <id>` — the CLI
+ * command this closes the gap for. No MCP tool calls it directly; a user
+ * whose publish failed after `use_media` succeeded runs the CLI command (or,
+ * without terminal access, edits the ledger file by hand —
+ * `list_media_libraries` still reports the count and names the path).
  *
  * Refuses to touch a `published` record. Releasing one would put an asset that
  * is live on a real page back into the unused pool, and the next article would

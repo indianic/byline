@@ -48,8 +48,11 @@ function requireIndex(ctx: MediaCtx, lib: LibraryConfig): MediaIndex {
       api: 'media',
       code: 'NOT_SCANNED',
       message: `Media library "${lib.name}" has not been scanned yet.`,
-      // Names a tool that exists. There is no `byline media` CLI command in
-      // this release — `src/cli/main.ts` answers one with "Unknown command".
+      // Points at the MCP tool, not `byline media scan`, even though the
+      // latter exists too (src/cli/media.ts): this error is raised mid-tool-
+      // call, where the caller is an AI agent using MCP tools, not a human at
+      // a terminal — the fix that is actually reachable from here is another
+      // tool call.
       hint: 'Call list_media_libraries with scan: true.',
     });
   }
@@ -83,10 +86,11 @@ interface LibraryReport {
    * there is no ledger to read — a fabricated zero is indistinguishable from
    * a genuine "none", which is exactly how a real reservation would be hidden.
    *
-   * NOTHING IN THIS RELEASE CLEARS ONE. `release` exists in
-   * `src/media/ledger.ts` and no tool or command reaches it, so the remedy is
-   * to edit the ledger file by hand — see `stale_reservations_note`, which
-   * names the file.
+   * Cleared with `byline media release <id> --library <name>`
+   * (`src/cli/media.ts`, calling `release` in `src/media/ledger.ts`) — no MCP
+   * tool clears one itself, so `stale_reservations_note` names the CLI
+   * command, with hand-editing the ledger file as the fallback for a caller
+   * with no terminal.
    */
   stale_reservations?: number;
   stale_reservations_note?: string;
@@ -96,9 +100,9 @@ interface LibraryReport {
   problem?: string;
 }
 
-/** How to clear a reservation, given that no tool in this release can. */
+/** How to clear a reservation stuck by a failed publish. */
 function staleReservationNote(ledgerFile: string): string {
-  return `Nothing in this release releases a reservation: publishing a post that carries the hosted URL promotes it, and there is no tool or CLI command that clears one otherwise. To drop a reservation that will never be published, edit ${ledgerFile} by hand and remove the record — it is plain JSON. Leave "published" records alone; deleting one puts a live photograph back into the unused pool.`;
+  return `Clear one from a terminal with \`byline media release <id> --library <name>\` — the id and hosted_url of each "reserved" record are in ${ledgerFile}. Without terminal access, edit ${ledgerFile} by hand and remove the record instead; it is plain JSON. Leave "published" records alone either way — releasing one puts a live photograph that is actually on a page back into the unused pool.`;
 }
 
 /** The zeroed counts every report starts from. */
