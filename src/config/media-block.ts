@@ -158,6 +158,9 @@ export function removeLibraryFromConfig(configFile: string, name: string): boole
   if (!doc.has('media')) return false;
 
   const media = doc.get('media');
+  // Returns false for malformed config (deliberate asymmetry with addLibraryToConfig):
+  // remove's contract is boolean (found/not-found), so refusing to forget when the
+  // file is malformed would trap the user. Returning false lets them fix the file and retry.
   if (!isMap(media)) return false;
 
   const librariesNode = media.get('libraries');

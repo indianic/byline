@@ -122,6 +122,39 @@ describe('addLibraryToConfig', () => {
     addLibraryToConfig(file, { name: 'second', path: realDir() });
     expect(parse(readFileSync(file, 'utf8')).media.default_library).toBe('first');
   });
+
+  it('throws INVALID_CONFIG when media is present but null', () => {
+    const file = fixture(`${WITH_SITE}media:\n`);
+    try {
+      addLibraryToConfig(file, { name: 'shots', path: realDir() });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect((e as ToolError).code).toBe('INVALID_CONFIG');
+      expect((e as ToolError).message).toMatch(/media.*not a mapping/i);
+    }
+  });
+
+  it('throws INVALID_CONFIG when media.libraries is a map instead of a sequence', () => {
+    const file = fixture(`${WITH_SITE}media:\n  libraries:\n    foo: bar\n`);
+    try {
+      addLibraryToConfig(file, { name: 'shots', path: realDir() });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect((e as ToolError).code).toBe('INVALID_CONFIG');
+      expect((e as ToolError).message).toMatch(/media\.libraries.*not a list/i);
+    }
+  });
+
+  it('does not crash when a library entry is a bare string', () => {
+    const file = fixture(`${WITH_SITE}media:\n  libraries:\n    - shots\n`);
+    const root = realDir();
+    const res = addLibraryToConfig(file, { name: 'second', path: root });
+    expect(res.written).toBe(true);
+    const cfg = parse(readFileSync(file, 'utf8'));
+    expect(cfg.media.libraries).toHaveLength(2);
+    expect(cfg.media.libraries[0]).toBe('shots');
+    expect(cfg.media.libraries[1].name).toBe('second');
+  });
 });
 
 describe('removeLibraryFromConfig', () => {
@@ -154,5 +187,15 @@ describe('removeLibraryFromConfig', () => {
     removeLibraryFromConfig(file, 'shots');
     // Removing a library forgets it; it does not delete anybody's photographs.
     expect(readFileSync(join(root, 'sub', 'photo.png'), 'utf8')).toBe('bytes');
+  });
+
+  it('returns false when media is present but null (does not throw)', () => {
+    const file = fixture(`${WITH_SITE}media:\n`);
+    expect(removeLibraryFromConfig(file, 'shots')).toBe(false);
+  });
+
+  it('returns false when media.libraries is a map instead of a sequence (does not throw)', () => {
+    const file = fixture(`${WITH_SITE}media:\n  libraries:\n    foo: bar\n`);
+    expect(removeLibraryFromConfig(file, 'shots')).toBe(false);
   });
 });
