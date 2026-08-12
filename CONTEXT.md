@@ -65,7 +65,14 @@ src/
     editor-config.ts       5 AI tools, JSON + Codex TOML merge, backup before write
     status.ts doctor.ts migrate.ts reset.ts register.ts update.ts
     tree.ts                the shared output vocabulary (◆ ◇ ▲ ■ ●)
-  tools/                   the 14 MCP tools — schemas and handlers
+  tools/                   the 19 MCP tools — schemas and handlers
+  media/                   the local media library: a user's own folder of photographs
+    types.ts               Asset, MediaIndex, UsageLedger, LibraryConfig — the shapes
+    library.ts             the `media:` config block, and where the index and ledger live
+    scan.ts                the folder walk — content-hash ids, magic-byte mime, tokens
+    search.ts              deterministic keyword ranking; no embeddings, no network
+    store.ts               atomic reads and writes for both files
+    ledger.ts              isUsed / reserve / promote / release — what "used" means
   plugins/
     platforms/             ghost/ and wordpress/, each a self-contained folder
     images/                gemini/ and grok/, with fallback
@@ -185,6 +192,35 @@ was built before families existed.
 Measured API behaviour lives in `docs/RESEARCH-NOTES.md`, including the registry order and
 the measurement that decided it.
 
+### The media library
+
+`src/media/` indexes a folder of the user's own photographs so `find_media` can rank them
+and `use_media` can upload them. Four rules carry the weight:
+
+**`isUsed` is the one definition of used/not-used.** `find_media`'s exclusion,
+`list_media_libraries`' `unused` count, and `use_media`'s refusal all call it. `use_media`
+originally wrote the ledger without ever reading it, so `find_media({unused_only: false})`
+— a legal escape hatch — handed an already-published photograph straight back and the
+second upload was reported as a success.
+
+**The ledger is a separate file from the index, and it is unrecoverable.** `scan` rewrites
+`<name>.index.json` freely; `<name>.usage.json` records what has been published and cannot
+be rebuilt from anything. That is also why `readLedger` throws on corruption where
+`readIndex` returns null: continuing with an empty ledger would republish everything and
+report success.
+
+**Byline never writes inside the library folder.** The index and ledger default to
+`<byline home>/media/`, and an `index_path` that resolves inside the library's own path is
+refused at load.
+
+**A reservation is made when the bytes reach the platform, and promoted when a post carries
+the hosted URL.** Both states count as used: the image is in the platform's media library
+either way. `release` exists to undo a reservation whose publish failed and **no tool or
+command reaches it in this release** — the remedy is editing the JSON, which
+`list_media_libraries` says out loud and names the file for. Enrichment (captions,
+keywords, `has_people`) and video upload are likewise not built, and every string that
+could imply otherwise says so.
+
 ### `HtmlProfile`
 
 `src/craft/html-profile.ts` defines what a platform does to your HTML on ingest —
@@ -276,6 +312,17 @@ behaviour and nothing else.
 **Nothing about multisite was measured at all.** No multisite network was available. The
 "only Super Admins hold `unfiltered_html` on multisite" claim is WordPress's own
 documentation.
+
+**Media promotion has never been exercised against a live platform.** `promote()` matches a
+reservation's `hosted_url` against the image URLs a post carries, by exact string equality.
+Every test of it so far is a unit test whose upload double returns the identical string it
+was handed, which is structurally incapable of catching a platform that rewrites the URL —
+a `__GHOST_URL__` placeholder, a protocol-relative form, a CDN host, a `/size/w1000/`
+responsive prefix. `tests/integration/media.integration.test.ts` now creates a real post
+and reads it back to settle this, and **that test has not been run**: the maintainer's Ghost
+site was returning 503 when it was written (`ghost.integration.test.ts` fails identically).
+Until someone runs it with `RUN_INTEGRATION=1`, "the hosted URL is what appears in the
+stored HTML" is reasoning, not a measurement.
 
 Those branches carry `UNVERIFIED` markers in
 `src/plugins/platforms/wordpress/html-profile.ts` and in `docs/WORDPRESS-NOTES.md`. **Do
