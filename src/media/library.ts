@@ -34,7 +34,7 @@ function expandPath(raw: string, env: NodeJS.ProcessEnv): string {
  * case-differing config actually slips past the guard has not been verified
  * against a real case-insensitive volume.
  */
-function isPathInside(child: string, parent: string): boolean {
+export function isPathInside(child: string, parent: string): boolean {
   const rel = relative(resolve(parent), resolve(child));
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
@@ -197,13 +197,25 @@ const NO_LIBRARY_HINT =
   'Add one to config.yaml under `media.libraries` as a `name` and a `path`, then run a scan.';
 
 /**
- * The library a call means, refusing at point of use rather than at load.
+ * Which library a call means, WITHOUT requiring the folder to be reachable.
  *
  * Resolution order: an explicit name, then `default_library`, then the sole
  * library when there is exactly one. The last rule exists because a user with
  * one library should never have to name it.
+ *
+ * Separate from {@link getLibrary} because not every operation on a library
+ * touches its folder. Clearing a stuck reservation is the case that forced the
+ * split: the ledger lives under byline's home, never inside the library, so
+ * `byline media release` works perfectly well on a library whose drive is
+ * unplugged — and `list_media_libraries` tells the user to run exactly that
+ * command for exactly that library. Routing it through `getLibrary` made that
+ * advice impossible to follow: the command threw `LIBRARY_UNAVAILABLE` in the
+ * one state the note describes.
+ *
+ * Any caller that goes on to READ the folder must use `getLibrary` instead, or
+ * check `unavailable` itself.
  */
-export function getLibrary(cfg: MediaConfig, name?: string): LibraryConfig {
+export function resolveLibrary(cfg: MediaConfig, name?: string): LibraryConfig {
   const names = Object.keys(cfg.libraries);
 
   let chosen = name ?? cfg.defaultLibrary;
@@ -230,6 +242,15 @@ export function getLibrary(cfg: MediaConfig, name?: string): LibraryConfig {
       hint: NO_LIBRARY_HINT,
     });
   }
+  return lib;
+}
+
+/**
+ * The library a call means, refusing at point of use rather than at load — for
+ * every caller that will actually read the library's folder.
+ */
+export function getLibrary(cfg: MediaConfig, name?: string): LibraryConfig {
+  const lib = resolveLibrary(cfg, name);
   if (lib.unavailable) {
     throw new ToolError({
       api: 'media',
