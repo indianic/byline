@@ -133,6 +133,78 @@ describe('parseVideoUrl — rejection', () => {
   });
 });
 
+describe('parseVideoUrl — XSS via searchParams URL-decoding', () => {
+  // u.searchParams.get('v') returns a URL-DECODED value, unlike u.pathname
+  // which stays percent-encoded — so a `watch?v=` id is the one taint path
+  // where an attacker-controlled quote character can reach this file
+  // un-encoded. These prove the id validator rejects it, not merely that
+  // escaping happens to save it downstream.
+  const injected = 'https://youtube.com/watch?v=abc%22%20onload%3D%22alert(1)';
+
+  it('throws a ToolError with code UNSUPPORTED_VIDEO_URL for an injected watch?v= id', () => {
+    try {
+      parseVideoUrl(injected);
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      expect((e as ToolError).code).toBe('UNSUPPORTED_VIDEO_URL');
+    }
+  });
+
+  it('throws UNSUPPORTED_VIDEO_URL for the same injection via a youtu.be short link', () => {
+    // youtu.be carries the id in the path, not a query param, but the
+    // attacker string is passed as the path segment directly here to prove
+    // the id validator — not the searchParams decoding — is what stops it.
+    try {
+      parseVideoUrl('https://youtu.be/abc%22%20onload%3D%22alert(1)');
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      expect((e as ToolError).code).toBe('UNSUPPORTED_VIDEO_URL');
+    }
+  });
+
+  it('throws UNSUPPORTED_VIDEO_URL for the same injection via a /shorts/ URL', () => {
+    try {
+      parseVideoUrl('https://www.youtube.com/shorts/abc%22%20onload%3D%22alert(1)');
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      expect((e as ToolError).code).toBe('UNSUPPORTED_VIDEO_URL');
+    }
+  });
+
+  it('rejects a Vimeo id that is not numeric on the player.vimeo.com/video/ branch', () => {
+    try {
+      parseVideoUrl('https://player.vimeo.com/video/76979871%22%20onload%3D%22alert(1)');
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      expect((e as ToolError).code).toBe('UNSUPPORTED_VIDEO_URL');
+    }
+  });
+
+  it('rejects a Bunny guid outside the allowed character class', () => {
+    try {
+      parseVideoUrl('https://iframe.mediadelivery.net/embed/1234/abcd"onload="alert(1)');
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      expect((e as ToolError).code).toBe('UNSUPPORTED_VIDEO_URL');
+    }
+  });
+
+  it('rejects a non-numeric Bunny library', () => {
+    try {
+      parseVideoUrl('https://iframe.mediadelivery.net/embed/12"onload="alert(1)/abcd-efgh');
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      expect((e as ToolError).code).toBe('UNSUPPORTED_VIDEO_URL');
+    }
+  });
+});
+
 describe('embedHtml', () => {
   const yt = parseVideoUrl('https://youtu.be/dQw4w9WgXcQ');
 
@@ -191,5 +263,54 @@ describe('embedHtml', () => {
     const bunny = parseVideoUrl('https://iframe.mediadelivery.net/play/1234/abcd-efgh');
     const html = embedHtml(bunny);
     expect(html).toContain('src="https://iframe.mediadelivery.net/embed/1234/abcd-efgh"');
+  });
+
+  it('renders a ?start= URL unchanged inside the iframe src — no & to escape', () => {
+    const withStart = parseVideoUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90');
+    const html = embedHtml(withStart);
+    expect(html).toBe(
+      '<figure><iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ?start=90" width="560" height="315" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen title="YouTube video"></iframe></figure>',
+    );
+  });
+
+  it('defence in depth — every embedUrl this module can produce lands whole in the src attribute, unbroken by any stray quote', () => {
+    // For every VideoEmbed parseVideoUrl can construct (valid ids only, by
+    // construction), the substring between src=" and the very next literal
+    // " must equal the embed URL exactly — i.e. that first literal quote is
+    // truly the closing one, not an early break caused by a stray unescaped
+    // " inside the URL. Covers a bare id, a ?start= query value, Vimeo, and
+    // Bunny — none of which contain HTML-significant characters, so this
+    // also confirms escapeHtml is a no-op for well-formed embed URLs.
+    const embeds = [
+      parseVideoUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ'),
+      parseVideoUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90'),
+      parseVideoUrl('https://vimeo.com/76979871'),
+      parseVideoUrl('https://iframe.mediadelivery.net/embed/1234/abcd-efgh'),
+    ];
+    for (const e of embeds) {
+      const html = embedHtml(e);
+      const m = /src="([^"]*)"/.exec(html);
+      expect(m).not.toBeNull();
+      expect(m![1]).toBe(e.embedUrl);
+    }
+  });
+
+  it('escapeHtml applied to embedUrl neutralises an attribute-breakout string, proving the second layer works on its own', () => {
+    // Direct proof that the escaping layer itself is correct, independent of
+    // whether validation already refused the input: a VideoEmbed carrying an
+    // attacker string in embedUrl (as if some future code path constructed
+    // one without going through the validated parse functions) still cannot
+    // break out of the src="..." attribute once run through embedHtml — the
+    // raw `" onload="` breakout signature never appears, only its escaped form.
+    const malicious = {
+      provider: 'youtube' as const,
+      embedUrl: 'https://www.youtube.com/embed/abc" onload="alert(1)',
+      sourceUrl: 'https://youtube.com/watch?v=abc%22%20onload%3D%22alert(1)',
+    };
+    const html = embedHtml(malicious);
+    expect(html).toBe(
+      '<figure><iframe src="https://www.youtube.com/embed/abc&quot; onload=&quot;alert(1)" width="560" height="315" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen title="YouTube video"></iframe></figure>',
+    );
+    expect(html).not.toContain('" onload="alert(1)');
   });
 });

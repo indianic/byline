@@ -73,6 +73,17 @@ function parseSeconds(raw: string): number | null {
   return h * 3600 + min * 60 + s;
 }
 
+/**
+ * A YouTube video id: exactly what YouTube itself generates — 11 URL-safe
+ * base64-alphabet characters in practice, but this is deliberately looser
+ * (6–32) to tolerate future id-length changes without becoming a taint path.
+ * `u.searchParams.get('v')` returns a URL-DECODED value (unlike `u.pathname`,
+ * which stays percent-encoded), so the `watch?v=` branch is the one place a
+ * quote character can reach this file un-encoded — this is what stops it
+ * before it ever becomes part of an embed URL.
+ */
+const YOUTUBE_ID_PATTERN = /^[A-Za-z0-9_-]{6,32}$/;
+
 function youtubeEmbed(u: URL, raw: string): VideoEmbed {
   const host = u.hostname.replace(/^(www\.|m\.)/, '');
   let id: string | null = null;
@@ -89,7 +100,7 @@ function youtubeEmbed(u: URL, raw: string): VideoEmbed {
     }
   }
 
-  if (!id) unsupported(raw);
+  if (!id || !YOUTUBE_ID_PATTERN.test(id)) unsupported(raw);
 
   const tRaw = u.searchParams.get('t') ?? u.searchParams.get('start');
   const seconds = tRaw !== null ? parseSeconds(tRaw) : null;
@@ -101,6 +112,16 @@ function youtubeEmbed(u: URL, raw: string): VideoEmbed {
   };
 }
 
+/**
+ * A Vimeo video id: Vimeo's ids are purely numeric, on every URL shape this
+ * file accepts (bare, `channels/NAME/ID`, and `player.vimeo.com/video/ID`).
+ * Applied to all three branches below, not only the bare one — `u.pathname`
+ * stays percent-encoded today so none of them is exploitable yet, but an id
+ * read from `pathname` here is one future `searchParams`-based refactor away
+ * from being the same taint path YouTube's `?v=` was.
+ */
+const VIMEO_ID_PATTERN = /^\d+$/;
+
 function vimeoEmbed(u: URL, raw: string): VideoEmbed {
   const host = u.hostname.replace(/^(www\.|m\.)/, '');
   const segments = u.pathname.split('/').filter(Boolean);
@@ -111,20 +132,28 @@ function vimeoEmbed(u: URL, raw: string): VideoEmbed {
   } else if (host === 'vimeo.com') {
     if (segments[0] === 'channels' && segments.length >= 3) {
       id = segments[segments.length - 1] ?? null;
-    } else if (segments.length === 1 && /^\d+$/.test(segments[0]!)) {
+    } else if (segments.length === 1 && VIMEO_ID_PATTERN.test(segments[0]!)) {
       id = segments[0]!;
     }
   }
 
-  if (!id) unsupported(raw);
+  if (!id || !VIMEO_ID_PATTERN.test(id)) unsupported(raw);
   return { provider: 'vimeo', embedUrl: `https://player.vimeo.com/video/${id}`, sourceUrl: raw };
 }
+
+/** A Bunny Stream library id: purely numeric, as Bunny assigns it. */
+const BUNNY_LIBRARY_PATTERN = /^\d+$/;
+/** A Bunny Stream video GUID: Bunny's own GUID alphabet, hyphenated hex. */
+const BUNNY_GUID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
 
 function bunnyEmbed(u: URL, raw: string): VideoEmbed {
   const segments = u.pathname.split('/').filter(Boolean);
   // /embed/LIBRARY/GUID or /play/LIBRARY/GUID — exactly three segments, either form.
   if (segments.length !== 3 || (segments[0] !== 'embed' && segments[0] !== 'play')) unsupported(raw);
   const [, library, guid] = segments;
+  if (!library || !BUNNY_LIBRARY_PATTERN.test(library) || !guid || !BUNNY_GUID_PATTERN.test(guid)) {
+    unsupported(raw);
+  }
   return {
     provider: 'bunny',
     // Always the /embed/ form, per the measured behaviour — /play/ is normalised
@@ -193,7 +222,7 @@ function escapeHtml(s: string): string {
 export function embedHtml(e: VideoEmbed, caption?: string, title?: string): string {
   const trimmedTitle = title?.trim();
   const t = escapeHtml(trimmedTitle && trimmedTitle.length > 0 ? trimmedTitle : `${PROVIDER_LABEL[e.provider]} video`);
-  const iframe = `<iframe src="${e.embedUrl}" width="560" height="315" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen title="${t}"></iframe>`;
+  const iframe = `<iframe src="${escapeHtml(e.embedUrl)}" width="560" height="315" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen title="${t}"></iframe>`;
   const trimmedCaption = caption?.trim();
   return trimmedCaption && trimmedCaption.length > 0
     ? `<figure>${iframe}<figcaption>${escapeHtml(trimmedCaption)}</figcaption></figure>`
