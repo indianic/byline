@@ -313,16 +313,17 @@ behaviour and nothing else.
 "only Super Admins hold `unfiltered_html` on multisite" claim is WordPress's own
 documentation.
 
-**Media promotion has never been exercised against a live platform.** `promote()` matches a
+**Media promotion is measured on Ghost and unmeasured on WordPress.** `promote()` matches a
 reservation's `hosted_url` against the image URLs a post carries, by exact string equality.
-Every test of it so far is a unit test whose upload double returns the identical string it
-was handed, which is structurally incapable of catching a platform that rewrites the URL —
-a `__GHOST_URL__` placeholder, a protocol-relative form, a CDN host, a `/size/w1000/`
-responsive prefix. `tests/integration/media.integration.test.ts` now creates a real post
-and reads it back to settle this, and **that test has not been run**: the maintainer's Ghost
-site was returning 503 when it was written (`ghost.integration.test.ts` fails identically).
-Until someone runs it with `RUN_INTEGRATION=1`, "the hosted URL is what appears in the
-stored HTML" is reasoning, not a measurement.
+Every unit test of it hands the upload double a string and gets the identical string back,
+which is structurally incapable of catching a platform that rewrites the URL — a
+`__GHOST_URL__` placeholder, a protocol-relative form, a CDN host, a `/size/w1000/`
+responsive prefix. `tests/integration/media.integration.test.ts` settles it for Ghost: run
+against the live blog on 2026-08-12, the uploaded URL came back out of
+`GET /posts/{id}/?formats=html` byte for byte, in both the rendered `<img src>` and
+`feature_image`, and the reservation promoted to `published`. The row is in
+`docs/GHOST-NOTES.md`. **No equivalent probe exists for WordPress** — nothing has confirmed
+that a URL from its media endpoint survives into stored post content unaltered.
 
 Those branches carry `UNVERIFIED` markers in
 `src/plugins/platforms/wordpress/html-profile.ts` and in `docs/WORDPRESS-NOTES.md`. **Do
