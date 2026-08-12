@@ -15,6 +15,13 @@ import type { Asset, Aspect, LibraryConfig, MediaIndex, MediaKind } from './type
  * corrected from the magic bytes below; a file named `.png` that is really a
  * JPEG must not be uploaded declaring itself a PNG, which is the defect
  * `inspectImage` was written for.
+ *
+ * That last sentence is a claim about the UPLOAD path, so it is only true
+ * because `useMedia`'s `uploadNameFor` builds the upload filename from this
+ * corrected `mime` rather than from the name on disk — both adapters read the
+ * Content-Type off the extension. It was false when written: `use_media`
+ * passed `basename(asset.path)` through verbatim, so a corrected mime was
+ * shown to the model and never used.
  */
 export const MEDIA_EXTENSIONS: Record<string, { kind: MediaKind; mime: string }> = {
   jpg: { kind: 'image', mime: 'image/jpeg' },

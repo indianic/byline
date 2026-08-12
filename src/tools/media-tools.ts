@@ -9,6 +9,7 @@ import { isUsed, promote, reserve, staleReservations } from '../media/ledger.js'
 import { scanLibrary } from '../media/scan.js';
 import { searchAssets } from '../media/search.js';
 import { readIndex, readLedger, writeIndex, writeLedger } from '../media/store.js';
+import { extensionFor } from '../plugins/images/inspect.js';
 import type { LibraryConfig, MediaConfig, MediaIndex } from '../media/types.js';
 import type { Paths } from '../config/paths.js';
 import type { SitesConfig } from '../config/sites.js';
@@ -257,18 +258,51 @@ export async function findMedia(
   };
 }
 
+/**
+ * The filename an asset is uploaded under: its own stem, and an extension
+ * derived from the mime `scan` read out of the bytes.
+ *
+ * Both adapters derive the upload `Content-Type` from the filename extension —
+ * `mimeFor` in the WordPress adapter, `IMAGE_MIME` in the Ghost one — so
+ * passing `basename(asset.path)` through verbatim hands the platform whatever
+ * the file happens to be NAMED. `scan` already corrected `asset.mime` from the
+ * magic bytes for exactly this reason, and throwing that away here recreates
+ * the defect `inspectImage` was written for. `image-tools.ts` names generated
+ * files the same way, from `extensionFor(info.mime)`.
+ */
+function uploadNameFor(asset: { path: string; mime: string }): string {
+  const stem = basename(asset.path).replace(/\.[^.]+$/, '');
+  return `${stem}.${extensionFor(asset.mime)}`;
+}
+
+/** One entry of `use_media`'s per-asset report. */
+interface UseResult {
+  ok: boolean;
+  path: string;
+  url?: string;
+  id?: string;
+  /** Machine-readable reason this entry failed, e.g. `ALREADY_USED`. */
+  code?: string;
+  error?: string;
+  /** What to do about it, the same field `ToolError` carries. */
+  hint?: string;
+}
+
 export async function useMedia(
   ctx: UploadCtx,
   a: {
     site: string;
     library?: string;
     assets: { path: string; alt?: string }[];
+    allow_reuse?: boolean;
   },
 ): Promise<{
   library: string;
-  images: { ok: boolean; path: string; url?: string; id?: string; error?: string }[];
+  images: UseResult[];
   uploaded: number;
   failed: number;
+  /** Present only when something went wrong that no single entry describes. */
+  problems?: string[];
 }> {
   const lib = getLibrary(ctx.media, a.library);
   const index = requireIndex(ctx, lib);
@@ -290,17 +324,59 @@ export async function useMedia(
         hint: 'Use the `path` exactly as find_media returned it, or rescan if the file is new.',
       });
     }
+    // A video is INDEXED and SEARCHABLE, and cannot be uploaded. The upload
+    // path is `adapter.uploadImage`, whose Content-Type tables cover images
+    // only: a `.mp4` reaches Ghost as `application/octet-stream` and comes
+    // back 415. Refused here, before anything is uploaded or reserved, rather
+    // than failing halfway through a batch with a status code that says
+    // nothing about why.
+    if (asset.kind !== 'image') {
+      throw new ToolError({
+        api: 'media',
+        code: 'VIDEO_NOT_SUPPORTED',
+        message: `"${want.path}" is a ${asset.kind}, and byline cannot upload video yet: the media upload path handles images only.`,
+        hint: 'Pass an image. Videos are indexed and searchable so you can find them, but publishing one is not implemented in this release — upload it through your platform directly.',
+      });
+    }
     return { asset, alt: want.alt };
   });
 
-  const images: { ok: boolean; path: string; url?: string; id?: string; error?: string }[] = [];
+  const images: UseResult[] = [];
   let ledger = readLedger(ledgerFile, lib.name);
 
   for (const { asset, alt } of resolved) {
     const full = join(lib.path, asset.path);
+
+    // The ledger is CONSULTED here, not merely written to below. `find_media`
+    // offers `unused_only: false` — a legal escape hatch — so a model can hand
+    // an already-published photograph straight back to this tool, and without
+    // this check it would be uploaded again and reported as a success. Reading
+    // is `isUsed`'s job and only `isUsed`'s: it is the one definition of
+    // used/not-used, and this is the fourth caller of it, not a fourth copy.
+    if (!a.allow_reuse && isUsed(ledger, asset.id, a.site, ctx.media.reuseScope)) {
+      const prior = ledger.records.find(
+        (r) => r.id === asset.id && (ctx.media.reuseScope === 'global' || r.site === a.site),
+      );
+      const where = prior?.post_url
+        ? `it is already published in ${prior.post_url}`
+        : `it was already uploaded to ${prior?.hosted_url ?? 'this site'} and is waiting to be published`;
+      const scope =
+        ctx.media.reuseScope === 'global'
+          ? 'reuse_scope is "global", so a use on any site counts'
+          : `on site "${prior?.site ?? a.site}"`;
+      images.push({
+        ok: false,
+        path: asset.path,
+        code: 'ALREADY_USED',
+        error: `"${asset.path}" has already been used: ${where} (${scope}). It was not uploaded again.`,
+        hint: 'Pick a different asset — find_media excludes used ones by default — or pass allow_reuse: true if publishing this same photograph twice is what you actually want.',
+      });
+      continue;
+    }
+
     try {
       const bytes = readFileSync(full);
-      const uploaded = await adapter.uploadImage(bytes, basename(asset.path), alt);
+      const uploaded = await adapter.uploadImage(bytes, uploadNameFor(asset), alt);
       images.push({
         ok: true,
         path: asset.path,
@@ -324,10 +400,31 @@ export async function useMedia(
     }
   }
 
-  writeLedger(ledgerFile, ledger);
+  // A ledger write that throws must NOT destroy the result of a batch that
+  // already reached the platform. Twelve photographs upload, `~/.byline/media`
+  // turns out to be read-only, and the raw fs error would surface as
+  // `{ ok: false, code: 'UNEXPECTED' }` with all twelve hosted URLs gone.
+  // `promoteUsedMedia` is already careful never to throw for this exact
+  // reason; the asymmetry was not justified.
+  const problems: string[] = [];
+  try {
+    writeLedger(ledgerFile, ledger);
+  } catch (e) {
+    problems.push(
+      `media: the usage ledger at ${ledgerFile} could not be written: ${
+        e instanceof Error ? e.message : String(e)
+      }. Every upload reported above still succeeded and its URL is usable, but these assets were NOT recorded as used, so they may be offered again. Fix write access to that file, then re-check with list_media_libraries.`,
+    );
+  }
 
   const failed = images.filter((i) => !i.ok).length;
-  return { library: lib.name, images, uploaded: images.length - failed, failed };
+  return {
+    library: lib.name,
+    images,
+    uploaded: images.length - failed,
+    failed,
+    ...(problems.length > 0 ? { problems } : {}),
+  };
 }
 
 /**
@@ -423,7 +520,12 @@ export function registerMediaTools(server: McpServer, ctx: Context): void {
           .string()
           .describe('What the image should show, in plain words. An empty string browses everything matching the filters.'),
         library: z.string().optional().describe('Which library. Defaults to the configured default.'),
-        kind: z.enum(['image', 'video']).optional(),
+        kind: z
+          .enum(['image', 'video'])
+          .optional()
+          .describe(
+            'Videos are indexed and searchable, but they cannot be published yet: use_media refuses one, because the upload path handles images only. Search for them to see what you have; publish an image.',
+          ),
         aspect: z.enum(['16:9', '4:3', '1:1']).optional(),
         has_people: z
           .boolean()
@@ -437,7 +539,7 @@ export function registerMediaTools(server: McpServer, ctx: Context): void {
           .string()
           .optional()
           .describe(
-            'The site this is for. REQUIRED when unused_only is in effect (the default true) and reuse_scope is "site" — the tool throws rather than silently skip the exclusion. Not required when reuse_scope is "global" (used anywhere excludes it everywhere), or when unused_only: false.',
+            'The site this is for. REQUIRED when unused_only is in effect (the default true) and reuse_scope is "site" — the tool throws rather than silently skip the exclusion. Not required when reuse_scope is "global" (used anywhere excludes it everywhere), or when unused_only: false. The exclusion applies to THIS site only; use_media re-checks the ledger against whatever site it is given, so passing a different one there does not smuggle a used asset through.',
           ),
         limit: z.number().int().min(1).max(50).default(10),
       },
@@ -450,7 +552,7 @@ export function registerMediaTools(server: McpServer, ctx: Context): void {
     {
       title: 'Use local media',
       description:
-        'Upload one or more local library assets to a site and record them as used, so the same file is never published twice. Pass the `path` values exactly as find_media returned them. Returns the hosted URL for each, ready for feature_image or an inline <img>. One failure does not fail the batch — check every entry.',
+        'Upload one or more local library assets to a site and record them as used. Before uploading, each asset is checked against the usage ledger and REFUSED if it has been used before — under the default reuse_scope "site" that means used on THIS site, so the same photograph can still be published on another site unless reuse_scope is "global". A refusal names where the asset went last time and does not fail the rest of the batch; pass allow_reuse: true to override it deliberately. Images only: a video is refused, because byline cannot upload video yet. Pass the `path` values exactly as find_media returned them. Returns the hosted URL for each, ready for feature_image or an inline <img>. One failure does not fail the batch — check every entry.',
       inputSchema: {
         site: z.string().describe('Which site to upload to.'),
         library: z.string().optional().describe('Which library. Defaults to the configured default.'),
@@ -463,6 +565,12 @@ export function registerMediaTools(server: McpServer, ctx: Context): void {
           )
           .min(1)
           .max(12),
+        allow_reuse: z
+          .boolean()
+          .default(false)
+          .describe(
+            'Upload an asset that the ledger says has already been used. Defaults false. Set it only when publishing the same photograph twice is the deliberate intent — the whole point of the ledger is that this does not happen by accident.',
+          ),
       },
     },
     handler('use_media', (a: Parameters<typeof useMedia>[1]) => useMedia(ctx, a).then(ok)),
