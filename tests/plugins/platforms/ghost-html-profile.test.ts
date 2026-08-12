@@ -5,12 +5,21 @@ describe('Ghost HTML profile', () => {
   it('preserves the tags verified by live probe', () => {
     for (const tag of ['p', 'h2', 'h3', 'h4', 'strong', 'em', 'blockquote', 'ul', 'ol', 'li', 'a',
                        'table', 'thead', 'tbody', 'tr', 'th', 'td', 'figure', 'figcaption',
-                       'img', 'hr', 'code']) {
+                       'img', 'hr', 'code', 'iframe']) {
       expect(GHOST_HTML_PROFILE.preserved.has(tag)).toBe(true);
     }
     // Pins the exact membership: a widened list (extra tag added alongside the
     // correct ones) would pass the per-tag assertions above but must fail here.
-    expect(GHOST_HTML_PROFILE.preserved.size).toBe(22);
+    expect(GHOST_HTML_PROFILE.preserved.size).toBe(23);
+  });
+
+  // Regression: the probe on 2026-08-12 found score_draft's BLOCKING
+  // platform_html check rejecting a plain <iframe> with "disallowed tag
+  // <iframe>", even though Ghost keeps it verbatim (and wraps it in its own
+  // kg-embed-card figure). embed_video exists specifically to put video into
+  // an article via <iframe>; the scorer must not block its own output.
+  it('preserves iframe — a video embed must not be rejected as a disallowed tag', () => {
+    expect(GHOST_HTML_PROFILE.preserved.has('iframe')).toBe(true);
   });
 
   it('marks the unwrapped tags', () => {
@@ -56,5 +65,15 @@ describe('Ghost HTML profile', () => {
 
   it('has non-empty notes', () => {
     expect(GHOST_HTML_PROFILE.notes.length).toBeGreaterThan(0);
+  });
+
+  // Measured 2026-08-12: <video> is stripped completely on ingest — nothing of
+  // it survives. The notes must say so, and point at the only way video
+  // actually gets into a Ghost post.
+  it('warns that <video> is stripped entirely and names embed_video as the alternative', () => {
+    const videoNote = GHOST_HTML_PROFILE.notes.find((n) => /<video>/.test(n));
+    expect(videoNote).toBeDefined();
+    expect(videoNote).toMatch(/strips it completely|stripped completely/);
+    expect(videoNote).toContain('embed_video');
   });
 });

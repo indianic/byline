@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { Context } from '../context.js';
 import { ToolError, ok } from '../errors.js';
+import { type EmbedProvider, embedHtml, parseVideoUrl } from '../media/embed.js';
 import { getLibrary, indexFileFor, ledgerFileFor, libraryNamed } from '../media/library.js';
 import { isUsed, promote, reserve, staleReservations } from '../media/ledger.js';
 import { scanLibrary } from '../media/scan.js';
@@ -12,8 +13,13 @@ import { readIndex, readLedger, writeIndex, writeLedger } from '../media/store.j
 import { extensionFor } from '../plugins/images/inspect.js';
 import type { LibraryConfig, MediaConfig, MediaIndex } from '../media/types.js';
 import type { Paths } from '../config/paths.js';
-import type { SitesConfig } from '../config/sites.js';
+import { getSite, type SitesConfig } from '../config/sites.js';
 import { adapterFor, handler } from './shared.js';
+
+/** What `embed_video` needs — just enough of `Context` to resolve a site's platform. */
+export interface EmbedCtx {
+  sites: SitesConfig;
+}
 
 /**
  * Exactly what the read-only media tools touch.
@@ -572,6 +578,55 @@ export function promoteUsedMedia(
   return { promoted: total, problems };
 }
 
+/** What `embed_video` returns. */
+export interface EmbedVideoResult {
+  provider: EmbedProvider;
+  embed_url: string;
+  html: string;
+  warnings: string[];
+}
+
+/**
+ * Turn a video URL into the `<iframe>` embed HTML measured to survive both
+ * platforms (see `src/media/embed.ts` and `docs/GHOST-NOTES.md` /
+ * `docs/WORDPRESS-NOTES.md`, both probed 2026-08-12).
+ *
+ * `site` is optional and changes nothing about the HTML produced — it only
+ * decides whether the WordPress caveat below applies. Without it, the caller
+ * gets no warning either way, which is honest: nothing here can know which
+ * platform the embed is headed for.
+ */
+export function embedVideo(
+  ctx: EmbedCtx,
+  a: { url: string; site?: string; caption?: string; title?: string },
+): EmbedVideoResult {
+  const embed = parseVideoUrl(a.url);
+  const warnings: string[] = [];
+
+  if (a.site) {
+    const site = getSite(ctx.sites, a.site);
+    if (site.platform === 'wordpress') {
+      // Measured 2026-07-29/2026-08-12: an account HOLDING unfiltered_html
+      // keeps an <iframe> unchanged. Whether an account LACKING it does too is
+      // UNVERIFIED — no such account has ever been available to probe (see
+      // docs/WORDPRESS-NOTES.md). This warns rather than silently assuming
+      // either way, since resolving the live capability here would mean this
+      // pure-URL tool making a network call just to answer a question
+      // score_draft already answers for the account that will actually publish.
+      warnings.push(
+        `"${a.site}" is WordPress. This embed survives for an account holding the unfiltered_html capability (measured by live probe). Whether it survives for an account WITHOUT that capability is UNVERIFIED — WordPress's KSES filter is documented to strip <iframe> entirely for such an account, but no probe has confirmed it. If in doubt, publish a draft and check score_draft's platform_html result, or read the post back after publishing.`,
+      );
+    }
+  }
+
+  return {
+    provider: embed.provider,
+    embed_url: embed.embedUrl,
+    html: embedHtml(embed, a.caption, a.title),
+    warnings,
+  };
+}
+
 export function registerMediaTools(server: McpServer, ctx: Context): void {
   server.registerTool(
     'list_media_libraries',
@@ -663,5 +718,31 @@ export function registerMediaTools(server: McpServer, ctx: Context): void {
       },
     },
     handler('use_media', (a: Parameters<typeof useMedia>[1]) => useMedia(ctx, a).then(ok)),
+  );
+
+  server.registerTool(
+    'embed_video',
+    {
+      title: 'Embed video',
+      description:
+        'Turn a YouTube, Vimeo, or Bunny Stream URL into ready-to-paste <iframe> embed HTML — byline cannot upload video, so this is the way video goes into an article. Normalises whatever form the URL was copied in (a `watch?v=` link does not work inside an <iframe>; `/embed/ID` does) and refuses anything that is not one of the three supported providers, rather than passing an unrecognised URL through. ' +
+        'Verified by live probe 2026-08-12: both Ghost and WordPress (for an account holding the unfiltered_html capability) keep the <iframe> and its <figure>/<figcaption> wrapper unchanged on ingest — Ghost additionally wraps it in its own kg-embed-card figure. For a WordPress account WITHOUT unfiltered_html, whether the <iframe> survives is UNVERIFIED; pass `site` naming a WordPress site to get that caveat back in `warnings`. ' +
+        'A plain <video> tag is a separate, worse option: Ghost strips it completely, with nothing surviving.',
+      inputSchema: {
+        url: z.string().describe("A YouTube, Vimeo, or Bunny Stream video URL, in any of that provider's common forms."),
+        site: z
+          .string()
+          .optional()
+          .describe(
+            'The site this embed is headed for. Changes nothing about the HTML produced — it only decides whether a WordPress caveat is added to `warnings`.',
+          ),
+        caption: z.string().optional().describe('Caption text under the video. Omitted from the HTML entirely when not given, rather than an empty <figcaption>.'),
+        title: z
+          .string()
+          .optional()
+          .describe('Accessible title attribute on the <iframe>. Defaults to "<Provider> video" (e.g. "YouTube video") when omitted.'),
+      },
+    },
+    handler('embed_video', async (a: Parameters<typeof embedVideo>[1]) => ok(embedVideo(ctx, a))),
   );
 }
