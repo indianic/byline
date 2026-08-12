@@ -2,12 +2,19 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { isMap, isSeq, parseDocument, type YAMLMap, type YAMLSeq } from 'yaml';
 import { SLUG_PATTERN, SLUG_RULE } from './sites.js';
 import { ToolError } from '../errors.js';
+import { isPathInside } from '../media/library.js';
 
 export interface LibraryEntry {
   name: string;
   /** Absolute path, already expanded by the caller. */
   path: string;
   recursive?: boolean;
+  /**
+   * Where the derived index and the usage ledger go, instead of
+   * `<byline home>/media/`. Absolute, already expanded by the caller. Written
+   * as `index_path`, and refused when it resolves inside `path` — byline never
+   * writes inside a user's library folder.
+   */
   indexPath?: string;
   setDefault?: boolean;
 }
@@ -30,7 +37,11 @@ function loadDoc(configFile: string): ConfigDoc {
       api: 'config',
       code: 'CONFIG_NOT_FOUND',
       message: `No config file at ${configFile}.`,
-      hint: 'Run `byline init` first.',
+      // NOT just "run `byline init`": init writes config.yaml from the
+      // add-a-blog path (src/cli/init.ts), so someone who ran it and only
+      // registered their AI tools has no config.yaml, and would be told to run
+      // the command they just ran.
+      hint: 'Run `byline init` and add a blog — config.yaml is written when the first blog is added.',
     });
   }
   return parseDocument(readFileSync(configFile, 'utf8'));
@@ -80,10 +91,18 @@ function ensureLibrariesSeq(doc: ConfigDoc, media: YAMLMap): YAMLSeq {
   return libraries;
 }
 
+/**
+ * Add one library. Returns the warnings the caller should show the user.
+ *
+ * There is no success flag in the return: every way this can fail throws a
+ * `ToolError` naming the fault, so a returned value means the file was written.
+ * A `{ written: true }` that no branch could ever set to `false` said nothing,
+ * and a caller reading it would have been checking a constant.
+ */
 export function addLibraryToConfig(
   configFile: string,
   entry: LibraryEntry,
-): { written: boolean; warnings: string[] } {
+): { warnings: string[] } {
   if (!SLUG_PATTERN.test(entry.name)) {
     throw new ToolError({
       api: 'config',
@@ -106,6 +125,20 @@ export function addLibraryToConfig(
       code: 'LIBRARY_PATH_NOT_DIR',
       message: `${entry.path} is not a directory.`,
       hint: 'A media library is a folder, not a single file.',
+    });
+  }
+  // Refused at WRITE time as well as at load. `loadMedia` already marks such a
+  // library unavailable, but letting the write through would mean this command
+  // cheerfully creating a config that the very next command reports as broken.
+  // `isPathInside` is imported, not reimplemented: one rule, one definition —
+  // and a second hand-written copy would be free to drift into a plain string
+  // prefix check, which treats `/photos-backup` as nested inside `/photos`.
+  if (entry.indexPath && isPathInside(entry.indexPath, entry.path)) {
+    throw new ToolError({
+      api: 'config',
+      code: 'INDEX_PATH_INSIDE_LIBRARY',
+      message: `${entry.indexPath} is inside the library folder ${entry.path}; byline must never write inside a library folder.`,
+      hint: 'Point --index-path at a folder outside the library — the default, ~/.byline/media/, already is one.',
     });
   }
 
@@ -150,7 +183,7 @@ export function addLibraryToConfig(
   }
 
   writeFileSync(configFile, String(doc));
-  return { written: true, warnings };
+  return { warnings };
 }
 
 export function removeLibraryFromConfig(configFile: string, name: string): boolean {
@@ -166,11 +199,27 @@ export function removeLibraryFromConfig(configFile: string, name: string): boole
   const librariesNode = media.get('libraries');
   if (!isSeq(librariesNode)) return false;
 
-  const existing = (librariesNode.toJSON() ?? []) as Array<{ name?: string }>;
-  const kept = existing.filter((l) => l?.name !== name);
-  if (kept.length === existing.length) return false;
+  // Deleted from the sequence IN PLACE. `media.set('libraries', kept)` — where
+  // `kept` came out of `toJSON()` — replaced the whole node with a plain array,
+  // and every comment in the block died with it. This file's header promises a
+  // hand-edited config survives the write; that was true for `add` and false
+  // for `remove`. Splicing leaves every surviving item's own node, and the
+  // comments attached to it, exactly as parsed.
+  //
+  // Backwards, and every match: a config CAN name the same library twice
+  // (`loadMedia` reports it and uses the last), so forgetting one copy and
+  // leaving the other would make `remove` look like it had done nothing.
+  const items = librariesNode.items;
+  let removed = 0;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (isMap(item) && item.get('name') === name) {
+      items.splice(i, 1);
+      removed += 1;
+    }
+  }
+  if (removed === 0) return false;
 
-  media.set('libraries', kept);
   if (media.get('default_library') === name) media.delete('default_library');
 
   // Only the config entry is removed. Nothing under the library `path` is

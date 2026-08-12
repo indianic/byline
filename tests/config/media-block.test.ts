@@ -29,8 +29,7 @@ describe('addLibraryToConfig', () => {
   it('adds a media block to a config that has none', () => {
     const file = fixture(WITH_SITE);
     const root = realDir();
-    const res = addLibraryToConfig(file, { name: 'shots', path: root });
-    expect(res.written).toBe(true);
+    addLibraryToConfig(file, { name: 'shots', path: root });
 
     const cfg = parse(readFileSync(file, 'utf8'));
     expect(cfg.media.libraries).toHaveLength(1);
@@ -148,12 +147,28 @@ describe('addLibraryToConfig', () => {
   it('does not crash when a library entry is a bare string', () => {
     const file = fixture(`${WITH_SITE}media:\n  libraries:\n    - shots\n`);
     const root = realDir();
-    const res = addLibraryToConfig(file, { name: 'second', path: root });
-    expect(res.written).toBe(true);
+    addLibraryToConfig(file, { name: 'second', path: root });
     const cfg = parse(readFileSync(file, 'utf8'));
     expect(cfg.media.libraries).toHaveLength(2);
     expect(cfg.media.libraries[0]).toBe('shots');
     expect(cfg.media.libraries[1].name).toBe('second');
+  });
+});
+
+describe('addLibraryToConfig — no config file at all', () => {
+  // `byline init` can finish WITHOUT writing config.yaml: the file is written by
+  // the add-a-site path (src/cli/init.ts), so someone who ran init and only
+  // registered their AI tools has no config.yaml and would be told to run the
+  // command they just ran.
+  it('does not tell the user to run `byline init` and nothing else', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bl-nocfg-'));
+    try {
+      addLibraryToConfig(join(dir, 'config.yaml'), { name: 'shots', path: realDir() });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect((e as ToolError).code).toBe('CONFIG_NOT_FOUND');
+      expect((e as ToolError).hint).toMatch(/blog|site/i);
+    }
   });
 });
 
@@ -197,5 +212,92 @@ describe('removeLibraryFromConfig', () => {
   it('returns false when media.libraries is a map instead of a sequence (does not throw)', () => {
     const file = fixture(`${WITH_SITE}media:\n  libraries:\n    foo: bar\n`);
     expect(removeLibraryFromConfig(file, 'shots')).toBe(false);
+  });
+
+  // The file header claims comments in a hand-edited config survive the write.
+  // That was true for `add` and false for `remove`, which replaced the whole
+  // sequence node with a plain array built from `toJSON()`.
+  it('KEEPS a comment above a sibling entry', () => {
+    const a = realDir();
+    const b = realDir();
+    const file = fixture(
+      `${WITH_SITE}media:\n  libraries:\n    # the good camera, 2024 onwards\n    - name: keep\n      path: ${a}\n    - name: drop\n      path: ${b}\n`,
+    );
+    expect(removeLibraryFromConfig(file, 'drop')).toBe(true);
+    const text = readFileSync(file, 'utf8');
+    expect(text).toMatch(/# the good camera, 2024 onwards/);
+    expect(parse(text).media.libraries.map((l: { name: string }) => l.name)).toEqual(['keep']);
+  });
+
+  it('keeps a comment above an entry that FOLLOWS the removed one', () => {
+    const a = realDir();
+    const b = realDir();
+    const file = fixture(
+      `${WITH_SITE}media:\n  libraries:\n    - name: drop\n      path: ${a}\n    # phone exports, unsorted\n    - name: keep\n      path: ${b}\n`,
+    );
+    expect(removeLibraryFromConfig(file, 'drop')).toBe(true);
+    const text = readFileSync(file, 'utf8');
+    expect(text).toMatch(/# phone exports, unsorted/);
+    expect(parse(text).media.libraries.map((l: { name: string }) => l.name)).toEqual(['keep']);
+  });
+
+  it('keeps a comment on an unrelated top-level key', () => {
+    const root = realDir();
+    const file = fixture(
+      `# the blog I actually write for\ndefault_site: personal\nsites: {}\nmedia:\n  libraries:\n    - name: drop\n      path: ${root}\n`,
+    );
+    removeLibraryFromConfig(file, 'drop');
+    expect(readFileSync(file, 'utf8')).toMatch(/# the blog I actually write for/);
+  });
+});
+
+describe('addLibraryToConfig — index_path', () => {
+  it('writes index_path when one is given', () => {
+    const file = fixture(WITH_SITE);
+    const idx = realDir();
+    addLibraryToConfig(file, { name: 'shots', path: realDir(), indexPath: idx });
+    expect(parse(readFileSync(file, 'utf8')).media.libraries[0].index_path).toBe(idx);
+  });
+
+  it('omits index_path entirely when none is given', () => {
+    const file = fixture(WITH_SITE);
+    addLibraryToConfig(file, { name: 'shots', path: realDir() });
+    expect(parse(readFileSync(file, 'utf8')).media.libraries[0].index_path).toBeUndefined();
+  });
+
+  // Byline never writes inside a user's library folder. `loadMedia` refuses such
+  // a config at load; refusing it at WRITE time too means the CLI cannot create
+  // the broken config in the first place, rather than writing one that reports
+  // itself unavailable on the next command.
+  it('refuses an index path equal to the library path, and writes nothing', () => {
+    const file = fixture(WITH_SITE);
+    const root = realDir();
+    const before = readFileSync(file, 'utf8');
+    try {
+      addLibraryToConfig(file, { name: 'shots', path: root, indexPath: root });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect((e as ToolError).code).toBe('INDEX_PATH_INSIDE_LIBRARY');
+      expect((e as ToolError).message).toMatch(/never write/i);
+    }
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('refuses an index path nested inside the library path', () => {
+    const file = fixture(WITH_SITE);
+    const root = realDir();
+    try {
+      addLibraryToConfig(file, { name: 'shots', path: root, indexPath: join(root, 'idx') });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect((e as ToolError).code).toBe('INDEX_PATH_INSIDE_LIBRARY');
+    }
+  });
+
+  it('allows a sibling directory whose name merely starts the same', () => {
+    const file = fixture(WITH_SITE);
+    const root = realDir();
+    addLibraryToConfig(file, { name: 'shots', path: root, indexPath: `${root}-backup` });
+    expect(parse(readFileSync(file, 'utf8')).media.libraries[0].index_path).toBe(`${root}-backup`);
   });
 });
