@@ -137,9 +137,34 @@ describe('findMedia', () => {
     expect(out.note).toMatch(/enrich/i);
   });
 
+  // The enrichment note fires on 100% of responses in this release, because
+  // nothing in src/ can write an `enriched` block yet. It must therefore not
+  // send every user to a command that does not exist: `byline media enrich`
+  // (and `scan`, and `status`) are Plan 2, and `src/cli/main.ts` answers all
+  // three with "Unknown command: media".
+  it('does not tell the user to run a byline media subcommand that does not exist', async () => {
+    const ctx = ctxWith(['a.png']);
+    await listMediaLibraries(ctx, { scan: true });
+    const out = await findMedia(ctx, { query: '', site: 'siteA' });
+    expect(out.note).not.toMatch(/byline media/i);
+    expect(out.note).toMatch(/not available/i);
+  });
+
   it('refuses with a hint when the library has never been scanned', async () => {
     const ctx = ctxWith(['a.png']);
     await expect(findMedia(ctx, { query: 'x', site: 'siteA' })).rejects.toThrow(/scan/i);
+  });
+
+  it('points an unscanned library at list_media_libraries, not a nonexistent CLI command', async () => {
+    const ctx = ctxWith(['a.png']);
+    try {
+      await findMedia(ctx, { query: 'x', site: 'siteA' });
+      throw new Error('expected findMedia to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      expect((e as ToolError).hint).toContain('list_media_libraries');
+      expect((e as ToolError).hint).not.toMatch(/byline media/i);
+    }
   });
 
   it('under site scope, throws a ToolError instead of silently returning used assets when unused_only is true and no site is given', async () => {

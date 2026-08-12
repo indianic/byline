@@ -41,7 +41,9 @@ function requireIndex(ctx: MediaCtx, lib: LibraryConfig): MediaIndex {
       api: 'media',
       code: 'NOT_SCANNED',
       message: `Media library "${lib.name}" has not been scanned yet.`,
-      hint: 'Call list_media_libraries with scan: true, or run `byline media scan`.',
+      // Names a tool that exists. There is no `byline media` CLI command in
+      // this release — `src/cli/main.ts` answers one with "Unknown command".
+      hint: 'Call list_media_libraries with scan: true.',
     });
   }
   return index;
@@ -246,7 +248,11 @@ export async function findMedia(
     ...(enriched
       ? {}
       : {
-          note: 'No asset in this library has been enriched, so matching used filenames and folder names only. Run `byline media enrich` for keywords and captions.',
+          // This note fires on every response in this release: nothing in the
+          // codebase can write an `enriched` block yet. It therefore says what
+          // is true — enrichment does not exist — rather than sending every
+          // user to a command that does not exist either.
+          note: 'No asset in this library has been enriched, so matching used filenames and folder names only. Enrichment — captions, keywords, and has_people — is not available in this release, so ranking rests on what the files and folders are named.',
         }),
   };
 }
@@ -372,7 +378,7 @@ export function promoteUsedMedia(
       problems.push(
         `Could not update the usage ledger for media library "${lib.name}": ${
           e instanceof Error ? e.message : String(e)
-        }. The post published fine, but this asset may be offered again. Run \`byline media status\` to check.`,
+        }. The post published fine, but this asset may be offered again. Call list_media_libraries to check.`,
       );
     }
   }
@@ -386,7 +392,7 @@ export function registerMediaTools(server: McpServer, ctx: Context): void {
     {
       title: 'List media libraries',
       description:
-        'List the local media libraries byline is configured to use, with asset counts, how many are still unused, and whether the index is up to date. Pass scan: true to walk the folder and rebuild the index first — that is how a new or changed library becomes searchable. When reuse_scope is "site", the `unused` count is only reported if you pass `site` — otherwise the response explains why in `unused_note` instead of guessing. Byline never writes inside your library folder.',
+        'List the local media libraries byline is configured to use, with asset counts, how many are still unused, whether it has been scanned, and when. Pass scan: true to walk the folder and rebuild the index first — that is how a new or changed library becomes searchable. When reuse_scope is "site", the `unused` count is only reported if you pass `site` — otherwise the response explains why in `unused_note` instead of guessing. Byline never writes inside your library folder.',
       inputSchema: {
         library: z.string().optional().describe('Limit to one library. Omit for all of them.'),
         scan: z

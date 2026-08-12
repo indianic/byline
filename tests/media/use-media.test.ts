@@ -89,6 +89,20 @@ describe('promoteUsedMedia', () => {
     expect(ledger.records[0]!.state).toBe('published');
   });
 
+  it('reports a broken ledger against the library, naming a tool that exists', async () => {
+    const ctx = ctxWith();
+    await listMediaLibraries(ctx, { scan: true });
+    const lib = ctx.media.libraries.shots!;
+    writeFileSync(ledgerFileFor(lib, ctx.paths.home), 'not json at all');
+
+    const out = promoteUsedMedia(ctx, ['https://blog.example.com/content/a.png'], 'https://blog/p/');
+    expect(out.promoted).toBe(0);
+    expect(out.problems).toHaveLength(1);
+    expect(out.problems[0]).toContain('shots');
+    expect(out.problems[0]).toContain('list_media_libraries');
+    expect(out.problems[0]).not.toMatch(/byline media/i);
+  });
+
   it('promotes nothing and throws nothing when no media was used', () => {
     const ctx = ctxWith();
     expect(promoteUsedMedia(ctx, ['https://blog/x.png'], 'https://blog/post/')).toEqual({
