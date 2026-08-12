@@ -63,6 +63,7 @@ src/
     init.ts                the setup wizard, first run and every re-run — composition only
     credentials.ts         the credential walk, with an injectable Prompter seam
     editor-config.ts       5 AI tools, JSON + Codex TOML merge, backup before write
+    media.ts               `byline media` — add, list, scan, status, release, remove
     status.ts doctor.ts migrate.ts reset.ts register.ts update.ts
     tree.ts                the shared output vocabulary (◆ ◇ ▲ ■ ●)
   tools/                   the 20 MCP tools — schemas and handlers
@@ -82,7 +83,8 @@ src/
     providers.ts           the provider FAMILIES the CLI walks — images, research
     registry.ts            the one place a plugin is wired in
   craft/                   brief.ts, score.ts, html-profile.ts — the writing logic
-  config/                  paths.ts, dotenv.ts, sites.ts, personas.ts, site-block.ts
+  config/                  paths.ts, dotenv.ts, sites.ts, personas.ts, site-block.ts,
+                            media-block.ts
   context.ts               loadContext() — assembles everything the tools need
   errors.ts                ToolError, and the ok()/error envelope
 ```
@@ -217,11 +219,24 @@ refused at load.
 
 **A reservation is made when the bytes reach the platform, and promoted when a post carries
 the hosted URL.** Both states count as used: the image is in the platform's media library
-either way. `release` exists to undo a reservation whose publish failed and **no tool or
-command reaches it in this release** — the remedy is editing the JSON, which
-`list_media_libraries` says out loud and names the file for. Enrichment (captions,
-keywords, `has_people`) and video upload are likewise not built, and every string that
-could imply otherwise says so.
+either way. `release` exists to undo a reservation whose publish failed; **no MCP tool
+calls it**, but `byline media release <id> --library <name>` (`src/cli/media.ts`) does,
+closing the gap recorded against Plan 1 — `release` shipped in 1.9.0 exported and tested,
+with nothing reaching it.
+
+**An unreachable library folder says nothing about its ledger.** The index and ledger live
+under byline's home, so a reservation held by a library on an unplugged drive is still
+readable, still countable, and still clearable. That is why `library.ts` has two resolvers:
+`resolveLibrary` hands back an unavailable library, and `getLibrary` is `resolveLibrary`
+plus the refusal, for callers that will actually read the folder. `release` and both status
+surfaces use the first; `find_media`, `use_media` and `scan` use the second. Routing
+`release` through `getLibrary` made `list_media_libraries`' own advice — clear it with
+`byline media release` — impossible to follow in the exact state that note describes, and
+`byline media status` skipping the ledger for an unavailable library made the CLI disagree
+with `reportLibrary` about what a library is. Without terminal access, `list_media_libraries` still reports
+the stale count and names the ledger file to edit by hand, as a fallback. Enrichment
+(captions, keywords, `has_people`) and video upload are still not built, and every string
+that could imply otherwise says so.
 
 **Video is embedded by URL, never uploaded — that goal was dropped entirely.**
 `embed_video` (`src/media/embed.ts`) turns a YouTube, Vimeo, or Bunny Stream URL into
@@ -283,6 +298,12 @@ copy is how they would drift.
 > with a WordPress one, overwrote its credential, and moved `default_site`, with no
 > warning and no way back through the tool. Both writers now enforce the same
 > `SLUG_PATTERN` from `src/config/sites.ts`, for the same reason.
+
+`src/config/media-block.ts` is the single writer of a `media.libraries` entry, for the
+same reason `site-block.ts` is the single writer of a site block: two hand-maintained
+copies of "how a block gets written" is exactly how `init` and `add_site` drifted above,
+and that drift once silently replaced a Ghost site with a WordPress one. `byline media
+add`/`remove` (`src/cli/media.ts`) are its only two callers.
 
 ---
 

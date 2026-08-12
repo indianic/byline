@@ -199,7 +199,7 @@ describe('listMediaLibraries when something is broken', () => {
     expect(out.libraries[0]!.stale_reservations).toBeUndefined();
   });
 
-  it('says how to clear a stale reservation, since no tool can', async () => {
+  it('says how to clear a stale reservation, since no MCP tool can', async () => {
     const ctx = ctxWith(['a.png']);
     await listMediaLibraries(ctx, { scan: true });
     const file = writeStaleReservation(ctx, 'shots');
@@ -232,9 +232,10 @@ describe('findMedia', () => {
 
   // The enrichment note fires on 100% of responses in this release, because
   // nothing in src/ can write an `enriched` block yet. It must therefore not
-  // send every user to a command that does not exist: `byline media enrich`
-  // (and `scan`, and `status`) are Plan 2, and `src/cli/main.ts` answers all
-  // three with "Unknown command: media".
+  // send every user to a command that does not exist: `byline media add`,
+  // `list`, `scan`, `status`, `release`, and `remove` all now exist
+  // (src/cli/media.ts), but `byline media enrich` does not — enrichment
+  // itself is still unbuilt, and this note is about enrichment specifically.
   it('does not tell the user to run a byline media subcommand that does not exist', async () => {
     const ctx = ctxWith(['a.png']);
     await listMediaLibraries(ctx, { scan: true });

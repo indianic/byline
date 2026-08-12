@@ -59,7 +59,7 @@ describe('runCli', () => {
 
   it('names every command in help', async () => {
     await runCli(['help']);
-    for (const name of ['init', 'status', 'doctor', 'register', 'migrate', 'reset', 'update']) {
+    for (const name of ['init', 'status', 'doctor', 'media', 'register', 'migrate', 'reset', 'update']) {
       expect(output()).toContain(name);
     }
   });

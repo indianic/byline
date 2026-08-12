@@ -515,12 +515,26 @@ published twice.** Nothing is generated, nothing is uploaded to a third party, a
 **never writes inside your library folder** — the index and the usage record live under
 `~/.byline/media/`.
 
-There is no `byline media` command. Libraries are configured in `config.yaml` and driven
-from your AI tool through three MCP tools.
+### Adding a library
 
-### Configuring a library
+```
+byline media add ~/Pictures/blog
+```
 
-Add a `media:` block to `~/.byline/config.yaml`:
+This adds the folder to `config.yaml`, derives a library name from the folder's own name
+(override with `--name`), and scans it immediately — one command, and the library is
+searchable right away. `byline media` also has `list`, `scan`, `status`, `release`, and
+`remove`; every flag is documented in [`docs/CLI.md`](docs/CLI.md#byline-media).
+
+**Restart your AI tool afterward.** `loadContext()` reads `config.yaml` once, at MCP
+server startup — a library added from a terminal is invisible to an already-running
+server until you restart the AI tool talking to it.
+
+### Configuring a library by hand
+
+`byline media add` writes the same `media:` block shown below, so editing it directly is
+still a supported path — for a field the command does not expose (`index_path`,
+`reuse_scope`), or if you would rather edit YAML than run a command:
 
 ```yaml
 media:
@@ -540,7 +554,7 @@ media:
 | `name` | How you refer to the library. Same rules as a site slug: lowercase letters, digits, hyphens. |
 | `path` | The folder to index. `~` is expanded. Must exist and be a directory, or the library is reported as unavailable and the others keep working. |
 | `recursive` | Walk sub-folders. Defaults to `true`. |
-| `index_path` | Where the derived index and the usage record are written. Defaults to `~/.byline/media/`. It may **not** be inside the library folder — that is refused, so Byline never writes into your photos. |
+| `index_path` | Where the derived index and the usage record are written. Defaults to `~/.byline/media/`. Set it with `byline media add --index-path <folder>`. It may **not** be inside the library folder — that is refused both when it is written and when it is read, so Byline never writes into your photos. |
 | `default_library` | Which library is used when a tool call does not name one. With exactly one library you never need it. |
 | `reuse_scope` | `site` (default) — a photo used on one blog is still free for another. `global` — used once, ever, anywhere. |
 
@@ -553,7 +567,9 @@ results.
 
 - **`list_media_libraries`** — what is configured, how many assets each library holds, and
   when it was last scanned. Pass `scan: true` to walk the folder and build the index; **that
-  is how a new or changed library becomes searchable**, and it is the only way to scan.
+  is how a new or changed library becomes searchable from inside your AI tool**.
+  `byline media scan` does the same thing from a terminal, and `byline media add` scans the
+  folder it has just added.
 - **`find_media`** — search by keyword and get ranked candidates back, each with a `why`
   naming the tokens that matched, so you can judge the match rather than trust a score.
   Already-used assets are excluded by default.
@@ -590,10 +606,11 @@ Stated plainly, because a promise is worse than a missing feature:
   well; `IMG_4821.jpg` inside `Camera Roll/` does not.
 - **No video upload.** Videos are indexed and searchable so you can see what you have, and
   `use_media` refuses to upload one — the upload path handles images only.
-- **No way to cancel a reservation from a tool.** If `use_media` succeeds and the post then
-  fails to publish, that asset stays reserved. `list_media_libraries` reports the count and
-  names the file; clearing one means editing that JSON by hand.
-- **No CLI command.** Everything above happens through your AI tool.
+- **No way to cancel a reservation from an MCP tool.** If `use_media` succeeds and the post
+  then fails to publish, that asset stays reserved — no tool clears one. From a terminal,
+  `byline media release <id>` does (see [`docs/CLI.md`](docs/CLI.md#byline-media));
+  without terminal access, `list_media_libraries` still reports the count and names the
+  ledger file to edit by hand.
 
 The usage record is **not recoverable** if you delete it, which is why it is kept in a
 separate file from the index (`<name>.usage.json` beside `<name>.index.json`) — a rescan

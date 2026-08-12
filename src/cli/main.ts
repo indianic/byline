@@ -1,16 +1,16 @@
 import { intro, outro } from '@clack/prompts';
-import { detail, fail, info, section } from './tree.js';
+import { detail, fail, info, renderFailure, section } from './tree.js';
 import { runInit } from './init.js';
 import { runRegister } from './register.js';
 import { runStatus } from './status.js';
 import { runDoctor } from './doctor.js';
+import { runMedia } from './media.js';
 import { runMigrate } from './migrate.js';
 import { runReset } from './reset.js';
 import { runUpdate } from './update.js';
 import { getPackageVersion } from '../version.js';
 import { resolvePaths } from '../config/paths.js';
 import { updateCheckDisabled, updateNotice } from './update-check.js';
-import { ToolError } from '../errors.js';
 
 type CommandHandler = (args: string[]) => Promise<void>;
 
@@ -29,6 +29,7 @@ const COMMANDS: Record<string, CommandEntry> = {
   init: { handler: runInit, summary: 'First-run wizard: register your AI tools and add your first blog' },
   status: { handler: runStatus, summary: 'What is configured right now, and where each file lives' },
   doctor: { handler: runDoctor, summary: 'Probe every configured API and print a fix per failure' },
+  media: { handler: runMedia, summary: 'Manage local photo libraries (add, list, scan, status, release, remove)' },
   register: { handler: runRegister, summary: 'Register with AI tools (--tools <a,b|all> [--scope], -i, or bare to print the command)' },
   migrate: { handler: runMigrate, summary: 'Copy a repo-local config into ~/.byline/' },
   reset: { handler: runReset, summary: 'Wipe ~/.byline/ (--yes required)' },
@@ -176,30 +177,13 @@ async function announceUpdate(command: string): Promise<void> {
  * experience this CLI exists to spare a non-technical user from: it is meant
  * to get someone set up, not teach them to read `mkdirSync` internals.
  *
- * A thrown `ToolError`'s `hint` is rendered — that field exists specifically
- * to tell the user what to do next, and dropping it here would discard the
- * most useful part of the error. For anything else, only the message is shown
- * by default: the stack is real diagnostic value for whoever debugs the
- * underlying bug, but noise for someone who just wants their setup fixed.
- * Rather than deleting that value, it is gated behind `BYLINE_DEBUG` (set
- * to anything truthy) so it is one re-run away, never silently gone.
+ * The rendering itself is `renderFailure` in `tree.js` — shared with
+ * `runMedia`'s own catch, which needs the same message/hint/stack treatment
+ * under a different closing line. What this function adds is the framing only:
+ * the outro that says the whole command fell over, and the non-zero exit code.
  */
 export function reportUnexpectedFailure(err: unknown): void {
-  if (err instanceof ToolError) {
-    fail(err.message);
-    if (err.hint) info(err.hint);
-  } else {
-    const message = err instanceof Error ? err.message : String(err);
-    fail(`Unexpected error: ${message}`);
-  }
-
-  if (process.env.BYLINE_DEBUG) {
-    const stack = err instanceof Error ? err.stack : undefined;
-    if (stack) detail(stack);
-  } else {
-    info('Set BYLINE_DEBUG=1 and re-run for the full stack trace.');
-  }
-
+  renderFailure(err);
   outro('byline hit an unexpected error.');
   process.exitCode = 1;
 }

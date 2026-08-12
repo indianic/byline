@@ -3,7 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ToolError } from '../../src/errors.js';
-import { getLibrary, indexFileFor, ledgerFileFor, loadMedia } from '../../src/media/library.js';
+import {
+  getLibrary,
+  indexFileFor,
+  isPathInside,
+  ledgerFileFor,
+  loadMedia,
+  resolveLibrary,
+} from '../../src/media/library.js';
 
 // Lets one test force `statSync` to throw for a specific path, simulating a
 // directory that vanishes between the `existsSync` check and the `statSync`
@@ -268,6 +275,40 @@ describe('getLibrary', () => {
       {},
     );
     expect(cfg.problems).toEqual([]);
+  });
+
+  // Exported because `addLibraryToConfig` refuses an index_path inside the
+  // library at WRITE time using this same function. A second hand-written copy
+  // there would have been free to drift into a string-prefix check.
+  it('isPathInside separates nesting from a shared name prefix', () => {
+    expect(isPathInside('/media/shots/idx', '/media/shots')).toBe(true);
+    expect(isPathInside('/media/shots', '/media/shots')).toBe(true);
+    expect(isPathInside('/media/shots-backup', '/media/shots')).toBe(false);
+    expect(isPathInside('/media/other', '/media/shots')).toBe(false);
+  });
+
+  it('resolveLibrary HANDS BACK an unavailable library instead of throwing', () => {
+    const cfg = loadMedia(
+      fixture('media:\n  libraries:\n    - name: shots\n      path: /nope\n'),
+      {},
+    );
+    // Nothing about clearing a stuck reservation needs the library folder: the
+    // ledger lives under byline's home. `byline media release` resolves through
+    // here so the advice `list_media_libraries` prints for an unavailable
+    // library is actually followable.
+    const lib = resolveLibrary(cfg, 'shots');
+    expect(lib.name).toBe('shots');
+    expect(lib.unavailable).toMatch(/does not exist/i);
+  });
+
+  it('resolveLibrary still refuses a name that is not configured at all', () => {
+    const cfg = loadMedia(fixture('media:\n  libraries: []\n'), {});
+    try {
+      resolveLibrary(cfg, 'shots');
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect((e as ToolError).code).toBe('LIBRARY_NOT_FOUND');
+    }
   });
 
   it('throws when a library exists but is unavailable', () => {
