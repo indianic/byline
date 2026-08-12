@@ -7,6 +7,32 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`byline media`** — add, list, scan, status, release, and remove a local photo library
+  from a terminal (`src/cli/media.ts`). 1.9.0 shipped the media library itself but not a
+  way to adopt one without hand-editing `~/.byline/config.yaml` and restarting the MCP
+  server: drafting a real article on 2026-08-12 abandoned the library mid-flow for exactly
+  that reason, falling back to `upload_image` with a local path instead. `byline media add
+  <folder>` now does the config write and the first scan in one command, deriving a
+  library name from the folder itself unless `--name` says otherwise. `add` and `remove`
+  — the two subcommands that touch `config.yaml` — print a restart notice rather than
+  imply the change reaches an already-running server: `loadContext()` still reads config
+  only at startup, and this closes the config-editing gap, not that one.
+- **`src/config/media-block.ts`**, the one writer of a `media.libraries` entry —
+  `byline media add`/`remove`'s only shared dependency, and sibling to `site-block.ts` for
+  the same reason: two hand-maintained copies of "how a block gets written" is how `init`
+  and `add_site` drifted and silently replaced a Ghost site with a WordPress one.
+
+### Fixed
+
+- **`release` shipped in 1.9.0 exported, tested, and unreachable** — a reservation stuck
+  by a failed publish could only be cleared by hand-editing the ledger JSON, and every
+  doc comment and the `stale_reservations_note` string `list_media_libraries` returns said
+  so explicitly. `byline media release <id> --library <name>` reaches it now. Those
+  strings, and the same claim in `README.md` and `CONTEXT.md`, now point at the command
+  first and keep hand-editing documented as the fallback for a caller with no terminal.
+
 ## [1.9.0] - 2026-08-12
 
 ### Added
