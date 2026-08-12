@@ -222,7 +222,18 @@ the hosted URL.** Both states count as used: the image is in the platform's medi
 either way. `release` exists to undo a reservation whose publish failed; **no MCP tool
 calls it**, but `byline media release <id> --library <name>` (`src/cli/media.ts`) does,
 closing the gap recorded against Plan 1 — `release` shipped in 1.9.0 exported and tested,
-with nothing reaching it. Without terminal access, `list_media_libraries` still reports
+with nothing reaching it.
+
+**An unreachable library folder says nothing about its ledger.** The index and ledger live
+under byline's home, so a reservation held by a library on an unplugged drive is still
+readable, still countable, and still clearable. That is why `library.ts` has two resolvers:
+`resolveLibrary` hands back an unavailable library, and `getLibrary` is `resolveLibrary`
+plus the refusal, for callers that will actually read the folder. `release` and both status
+surfaces use the first; `find_media`, `use_media` and `scan` use the second. Routing
+`release` through `getLibrary` made `list_media_libraries`' own advice — clear it with
+`byline media release` — impossible to follow in the exact state that note describes, and
+`byline media status` skipping the ledger for an unavailable library made the CLI disagree
+with `reportLibrary` about what a library is. Without terminal access, `list_media_libraries` still reports
 the stale count and names the ledger file to edit by hand, as a fallback. Enrichment
 (captions, keywords, `has_people`) and video upload are still not built, and every string
 that could imply otherwise says so.

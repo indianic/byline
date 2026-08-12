@@ -19,6 +19,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   — the two subcommands that touch `config.yaml` — print a restart notice rather than
   imply the change reaches an already-running server: `loadContext()` still reads config
   only at startup, and this closes the config-editing gap, not that one.
+- **`byline media add --index-path <folder>`** — put a library's derived index and its
+  usage ledger somewhere other than `<byline home>/media/` without hand-editing
+  `config.yaml`. `LibraryEntry.indexPath` existed and was written, and no caller ever set
+  it; the flag is what makes the config field reachable from the command line, and it is
+  refused when it resolves inside the library folder, at write time as well as at read
+  time, so the command cannot create a config the next command calls broken.
 - **`src/config/media-block.ts`**, the one writer of a `media.libraries` entry —
   `byline media add`/`remove`'s only shared dependency, and sibling to `site-block.ts` for
   the same reason: two hand-maintained copies of "how a block gets written" is how `init`
@@ -32,6 +38,65 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   so explicitly. `byline media release <id> --library <name>` reaches it now. Those
   strings, and the same claim in `README.md` and `CONTEXT.md`, now point at the command
   first and keep hand-editing documented as the fallback for a caller with no terminal.
+- **`byline media release` refused the one library the note tells you to run it on.** The
+  `stale_reservations_note` `list_media_libraries` returns says to clear a reservation with
+  `byline media release <id> --library <name>`; for an UNAVAILABLE library — the case where
+  a stuck reservation matters most — the command threw `LIBRARY_UNAVAILABLE` and did
+  nothing. Nothing about clearing a reservation needs the library folder: the ledger lives
+  under byline's home. `runRelease` now resolves through a new `resolveLibrary`, which
+  hands back an unavailable library instead of refusing it, and reports the unavailability
+  rather than hiding it. `getLibrary` is unchanged for every caller that reads the folder.
+- **`byline media status` hid stale reservations for an unavailable library**, skipping the
+  ledger read entirely — the one place the CLI disagreed with `reportLibrary` in
+  `src/tools/media-tools.ts`, which reads it deliberately because "a reservation on an
+  unmounted drive is exactly the case where a hardcoded zero hides an asset that is still
+  held". `docs/CLI.md` promised the count with no caveat. Both now read the ledger under
+  the same guard, and omit the count with a reason when the ledger's own folder is
+  unreachable too.
+- **`byline media add` could write `config.yaml` and then report the whole command as a
+  failure.** The config write happens before the first scan; an unwritable
+  `~/.byline/media` produced an EACCES, exit 1, "media command failed" and no restart
+  notice — while the library sat in `config.yaml`, so the obvious retry was refused with
+  `LIBRARY_EXISTS` pointing at `remove`. The scan is now its own try/catch: the write is
+  reported, the restart notice still prints, the error is named, and the message points at
+  `byline media scan <name>` to finish.
+- **`byline media scan` exited 0 while reporting a failure.** `byline media scan nosuchlib`
+  printed the error and then "Scan complete.", which no script could tell from success. It
+  now sets exit code 1 and the closing line says how many libraries failed, matching
+  `doctor`'s signal. Per-library isolation for a bare `scan` is unchanged.
+- **`scan`'s "unchanged" column counted paths, not assets.** `scanLibrary` treats a file as
+  unchanged only when size AND mtime match; the CLI compared paths, so appending bytes to a
+  file — which changes its content-hash id and detaches it from its ledger record — was
+  reported as `unchanged`. The one command that would reveal the detachment said nothing
+  had happened. Counted by id now, with a `changed` column of its own.
+- **`byline media remove` announced success unconditionally**, discarding
+  `removeLibraryFromConfig`'s boolean. It now reports what actually happened.
+- **`remove` destroyed every comment in `config.yaml`.** `media.set('libraries', kept)`
+  replaced the sequence node with a plain array built from `toJSON()`. The file's own header
+  claims a hand-edited config survives the write — true for `add`, false for `remove`.
+  Matching items are now deleted from the sequence in place.
+- **`release` claimed the asset was "free for `use_media` again" unconditionally.** It
+  clears `reserved` records only, so a surviving `published` record for the same id under
+  `reuse_scope: global` leaves `use_media` still refusing it. The message is now conditional
+  on what `isUsed` says after the write, and names the site(s) the cleared reservations
+  belonged to.
+- **An unrecognised `byline media` flag was silently ignored** — `--defualt` exited 0
+  having done nothing, while `main.ts` offers levenshtein suggestions for a mistyped
+  command. Each subcommand now declares its flags beside its usage line, and an unknown
+  flag (or a value-taking flag with no value) is refused by name, exit 1, nothing written.
+- **Two hand-copies of the CLI's error rendering**, in `main.ts` and `media.ts`, had already
+  drifted. Extracted to `renderFailure` in `src/cli/tree.ts`, which also removes the
+  `main.ts` ↔ `media.ts` import cycle that forced the copy.
+- **`add`'s "Run `byline init` first" hint could be given to someone who just did.**
+  `byline init` writes `config.yaml` from the add-a-blog path (`src/cli/init.ts`), so an
+  `init` that only registered AI tools leaves no config file. The hint now names adding a
+  blog.
+- **`README.md` still said `list_media_libraries` with `scan: true` "is the only way to
+  scan"** — false the moment this branch added `byline media scan`, and eight lines above
+  its own instruction to run `byline media add`.
+- **`docs/CLI.md` misquoted the binary** in two places: the unavailable-library line in the
+  `list` example, and `--yes` described as making `remove` a dry run without it (the dry run
+  exits 1). Both corrected against what the binary actually prints.
 
 ## [1.9.0] - 2026-08-12
 

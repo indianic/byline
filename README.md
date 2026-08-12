@@ -554,7 +554,7 @@ media:
 | `name` | How you refer to the library. Same rules as a site slug: lowercase letters, digits, hyphens. |
 | `path` | The folder to index. `~` is expanded. Must exist and be a directory, or the library is reported as unavailable and the others keep working. |
 | `recursive` | Walk sub-folders. Defaults to `true`. |
-| `index_path` | Where the derived index and the usage record are written. Defaults to `~/.byline/media/`. It may **not** be inside the library folder — that is refused, so Byline never writes into your photos. |
+| `index_path` | Where the derived index and the usage record are written. Defaults to `~/.byline/media/`. Set it with `byline media add --index-path <folder>`. It may **not** be inside the library folder — that is refused both when it is written and when it is read, so Byline never writes into your photos. |
 | `default_library` | Which library is used when a tool call does not name one. With exactly one library you never need it. |
 | `reuse_scope` | `site` (default) — a photo used on one blog is still free for another. `global` — used once, ever, anywhere. |
 
@@ -567,7 +567,9 @@ results.
 
 - **`list_media_libraries`** — what is configured, how many assets each library holds, and
   when it was last scanned. Pass `scan: true` to walk the folder and build the index; **that
-  is how a new or changed library becomes searchable**, and it is the only way to scan.
+  is how a new or changed library becomes searchable from inside your AI tool**.
+  `byline media scan` does the same thing from a terminal, and `byline media add` scans the
+  folder it has just added.
 - **`find_media`** — search by keyword and get ranked candidates back, each with a `why`
   naming the tokens that matched, so you can judge the match rather than trust a score.
   Already-used assets are excluded by default.

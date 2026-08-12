@@ -184,14 +184,29 @@ byline media <command> [...args]
 
 | Command | What it does |
 |---|---|
-| `add <folder> [--name <slug>] [--no-recursive] [--default]` | Add a library and scan it immediately |
+| `add <folder> [--name <slug>] [--index-path <folder>] [--no-recursive] [--default]` | Add a library and scan it immediately |
 | `list` | Every configured library, with asset counts |
 | `scan [<name>]` | Rescan a library (or every library) and report what changed |
 | `status` | Like `list`, plus index/ledger file locations and stale reservations |
 | `release <id> [--library <name>]` | Clear a reservation stuck by a failed publish |
 | `remove <name> [--yes]` | Forget a library (the folder itself is left alone) |
 
-Bare `byline media`, or an unrecognised subcommand, prints this list.
+Bare `byline media` prints this list and exits 0; an unrecognised subcommand prints it
+and exits 1.
+
+**An unrecognised flag is refused, by name.** Each subcommand accepts only the flags
+listed for it, and a flag that takes a value must be given one — `--defualt` used to exit
+0 having quietly not set the default:
+
+```
+┌  byline — media add
+■  Unrecognised flag: --defualt
+●  `byline media add` accepts: --name, --index-path, --no-recursive, --default.
+│
+└  Nothing done.
+```
+
+Exit code 1, and nothing is written.
 
 **Every write-through-config subcommand (`add`, `remove`) prints a restart notice.**
 `loadContext()` reads `config.yaml` once, at MCP server startup, so a library added or
@@ -205,12 +220,26 @@ AI tool:
 
 ### `byline media add <folder>`
 
-**Flags:** `--name <slug>` (override the derived name), `--no-recursive` (do not walk
-sub-folders), `--default` (make this library the default even if it is not the first one
-added).
+**Flags:** `--name <slug>` (override the derived name), `--index-path <folder>` (where the
+derived index and the usage ledger go, instead of `<byline home>/media/`), `--no-recursive`
+(do not walk sub-folders), `--default` (make this library the default even if it is not the
+first one added).
 
-Requires an existing `config.yaml` — run `byline init` first if none exists yet; `add`
-writes into that file, it does not create one from nothing.
+Requires an existing `config.yaml`; `add` writes into that file, it does not create one
+from nothing. If there is none, run `byline init` **and add a blog** — `config.yaml` is
+written by the add-a-blog step, so an `init` that only registered your AI tools leaves no
+config file behind.
+
+`--index-path` is refused when it resolves inside the library folder, because Byline never
+writes inside a library folder. That is checked here, at write time, as well as when the
+config is read — so this command cannot produce a config that the next command reports as
+broken:
+
+```
+┌  byline — media add
+■  /Users/you/Pictures/blog/idx is inside the library folder /Users/you/Pictures/blog; byline must never write inside a library folder.
+●  Point --index-path at a folder outside the library — the default, ~/.byline/media/, already is one.
+```
 
 The folder is resolved to an absolute path (`~` expanded, a relative path resolved
 against the current directory) before anything else runs, so the entry that lands in
@@ -247,6 +276,30 @@ Scans immediately — one command makes the folder usable, not two:
 └  Added "shots".
 ```
 
+**If that first scan fails, the library was still added** — the config write happens
+first, and nothing undoes it. Saying "media command failed" and stopping there sent the
+user straight into `LIBRARY_EXISTS` on the obvious retry, for a library they had just been
+told was not added. So the write is reported, the restart notice still prints, and the
+message names the command that finishes the job:
+
+```
+┌  byline — media add
+│
+◆  library "shots"
+│  /Users/you/Pictures/blog
+▲  "shots" is now the default library.
+◇  Added "shots" to config.yaml.
+■  The first scan did not finish: EACCES: permission denied, open '/Users/you/.byline/media/shots.index.json.tmp'
+●  The library IS configured — do not add it again. Once that is fixed, run `byline media scan shots` to build the index.
+▲  A running MCP server only reads config.yaml at startup, so this change is invisible
+   there until you restart your AI tool.
+│
+└  Added "shots" — not scanned yet.
+```
+
+Exit code 1 — the command did not finish what it set out to do — but the config entry
+stands.
+
 ### `byline media list`
 
 **Flags:** none.
@@ -262,7 +315,7 @@ silently dropped:
 ◇  shots   /Users/you/Pictures/blog
 │    42 assets (38 images, 4 videos), scanned 2026-08-12T08:19:19.541Z
 ■  archive
-│  /Volumes/Photos/2019 does not exist.
+│    Media library "archive" points at /Volumes/Photos/2019, which does not exist.
 │
 └  `byline media add <folder>` to add another.
 ```
@@ -275,20 +328,34 @@ to fix it.
 **Flags:** none.
 
 Rescans one named library, or every configured library when no name is given. Reports
-what changed since the previous scan — added, removed, and unchanged asset counts — not
-just a new total:
+what changed since the previous scan — not just a new total:
 
 ```
 ┌  byline — media scan
 │
 ◆  media scan
-◇  shots   3 added, 1 removed, 41 unchanged (44 total)
+◇  shots   3 added, 1 removed, 2 changed, 38 unchanged (44 total)
 │
 └  Scan complete.
 ```
 
+**"Changed" and "unchanged" are decided by asset id, not by path.** An asset's id is a
+hash of its bytes, so editing a file in place gives it a new id and detaches it from its
+ledger record, which is keyed by that id. Counting by path called that "unchanged" — the
+one command that would reveal the detachment reported that nothing had happened.
+
 Scanning every library at once does not stop at the first failure: one broken library is
-reported inline and the rest still scan.
+reported inline and the rest still scan. **The exit code is 1 if any library failed**, and
+the closing line says how many, so a script can tell a complete scan from a partial one:
+
+```
+┌  byline — media scan
+│
+◆  media scan
+■  nosuchlib: No media library named "nosuchlib". Configured: shots.
+│
+└  Scan failed for 1 of 1 library.
+```
 
 ### `byline media status`
 
@@ -314,6 +381,27 @@ afterward:
 └  `byline media release <id>` clears a reservation stuck by a failed publish.
 ```
 
+**A library whose folder is unreachable is still counted.** The ledger does not live
+inside the library folder — it is under `<byline home>/media/` (or the configured
+`index_path`) — so an unplugged drive is exactly the case where a reservation is still
+held and nothing else would say so. This is what `list_media_libraries` does too; the two
+must not disagree about what a library is:
+
+```
+◆  files and reservations
+│  archive   index: /Users/you/.byline/media/archive.index.json
+│            ledger: /Users/you/.byline/media/archive.usage.json
+▲  archive: 1 stale reservation(s) — run `byline media release <id> --library archive` to clear one.
+```
+
+Only when the ledger's own folder is unreachable as well is the count omitted — with the
+reason, never as a zero, because a fabricated zero is indistinguishable from "nothing is
+held":
+
+```
+▲  archive: the usage ledger at /nope/also-nowhere/archive.usage.json is not reachable either, so reservations cannot be counted.
+```
+
 ### `byline media release <id> [--library <name>]`
 
 **Flags:** `--library <name>` — which library's ledger to look in. Optional when exactly
@@ -322,15 +410,43 @@ libraries exist and neither applies, and `release` refuses rather than guessing 
 you meant.
 
 Clears a **reservation** — an asset `use_media` uploaded whose post then failed to
-publish — so the asset is free for `use_media` again. It does **not** touch a
-`published` record; releasing one would put a photograph that is genuinely live on a
-page back into the unused pool, so a request naming one is refused with no change made:
+publish. It does **not** touch a `published` record; releasing one would put a photograph
+that is genuinely live on a page back into the unused pool, so a request naming one is
+refused with no change made. The output names the site each cleared reservation belonged
+to:
 
 ```
 ┌  byline — media release
 │
 ◆  library "shots"
-◇  Released 1 reservation(s) for "a1b2c3". It is free for use_media again.
+◇  Released 1 reservation(s) for "a1b2c3" on personal.
+●  It is free for use_media again.
+│
+└  Done.
+```
+
+**Whether it is actually free again is answered, not assumed.** `release` clears
+`reserved` records only, so a surviving `published` record for the same asset still counts
+as used — under `reuse_scope: global` that means `use_media` will still refuse it, and the
+closing line says so rather than claiming otherwise:
+
+```
+◇  Released 1 reservation(s) for "a1b2c3" on work.
+●  It is still NOT free for use_media: reuse_scope is "global", and another record for "a1b2c3" survives in the ledger — a published record is never released this way.
+```
+
+**A library whose folder is unreachable can still be released from.** Nothing about
+clearing a reservation touches the library folder — the ledger is elsewhere — and
+`list_media_libraries` tells the user to run exactly this command for exactly that
+library. The unavailability is still reported, it is just not a refusal:
+
+```
+┌  byline — media release
+│
+◆  library "archive"
+▲  Media library "archive" points at /Volumes/Photos/2019, which does not exist. The usage ledger lives at /Users/you/.byline/media/archive.usage.json, outside that folder, so a reservation can still be cleared from here.
+◇  Released 1 reservation(s) for "a1b2c3" on personal.
+●  It is free for use_media again.
 │
 └  Done.
 ```
@@ -342,18 +458,23 @@ failing:
 ┌  byline — media release
 │
 ◆  library "shots"
-│  No reserved record for "a1b2c3" was found — nothing changed. A "published" record is
-│  never released this way; release only clears a reservation that never became a post.
+│  No reserved record for "a1b2c3" was found in /Users/you/.byline/media/shots.usage.json
+│  — nothing changed. A "published" record is never released this way; release only
+│  clears a reservation that never became a post.
 │
 └  Nothing released.
 ```
 
 ### `byline media remove <name> [--yes]`
 
-**Flags:** `--yes` — required to actually remove; without it this is a dry run that
-shows what would happen.
+**Flags:** `--yes` — required to actually remove. Without it, `remove` shows what would
+happen and then **refuses**: it prints the path, the "the folder is left alone" notice,
+and `■ Re-run with --yes to confirm. Nothing has been changed.`, exiting **1**. It is a
+confirmation prompt turned inside out, not a dry-run mode that succeeds.
 
-Forgets the `config.yaml` entry only. Byline never writes inside a library folder, and
+Forgets the `config.yaml` entry only. Comments elsewhere in the file survive the write —
+the entry's own node is deleted from the sequence in place, rather than the whole list
+being replaced. Byline never writes inside a library folder, and
 that includes deleting it — the folder and every file in it are left exactly where they
 were:
 
