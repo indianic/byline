@@ -1,4 +1,5 @@
 import pc from 'picocolors';
+import { ToolError } from '../errors.js';
 
 /**
  * The shared terminal-tree vocabulary every human-facing command renders
@@ -53,4 +54,39 @@ export function info(text: string): void {
 /** Plain data line — no icon, just the rail. Consecutive details touch. */
 export function detail(text: string): void {
   writeRow(BAR, text);
+}
+
+/**
+ * Render a caught error in this vocabulary: the message, a `ToolError`'s hint,
+ * and the stack only behind `BYLINE_DEBUG`.
+ *
+ * The ONE definition of that rendering, and it lives here rather than in
+ * `main.ts` because it has two callers with different framing.
+ * `reportUnexpectedFailure` (`main.ts`) is the top-level boundary and adds its
+ * own `outro` and exit code; `runMedia` (`media.ts`) catches inside a command
+ * that has already opened its own `intro`, so it supplies its own closing line.
+ * They were two hand-copies before, and they had already drifted — which is
+ * exactly what `one rule, one definition` exists to stop. Putting it here also
+ * keeps `media.ts` from importing `main.ts`, which imports `media.ts`.
+ *
+ * A `ToolError`'s `hint` is always rendered: that field exists to say what to
+ * do next, and dropping it discards the most useful part of the error. The
+ * stack is not discarded either — it is one `BYLINE_DEBUG=1` re-run away, so a
+ * non-technical user is never shown `mkdirSync` internals and a developer never
+ * loses them.
+ */
+export function renderFailure(err: unknown): void {
+  if (err instanceof ToolError) {
+    fail(err.message);
+    if (err.hint) info(err.hint);
+  } else {
+    fail(`Unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (process.env.BYLINE_DEBUG) {
+    const stack = err instanceof Error ? err.stack : undefined;
+    if (stack) detail(stack);
+  } else {
+    info('Set BYLINE_DEBUG=1 and re-run for the full stack trace.');
+  }
 }

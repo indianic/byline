@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { attention, check, detail, fail, info, section } from '../../src/cli/tree.js';
+import { attention, check, detail, fail, info, renderFailure, section } from '../../src/cli/tree.js';
+import { ToolError } from '../../src/errors.js';
 
 let written: string[];
 
@@ -58,5 +59,44 @@ describe('tree', () => {
     expect(lines).toHaveLength(3);
     expect(lines[1]).toContain('│  second');
     expect(lines[2]).toContain('│  third');
+  });
+});
+
+// The one definition of how a caught error is rendered, shared by main.ts's
+// top-level boundary and runMedia's own catch. They were two hand-copies that
+// had already drifted.
+describe('renderFailure', () => {
+  const savedDebug = process.env.BYLINE_DEBUG;
+  afterEach(() => {
+    // Restore per key — never `process.env = { ...saved }`.
+    if (savedDebug === undefined) delete process.env.BYLINE_DEBUG;
+    else process.env.BYLINE_DEBUG = savedDebug;
+  });
+
+  it("renders a ToolError's message AND its hint", () => {
+    delete process.env.BYLINE_DEBUG;
+    renderFailure(
+      new ToolError({ api: 'media', code: 'NOPE', message: 'It went wrong.', hint: 'Do this instead.' }),
+    );
+    expect(output()).toContain('■  It went wrong.');
+    expect(output()).toContain('●  Do this instead.');
+  });
+
+  it('hides the stack behind BYLINE_DEBUG rather than discarding it', () => {
+    delete process.env.BYLINE_DEBUG;
+    renderFailure(new Error('boom'));
+    expect(output()).toContain('■  Unexpected error: boom');
+    expect(output()).not.toMatch(/at Object\.|node:internal/);
+    expect(output()).toContain('BYLINE_DEBUG=1');
+  });
+
+  it('prints the stack when BYLINE_DEBUG is set', () => {
+    process.env.BYLINE_DEBUG = '1';
+    renderFailure(new Error('boom'));
+    // The rail prefixes every continuation line, so the stack arrives as
+    // `│  Error: boom` followed by `│      at …`.
+    expect(output()).toContain('│  Error: boom');
+    expect(output()).toMatch(/│\s+at /);
+    expect(output()).not.toContain('BYLINE_DEBUG=1');
   });
 });

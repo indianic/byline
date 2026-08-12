@@ -1,5 +1,5 @@
 import { intro, outro } from '@clack/prompts';
-import { detail, fail, info, section } from './tree.js';
+import { detail, fail, info, renderFailure, section } from './tree.js';
 import { runInit } from './init.js';
 import { runRegister } from './register.js';
 import { runStatus } from './status.js';
@@ -11,7 +11,6 @@ import { runUpdate } from './update.js';
 import { getPackageVersion } from '../version.js';
 import { resolvePaths } from '../config/paths.js';
 import { updateCheckDisabled, updateNotice } from './update-check.js';
-import { ToolError } from '../errors.js';
 
 type CommandHandler = (args: string[]) => Promise<void>;
 
@@ -178,30 +177,13 @@ async function announceUpdate(command: string): Promise<void> {
  * experience this CLI exists to spare a non-technical user from: it is meant
  * to get someone set up, not teach them to read `mkdirSync` internals.
  *
- * A thrown `ToolError`'s `hint` is rendered — that field exists specifically
- * to tell the user what to do next, and dropping it here would discard the
- * most useful part of the error. For anything else, only the message is shown
- * by default: the stack is real diagnostic value for whoever debugs the
- * underlying bug, but noise for someone who just wants their setup fixed.
- * Rather than deleting that value, it is gated behind `BYLINE_DEBUG` (set
- * to anything truthy) so it is one re-run away, never silently gone.
+ * The rendering itself is `renderFailure` in `tree.js` — shared with
+ * `runMedia`'s own catch, which needs the same message/hint/stack treatment
+ * under a different closing line. What this function adds is the framing only:
+ * the outro that says the whole command fell over, and the non-zero exit code.
  */
 export function reportUnexpectedFailure(err: unknown): void {
-  if (err instanceof ToolError) {
-    fail(err.message);
-    if (err.hint) info(err.hint);
-  } else {
-    const message = err instanceof Error ? err.message : String(err);
-    fail(`Unexpected error: ${message}`);
-  }
-
-  if (process.env.BYLINE_DEBUG) {
-    const stack = err instanceof Error ? err.stack : undefined;
-    if (stack) detail(stack);
-  } else {
-    info('Set BYLINE_DEBUG=1 and re-run for the full stack trace.');
-  }
-
+  renderFailure(err);
   outro('byline hit an unexpected error.');
   process.exitCode = 1;
 }
