@@ -5,25 +5,9 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.10.0] - 2026-08-12
-
-- docs: correct three claims this branch made false, and one it inherited
-- fix(cli): make `byline media` tell the truth about what it just did
-- fix(config): stop `remove` destroying comments, and make index_path writable
-- fix(media): resolve a library without requiring its folder to be reachable
-- refactor(cli): one definition of how a caught error is rendered
-- docs: update passing-test floor to 1228
-- docs: correct stale release-is-unreachable claims in CONTEXT and CHANGELOG
-- docs: document byline media, and stop pointing users at hand-editing the YAML
-- fix(media): stop telling users release is unreachable now that it isn't
-- feat(cli): byline media — add, list, scan, status, release, remove
-- test: add error-path tests for media-block config validation
-- feat(config): single writer for a media library block
-- docs(plan): media library CLI (Plan 2A)
-- docs(ghost): record the 191-character feature_image_alt cap
-- docs: fold npmnic's stub into the real 1.9.0 entry
-
 ## [Unreleased]
+
+## [1.10.0] - 2026-08-12
 
 ### Added
 
