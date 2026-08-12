@@ -7,6 +7,69 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A local media library.** Point Byline at a folder of your own photographs —
+  `media:` in `config.yaml` — and three new tools put them to work:
+  `list_media_libraries` (counts, scan status, how many are unused),
+  `find_media` (deterministic keyword search over filenames and folders,
+  ranked, with a `why` naming what matched each hit), and `use_media` (uploads
+  the ones you pick and records them as used). No embeddings, no network in the
+  ranking, and Byline never writes inside your library folder — the index and
+  usage ledger live under `~/.byline/media/`. See the README's "Your own
+  photos" section.
+- **A usage ledger, not just an index.** An asset is *used* from the moment its
+  bytes reach the platform (`reserve`), and *published* once a post carries the
+  hosted URL (`promote`) — both count as used, because a reservation means the
+  photo is already sitting in the platform's own media library. `use_media`
+  refuses to re-upload something the ledger says is already used, names where
+  it went, and does not fail the rest of the batch; `allow_reuse: true`
+  overrides it deliberately. `isUsed` is the one definition of used/not-used —
+  `find_media`'s exclusion, `list_media_libraries`' `unused` count, and
+  `use_media`'s refusal all call it, after an early version of `use_media`
+  wrote the ledger without ever reading it and handed an already-published
+  photo straight back to be uploaded a second time, reported as a success.
+  `reuse_scope` is `site` (default — a photo used on one blog is still free
+  for another) or `global` (used once, ever, anywhere).
+- Verified on a live Ghost install (2026-08-12): an uploaded image's URL
+  survives a create-post / read-back round trip byte for byte, in both the
+  rendered `<img src>` and `feature_image`, and the reservation promotes
+  correctly. **WordPress promotion is UNVERIFIED** — no equivalent probe has
+  run there, and `promote()`'s exact-string-equality match is structurally
+  incapable of catching a platform that rewrites the uploaded URL.
+- Enrichment (captions, keywords, `has_people`), video upload, and a way to
+  release a stale reservation from a tool are explicitly **not** built in this
+  release, and every string that could imply otherwise says so instead —
+  `list_media_libraries` names the ledger file to edit by hand.
+- **`embed_video`.** Video upload was dropped as a goal entirely; instead,
+  `embed_video` turns a YouTube, Vimeo, or Bunny Stream URL into ready-to-paste
+  `<iframe>` embed HTML. It normalises whatever form was pasted — a
+  `watch?v=` link does not work inside an `<iframe>`; `/embed/ID` does — and
+  refuses anything that is not one of the three supported providers, rather
+  than passing an unrecognised URL through as an escape hatch. Verified by
+  live probe on 2026-08-12: Ghost and WordPress (for an account holding the
+  `unfiltered_html` capability) both keep the `<iframe>` and its
+  `<figure>`/`<figcaption>` wrapper unchanged on ingest — Ghost additionally
+  wraps it in its own `kg-embed-card` figure. A plain `<video>` tag is a
+  separate, worse option: Ghost strips it completely, with nothing surviving;
+  WordPress keeps it, for the same account. **For a WordPress account WITHOUT
+  `unfiltered_html`, whether the `<iframe>` survives is UNVERIFIED** — no such
+  account has ever been available to probe; pass `site` naming the WordPress
+  site and `embed_video` adds that caveat to its `warnings` rather than
+  guessing either way.
+
+### Fixed
+
+- **`score_draft`'s BLOCKING `platform_html` check rejected the `<iframe>`
+  `embed_video` itself produces**, for Ghost, reporting "disallowed tag
+  <iframe>" — `iframe` was simply absent from `GHOST_HTML_PROFILE.preserved`.
+  Found by running the scorer directly against the measured markup, not by a
+  mocked test: our own gate was about to block a feature the platform
+  supports. `iframe` is now in Ghost's preserved set and in WordPress's
+  permissive one — deliberately not its restrictive one, which stays
+  UNVERIFIED for `iframe` the same way it does for everything else no
+  non-`unfiltered_html` account has ever been available to probe.
+
 ## [1.8.0] - 2026-08-10
 
 The theme of this release is that the gates were right and the *reporting* was wrong.

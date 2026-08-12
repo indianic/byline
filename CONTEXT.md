@@ -65,7 +65,7 @@ src/
     editor-config.ts       5 AI tools, JSON + Codex TOML merge, backup before write
     status.ts doctor.ts migrate.ts reset.ts register.ts update.ts
     tree.ts                the shared output vocabulary (◆ ◇ ▲ ■ ●)
-  tools/                   the 19 MCP tools — schemas and handlers
+  tools/                   the 20 MCP tools — schemas and handlers
   media/                   the local media library: a user's own folder of photographs
     types.ts               Asset, MediaIndex, UsageLedger, LibraryConfig — the shapes
     library.ts             the `media:` config block, and where the index and ledger live
@@ -73,6 +73,8 @@ src/
     search.ts              deterministic keyword ranking; no embeddings, no network
     store.ts               atomic reads and writes for both files
     ledger.ts              isUsed / reserve / promote / release — what "used" means
+    embed.ts               URL -> <iframe> embed HTML for YouTube/Vimeo/Bunny Stream; pure,
+                            no network, no fs — video is embedded by URL, never uploaded
   plugins/
     platforms/             ghost/ and wordpress/, each a self-contained folder
     images/                gemini/ and grok/, with fallback
@@ -220,6 +222,16 @@ command reaches it in this release** — the remedy is editing the JSON, which
 `list_media_libraries` says out loud and names the file for. Enrichment (captions,
 keywords, `has_people`) and video upload are likewise not built, and every string that
 could imply otherwise says so.
+
+**Video is embedded by URL, never uploaded — that goal was dropped entirely.**
+`embed_video` (`src/media/embed.ts`) turns a YouTube, Vimeo, or Bunny Stream URL into
+`<iframe>` embed HTML; it touches no library, no ledger, and no adapter. Verified by live
+probe 2026-08-12: Ghost and WordPress (for an account holding `unfiltered_html`) both keep
+an `<iframe>` on ingest, while a `<video src>` tag is stripped completely on Ghost — the
+reason `iframe` was added to `GHOST_HTML_PROFILE.preserved` and to WordPress's permissive
+`PERMISSIVE_PRESERVED`, and deliberately NOT to WordPress's restrictive set, which stays
+UNVERIFIED for `iframe` the same way it does for everything else no non-`unfiltered_html`
+account has ever been available to probe.
 
 ### `HtmlProfile`
 

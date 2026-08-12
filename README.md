@@ -601,6 +601,39 @@ rewrites the index and never touches it.
 
 ---
 
+## Video (optional)
+
+Byline does not upload video — that was dropped as a goal entirely. Instead, `embed_video`
+turns a YouTube, Vimeo, or Bunny Stream URL into the `<iframe>` HTML for an article:
+
+```
+Embed https://youtu.be/dQw4w9WgXcQ in the post, captioned "Watch the full talk".
+```
+
+It normalises whatever form you paste — a `watch?v=` link does not work inside an
+`<iframe>`; `/embed/ID` does — and refuses anything that is not one of the three
+supported providers rather than passing an unrecognised URL through as-is:
+
+| Provider | Accepted forms |
+|---|---|
+| YouTube | `youtube.com/watch?v=ID`, `youtu.be/ID`, `youtube.com/shorts/ID`, `youtube.com/embed/ID` (with or without `www.`/`m.`; a `t=`/`start=` value is preserved) |
+| Vimeo | `vimeo.com/ID`, `vimeo.com/channels/NAME/ID`, `player.vimeo.com/video/ID` |
+| Bunny Stream | `iframe.mediadelivery.net/embed/LIBRARY/GUID` or `/play/LIBRARY/GUID` |
+
+Verified by live probe on 2026-08-12: both Ghost and WordPress (for an account holding the
+`unfiltered_html` capability) keep the `<iframe>` and its `<figure>`/`<figcaption>` wrapper
+unchanged on ingest — Ghost additionally wraps it in its own `kg-embed-card` figure. A
+plain `<video>` tag is a separate, worse option: **Ghost strips it completely**, with
+nothing surviving; WordPress keeps it, for the same account.
+
+**For a WordPress account WITHOUT `unfiltered_html`, whether the `<iframe>` survives is
+UNVERIFIED** — WordPress's KSES filter is documented to strip `<iframe>` for such an
+account, but no probe has confirmed it, because no such account has ever been available.
+Pass `site` naming the WordPress site and `embed_video` adds that caveat to its
+`warnings`; it does not change the HTML produced.
+
+---
+
 ## Using it
 
 Talk to your AI tool in plain English. It figures out which tool to call.
