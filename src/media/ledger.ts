@@ -6,8 +6,14 @@ import type { UsageLedger, UsageRecord } from './types.js';
  * Both `reserved` and `published` count. A reservation means the bytes are
  * already on the platform, so serving the asset again would put the same
  * photograph in two posts — which is the one thing this ledger exists to stop.
- * Over-excluding is recoverable through `release`; a duplicate on two live
- * posts is not.
+ * Over-excluding is the recoverable direction; a duplicate on two live posts
+ * is not.
+ *
+ * "Recoverable" is doing less work in THIS RELEASE than it looks: `release`
+ * below has no production caller, so a reservation whose `create_post` failed
+ * cannot be cleared through any tool or command. The remedy today is editing
+ * the ledger JSON by hand — `list_media_libraries` reports the count and names
+ * the file. Exposing `release` is Plan 2.
  */
 export function isUsed(
   ledger: UsageLedger,
@@ -53,6 +59,13 @@ export function promote(
 
 /**
  * Clear a reservation that never became a post.
+ *
+ * NO TOOL, AND NO CLI COMMAND, CALLS THIS in the current release — it is
+ * exported and tested, and nothing in `src/tools/` or `src/cli/` reaches it.
+ * A user whose publish failed after `use_media` succeeded clears the
+ * reservation by editing the ledger file by hand; `list_media_libraries`
+ * reports the count and names the path. Do not describe `release` to a user
+ * as though it were reachable.
  *
  * Refuses to touch a `published` record. Releasing one would put an asset that
  * is live on a real page back into the unused pool, and the next article would

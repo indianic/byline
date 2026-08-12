@@ -1,10 +1,10 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { Context } from '../context.js';
 import { ToolError, ok } from '../errors.js';
-import { getLibrary, indexFileFor, ledgerFileFor } from '../media/library.js';
+import { getLibrary, indexFileFor, ledgerFileFor, libraryNamed } from '../media/library.js';
 import { isUsed, promote, reserve, staleReservations } from '../media/ledger.js';
 import { scanLibrary } from '../media/scan.js';
 import { searchAssets } from '../media/search.js';
@@ -50,108 +50,182 @@ function requireIndex(ctx: MediaCtx, lib: LibraryConfig): MediaIndex {
   return index;
 }
 
+/** What `list_media_libraries` reports about one library. */
+interface LibraryReport {
+  name: string;
+  path: string;
+  scanned: boolean;
+  scanned_at?: string;
+  assets: number;
+  images: number;
+  videos: number;
+  enriched: number;
+  /**
+   * Absent, not a guess, when reuse_scope is "site" and no `site` was given:
+   * "unused" means something different per site under that scope, and
+   * inventing a library-wide number would silently disagree with what
+   * find_media excludes for any particular site. See `unused_note`.
+   *
+   * Absent too when there is no library to count — an unconfigured name has
+   * no assets and no ledger, and a zero there reads as "nothing is used"
+   * rather than "there is nothing to ask about".
+   */
+  unused?: number;
+  unused_note?: string;
+  /**
+   * Uploads that never made it into a post. Absent, rather than zero, when
+   * there is no ledger to read — a fabricated zero is indistinguishable from
+   * a genuine "none", which is exactly how a real reservation would be hidden.
+   *
+   * NOTHING IN THIS RELEASE CLEARS ONE. `release` exists in
+   * `src/media/ledger.ts` and no tool or command reaches it, so the remedy is
+   * to edit the ledger file by hand — see `stale_reservations_note`, which
+   * names the file.
+   */
+  stale_reservations?: number;
+  stale_reservations_note?: string;
+  /** Why the library cannot be used at all — a config-level fault. */
+  unavailable?: string;
+  /** A runtime failure while reporting THIS library, e.g. a corrupt ledger. */
+  problem?: string;
+}
+
+/** How to clear a reservation, given that no tool in this release can. */
+function staleReservationNote(ledgerFile: string): string {
+  return `Nothing in this release releases a reservation: publishing a post that carries the hosted URL promotes it, and there is no tool or CLI command that clears one otherwise. To drop a reservation that will never be published, edit ${ledgerFile} by hand and remove the record — it is plain JSON. Leave "published" records alone; deleting one puts a live photograph back into the unused pool.`;
+}
+
+/** The zeroed counts every report starts from. */
+const NO_ASSETS = { scanned: false, assets: 0, images: 0, videos: 0, enriched: 0 } as const;
+
+/**
+ * Report one library, or say why it could not be reported.
+ *
+ * Per-library isolation is the point: this is the one tool whose job includes
+ * reporting a BROKEN library, and a corrupt ledger used to throw out of the
+ * enclosing `.map` so that no library was reported at all. `promoteUsedMedia`
+ * has had this shape from the start; the asymmetry was not justified.
+ */
+function describeLibrary(
+  ctx: MediaCtx,
+  name: string,
+  a: { scan?: boolean; site?: string },
+): LibraryReport {
+  const lib = libraryNamed(ctx.media.libraries, name);
+  if (!lib) {
+    return {
+      name,
+      path: '',
+      ...NO_ASSETS,
+      unavailable: `No media library named "${name}".`,
+    };
+  }
+
+  try {
+    return reportLibrary(ctx, lib, a);
+  } catch (e) {
+    return {
+      name,
+      path: lib.path,
+      ...NO_ASSETS,
+      ...(lib.unavailable ? { unavailable: lib.unavailable } : {}),
+      problem: `Media library "${name}" could not be reported: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    };
+  }
+}
+
+function reportLibrary(
+  ctx: MediaCtx,
+  lib: LibraryConfig,
+  a: { scan?: boolean; site?: string },
+): LibraryReport {
+  const ledgerFile = ledgerFileFor(lib, ctx.paths.home);
+
+  if (lib.unavailable) {
+    // The library folder is unreachable; the LEDGER is not inside it. It lives
+    // under the byline home (or the configured index_path), so the reservation
+    // count is still answerable — and a reservation on an unmounted drive is
+    // exactly the case where a hardcoded zero hides an asset that is still
+    // held. Reported when it can be read, omitted with a reason when it
+    // cannot, never invented.
+    const canReadLedger = existsSync(ledgerFile) || existsSync(dirname(ledgerFile));
+    if (!canReadLedger) {
+      return {
+        name: lib.name,
+        path: lib.path,
+        ...NO_ASSETS,
+        unavailable: lib.unavailable,
+        stale_reservations_note: `The usage ledger for this library is at ${ledgerFile}, which is not reachable either, so reservations cannot be counted.`,
+      };
+    }
+    const stale = staleReservations(readLedger(ledgerFile, lib.name)).length;
+    return {
+      name: lib.name,
+      path: lib.path,
+      ...NO_ASSETS,
+      unavailable: lib.unavailable,
+      stale_reservations: stale,
+      ...(stale > 0 ? { stale_reservations_note: staleReservationNote(ledgerFile) } : {}),
+    };
+  }
+
+  const indexFile = indexFileFor(lib, ctx.paths.home);
+  let index = readIndex(indexFile);
+
+  if (a.scan) {
+    index = scanLibrary(lib, index);
+    writeIndex(indexFile, index);
+  }
+
+  const ledger = readLedger(ledgerFile, lib.name);
+  const assets = index?.assets ?? [];
+
+  // Under "site" scope, "unused" is only answerable for a specific site —
+  // the same asset can be used on site B and still free for site A. Without
+  // a `site` to resolve against, report that honestly instead of quietly
+  // computing a library-wide figure that would disagree with what
+  // find_media actually excludes for any one site.
+  const canCountUnused = ctx.media.reuseScope === 'global' || a.site !== undefined;
+  const unused = canCountUnused
+    ? assets.filter((x) => !isUsed(ledger, x.id, a.site ?? '', ctx.media.reuseScope)).length
+    : undefined;
+
+  const stale = staleReservations(ledger).length;
+
+  return {
+    name: lib.name,
+    path: lib.path,
+    scanned: index !== null,
+    ...(index ? { scanned_at: index.scanned_at } : {}),
+    assets: assets.length,
+    images: assets.filter((x) => x.kind === 'image').length,
+    videos: assets.filter((x) => x.kind === 'video').length,
+    enriched: assets.filter((x) => x.enriched).length,
+    ...(unused !== undefined
+      ? { unused }
+      : {
+          unused_note:
+            'reuse_scope is "site" and no `site` was given, so "unused" cannot be answered library-wide. Pass `site` to get a count for that site.',
+        }),
+    stale_reservations: stale,
+    ...(stale > 0 ? { stale_reservations_note: staleReservationNote(ledgerFile) } : {}),
+  };
+}
+
 export async function listMediaLibraries(
   ctx: MediaCtx,
   a: { scan?: boolean; library?: string; site?: string },
 ): Promise<{
-  libraries: {
-    name: string;
-    path: string;
-    scanned: boolean;
-    scanned_at?: string;
-    assets: number;
-    images: number;
-    videos: number;
-    enriched: number;
-    /**
-     * Absent, not a guess, when reuse_scope is "site" and no `site` was given:
-     * "unused" means something different per site under that scope, and
-     * inventing a library-wide number would silently disagree with what
-     * find_media excludes for any particular site. See `unused_note`.
-     */
-    unused?: number;
-    unused_note?: string;
-    stale_reservations: number;
-    unavailable?: string;
-  }[];
+  libraries: LibraryReport[];
   reuse_scope: 'site' | 'global';
   default_library?: string;
 }> {
   const names = a.library ? [a.library] : Object.keys(ctx.media.libraries);
 
-  const libraries = names.map((name) => {
-    const lib = ctx.media.libraries[name];
-    if (!lib) {
-      return {
-        name,
-        path: '',
-        scanned: false,
-        assets: 0,
-        images: 0,
-        videos: 0,
-        enriched: 0,
-        unused: 0,
-        stale_reservations: 0,
-        unavailable: `No media library named "${name}".`,
-      };
-    }
-    if (lib.unavailable) {
-      return {
-        name,
-        path: lib.path,
-        scanned: false,
-        assets: 0,
-        images: 0,
-        videos: 0,
-        enriched: 0,
-        unused: 0,
-        stale_reservations: 0,
-        unavailable: lib.unavailable,
-      };
-    }
-
-    const indexFile = indexFileFor(lib, ctx.paths.home);
-    let index = readIndex(indexFile);
-
-    if (a.scan) {
-      index = scanLibrary(lib, index);
-      writeIndex(indexFile, index);
-    }
-
-    const ledger = readLedger(ledgerFileFor(lib, ctx.paths.home), lib.name);
-    const assets = index?.assets ?? [];
-
-    // Under "site" scope, "unused" is only answerable for a specific site —
-    // the same asset can be used on site B and still free for site A. Without
-    // a `site` to resolve against, report that honestly instead of quietly
-    // computing a library-wide figure that would disagree with what
-    // find_media actually excludes for any one site.
-    const canCountUnused = ctx.media.reuseScope === 'global' || a.site !== undefined;
-    const unused = canCountUnused
-      ? assets.filter((x) => !isUsed(ledger, x.id, a.site ?? '', ctx.media.reuseScope)).length
-      : undefined;
-
-    return {
-      name,
-      path: lib.path,
-      scanned: index !== null,
-      ...(index ? { scanned_at: index.scanned_at } : {}),
-      assets: assets.length,
-      images: assets.filter((x) => x.kind === 'image').length,
-      videos: assets.filter((x) => x.kind === 'video').length,
-      enriched: assets.filter((x) => x.enriched).length,
-      ...(unused !== undefined
-        ? { unused }
-        : {
-            unused_note:
-              'reuse_scope is "site" and no `site` was given, so "unused" cannot be answered library-wide. Pass `site` to get a count for that site.',
-          }),
-      stale_reservations: staleReservations(ledger).length,
-    };
-  });
-
   return {
-    libraries,
+    libraries: names.map((name) => describeLibrary(ctx, name, a)),
     reuse_scope: ctx.media.reuseScope,
     ...(ctx.media.defaultLibrary ? { default_library: ctx.media.defaultLibrary } : {}),
   };
@@ -458,7 +532,22 @@ export function promoteUsedMedia(
   const problems: string[] = [];
 
   for (const lib of Object.values(ctx.media.libraries)) {
-    if (lib.unavailable) continue;
+    if (lib.unavailable) {
+      // Reported, not skipped. Unmount the drive between `use_media` and
+      // `create_post` and the reservation can never be promoted: the post
+      // publishes, the ledger never moves, and the asset stays retired. That
+      // is precisely the outcome nobody would notice without being told.
+      //
+      // Only when the post carried images at all: a post with none could not
+      // have promoted anything from any library, so the warning would be
+      // noise on every text-only post for anyone whose photo drive is
+      // normally unplugged.
+      if (hostedUrls.length === 0) continue;
+      problems.push(
+        `Media library "${lib.name}" is unavailable, so any reservation it holds was not confirmed against this post: ${lib.unavailable} The post published fine, but those assets stay reserved until the library is reachable again.`,
+      );
+      continue;
+    }
     const file = ledgerFileFor(lib, ctx.paths.home);
     try {
       const before = readLedger(file, lib.name);

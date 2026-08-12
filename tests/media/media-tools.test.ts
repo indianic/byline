@@ -118,6 +118,99 @@ describe('listMediaLibraries', () => {
   });
 });
 
+/** A config with two libraries, so one can be broken while the other is not. */
+function twoLibraryCtx(): MediaCtx {
+  const home = mkdtempSync(join(tmpdir(), 'bl-home-'));
+  const shots = join(home, 'shots');
+  const other = join(home, 'other');
+  mkdirSync(shots, { recursive: true });
+  mkdirSync(other, { recursive: true });
+  writeFileSync(join(shots, 'a.png'), PNG_1x1);
+  writeFileSync(join(other, 'b.png'), PNG_1x1);
+  const configFile = join(home, 'config.yaml');
+  writeFileSync(
+    configFile,
+    `sites: {}\nmedia:\n  libraries:\n    - name: shots\n      path: ${shots}\n    - name: other\n      path: ${other}\n`,
+  );
+  return { paths: { home }, media: loadMedia(configFile, {}) };
+}
+
+/** A ledger holding one reservation that never became a post. */
+function writeStaleReservation(ctx: MediaCtx, library: string): string {
+  const lib = ctx.media.libraries[library]!;
+  const file = ledgerFileFor(lib, ctx.paths.home);
+  const ledger: UsageLedger = {
+    version: 1,
+    library,
+    records: [
+      {
+        id: 'sha256:deadbeef',
+        site: 'siteA',
+        state: 'reserved',
+        hosted_url: 'https://siteA.example/uploads/x.png',
+        at: new Date().toISOString(),
+      },
+    ],
+  };
+  writeLedger(file, ledger);
+  return file;
+}
+
+describe('listMediaLibraries when something is broken', () => {
+  it('reports a corrupt ledger against its own library and still reports the others', async () => {
+    const ctx = twoLibraryCtx();
+    await listMediaLibraries(ctx, { scan: true });
+    writeFileSync(ledgerFileFor(ctx.media.libraries.shots!, ctx.paths.home), '{ not json');
+
+    // Before: readLedger threw out of the .map and NO library was reported at
+    // all — in the one tool whose job includes reporting broken libraries.
+    const out = await listMediaLibraries(ctx, { site: 'siteA' });
+    expect(out.libraries).toHaveLength(2);
+
+    const broken = out.libraries.find((l) => l.name === 'shots')!;
+    expect(broken.problem).toMatch(/ledger/i);
+    expect(broken.problem).toContain('shots');
+
+    const fine = out.libraries.find((l) => l.name === 'other')!;
+    expect(fine.problem).toBeUndefined();
+    expect(fine.assets).toBe(1);
+  });
+
+  it('reports the real stale reservation count for an unavailable library', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'bl-home-'));
+    const configFile = join(home, 'config.yaml');
+    writeFileSync(configFile, 'sites: {}\nmedia:\n  libraries:\n    - name: gone\n      path: /nope\n');
+    const ctx: MediaCtx = { paths: { home }, media: loadMedia(configFile, {}) };
+    // The ledger never lives inside the library folder, so an unmounted drive
+    // does not make the reservation count unanswerable — reporting a flat 0
+    // would hide a reservation that is genuinely still holding an asset.
+    writeStaleReservation(ctx, 'gone');
+
+    const out = await listMediaLibraries(ctx, { site: 'siteA' });
+    expect(out.libraries[0]!.unavailable).toMatch(/does not exist/i);
+    expect(out.libraries[0]!.stale_reservations).toBe(1);
+  });
+
+  it('omits the counts it cannot compute for a library that is not configured at all', async () => {
+    const ctx = ctxWith(['a.png']);
+    const out = await listMediaLibraries(ctx, { library: 'nosuch', site: 'siteA' });
+    expect(out.libraries[0]!.unavailable).toMatch(/no media library named/i);
+    expect(out.libraries[0]!.unused).toBeUndefined();
+    expect(out.libraries[0]!.stale_reservations).toBeUndefined();
+  });
+
+  it('says how to clear a stale reservation, since no tool can', async () => {
+    const ctx = ctxWith(['a.png']);
+    await listMediaLibraries(ctx, { scan: true });
+    const file = writeStaleReservation(ctx, 'shots');
+
+    const out = await listMediaLibraries(ctx, { site: 'siteA' });
+    expect(out.libraries[0]!.stale_reservations).toBe(1);
+    expect(out.libraries[0]!.stale_reservations_note).toContain(file);
+    expect(out.libraries[0]!.stale_reservations_note).toMatch(/by hand|edit/i);
+  });
+});
+
 describe('findMedia', () => {
   it('finds by filename token and reports why', async () => {
     const ctx = ctxWith(['portraits/team-standup.png']);

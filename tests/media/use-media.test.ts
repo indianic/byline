@@ -288,6 +288,20 @@ describe('promoteUsedMedia', () => {
     expect(out.problems[0]).not.toMatch(/byline media/i);
   });
 
+  it('reports an unavailable library instead of silently never promoting it', async () => {
+    // Unmount the drive between use_media and create_post: the reservation
+    // can never be promoted, and before this the loop just `continue`d, so
+    // the post published, the ledger never moved, and nothing said so.
+    const ctx = ctxWith();
+    await listMediaLibraries(ctx, { scan: true });
+    ctx.media.libraries.shots!.unavailable = 'Media library "shots" points at /nope, which is gone.';
+
+    const out = promoteUsedMedia(ctx, ['https://blog.example.com/content/a.png'], 'https://blog/p/');
+    expect(out.promoted).toBe(0);
+    expect(out.problems).toHaveLength(1);
+    expect(out.problems[0]).toContain('shots');
+  });
+
   it('promotes nothing and throws nothing when no media was used', () => {
     const ctx = ctxWith();
     expect(promoteUsedMedia(ctx, ['https://blog/x.png'], 'https://blog/post/')).toEqual({
