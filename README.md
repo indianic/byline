@@ -515,12 +515,26 @@ published twice.** Nothing is generated, nothing is uploaded to a third party, a
 **never writes inside your library folder** — the index and the usage record live under
 `~/.byline/media/`.
 
-There is no `byline media` command. Libraries are configured in `config.yaml` and driven
-from your AI tool through three MCP tools.
+### Adding a library
 
-### Configuring a library
+```
+byline media add ~/Pictures/blog
+```
 
-Add a `media:` block to `~/.byline/config.yaml`:
+This adds the folder to `config.yaml`, derives a library name from the folder's own name
+(override with `--name`), and scans it immediately — one command, and the library is
+searchable right away. `byline media` also has `list`, `scan`, `status`, `release`, and
+`remove`; every flag is documented in [`docs/CLI.md`](docs/CLI.md#byline-media).
+
+**Restart your AI tool afterward.** `loadContext()` reads `config.yaml` once, at MCP
+server startup — a library added from a terminal is invisible to an already-running
+server until you restart the AI tool talking to it.
+
+### Configuring a library by hand
+
+`byline media add` writes the same `media:` block shown below, so editing it directly is
+still a supported path — for a field the command does not expose (`index_path`,
+`reuse_scope`), or if you would rather edit YAML than run a command:
 
 ```yaml
 media:
@@ -590,10 +604,11 @@ Stated plainly, because a promise is worse than a missing feature:
   well; `IMG_4821.jpg` inside `Camera Roll/` does not.
 - **No video upload.** Videos are indexed and searchable so you can see what you have, and
   `use_media` refuses to upload one — the upload path handles images only.
-- **No way to cancel a reservation from a tool.** If `use_media` succeeds and the post then
-  fails to publish, that asset stays reserved. `list_media_libraries` reports the count and
-  names the file; clearing one means editing that JSON by hand.
-- **No CLI command.** Everything above happens through your AI tool.
+- **No way to cancel a reservation from an MCP tool.** If `use_media` succeeds and the post
+  then fails to publish, that asset stays reserved — no tool clears one. From a terminal,
+  `byline media release <id>` does (see [`docs/CLI.md`](docs/CLI.md#byline-media));
+  without terminal access, `list_media_libraries` still reports the count and names the
+  ledger file to edit by hand.
 
 The usage record is **not recoverable** if you delete it, which is why it is kept in a
 separate file from the index (`<name>.usage.json` beside `<name>.index.json`) — a rescan
