@@ -4,6 +4,7 @@ import { runInit } from './init.js';
 import { runRegister } from './register.js';
 import { runStatus } from './status.js';
 import { runDoctor } from './doctor.js';
+import { runMedia } from './media.js';
 import { runMigrate } from './migrate.js';
 import { runReset } from './reset.js';
 import { runUpdate } from './update.js';
@@ -29,6 +30,7 @@ const COMMANDS: Record<string, CommandEntry> = {
   init: { handler: runInit, summary: 'First-run wizard: register your AI tools and add your first blog' },
   status: { handler: runStatus, summary: 'What is configured right now, and where each file lives' },
   doctor: { handler: runDoctor, summary: 'Probe every configured API and print a fix per failure' },
+  media: { handler: runMedia, summary: 'Manage local photo libraries (add, list, scan, status, release, remove)' },
   register: { handler: runRegister, summary: 'Register with AI tools (--tools <a,b|all> [--scope], -i, or bare to print the command)' },
   migrate: { handler: runMigrate, summary: 'Copy a repo-local config into ~/.byline/' },
   reset: { handler: runReset, summary: 'Wipe ~/.byline/ (--yes required)' },
