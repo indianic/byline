@@ -507,6 +507,133 @@ that is an instruction to the agent, which is as far as an MCP server's reach go
 
 ---
 
+## Your own photos (optional)
+
+Point Byline at a folder of your own images and it will search them, upload the ones you
+pick, and **keep a record of which photograph went into which post so the same one is not
+published twice.** Nothing is generated, nothing is uploaded to a third party, and Byline
+**never writes inside your library folder** — the index and the usage record live under
+`~/.byline/media/`.
+
+There is no `byline media` command. Libraries are configured in `config.yaml` and driven
+from your AI tool through three MCP tools.
+
+### Configuring a library
+
+Add a `media:` block to `~/.byline/config.yaml`:
+
+```yaml
+media:
+  default_library: shots          # optional; the library used when none is named
+  reuse_scope: site               # "site" (default) or "global" — see below
+  libraries:
+    - name: shots                 # lowercase letters, digits and hyphens
+      path: ~/Pictures/blog       # the folder of your own images
+      recursive: true             # walk sub-folders too; default true
+    - name: archive
+      path: /Volumes/Photos/2019
+      index_path: ~/byline-index  # optional; where the index and usage record go
+```
+
+| Field | What it does |
+|---|---|
+| `name` | How you refer to the library. Same rules as a site slug: lowercase letters, digits, hyphens. |
+| `path` | The folder to index. `~` is expanded. Must exist and be a directory, or the library is reported as unavailable and the others keep working. |
+| `recursive` | Walk sub-folders. Defaults to `true`. |
+| `index_path` | Where the derived index and the usage record are written. Defaults to `~/.byline/media/`. It may **not** be inside the library folder — that is refused, so Byline never writes into your photos. |
+| `default_library` | Which library is used when a tool call does not name one. With exactly one library you never need it. |
+| `reuse_scope` | `site` (default) — a photo used on one blog is still free for another. `global` — used once, ever, anywhere. |
+
+`.jpg`, `.jpeg`, `.png`, `.gif`, `.webp` and `.avif` are indexed as images; `.mp4`,
+`.m4v`, `.mov` and `.webm` as video. Dotfiles are skipped. Anything else is ignored — an
+allow-list, so sidecars, RAW files and half-finished exports never fill your search
+results.
+
+### The three tools
+
+- **`list_media_libraries`** — what is configured, how many assets each library holds, and
+  when it was last scanned. Pass `scan: true` to walk the folder and build the index; **that
+  is how a new or changed library becomes searchable**, and it is the only way to scan.
+- **`find_media`** — search by keyword and get ranked candidates back, each with a `why`
+  naming the tokens that matched, so you can judge the match rather than trust a score.
+  Already-used assets are excluded by default.
+- **`use_media`** — upload the assets you picked to a site and record them as used. It
+  returns a hosted URL per asset, ready for `feature_image` or an inline `<img>`.
+
+In practice you never name them:
+
+```
+Find a photo of the harbour in my library and use it as the hero for that post.
+```
+
+### What "already used" means, exactly
+
+A photograph is **used** from the moment its bytes reach your blog — not from the moment a
+post goes live. `use_media` records a *reservation*; publishing a post that carries the
+hosted URL turns it into a *published* record naming the post. Both count as used, because
+a reservation means the image is already sitting in your media library on the platform.
+
+`use_media` **refuses** an asset the record says has been used, names where it went, and
+carries on with the rest of the batch. Pass `allow_reuse: true` when publishing the same
+photograph twice is what you actually want.
+
+Under the default `reuse_scope: site`, "used" means used *on that site* — the same photo is
+still free for a different blog. Set `reuse_scope: global` if a photo should be published
+once and never again anywhere.
+
+### What this release does not do
+
+Stated plainly, because a promise is worse than a missing feature:
+
+- **No enrichment.** Nothing writes captions or keywords, so ranking is based on what your
+  files and folders are *named*. `beach-sunset-goa.jpg` inside `2024/holiday/` searches
+  well; `IMG_4821.jpg` inside `Camera Roll/` does not.
+- **No video upload.** Videos are indexed and searchable so you can see what you have, and
+  `use_media` refuses to upload one — the upload path handles images only.
+- **No way to cancel a reservation from a tool.** If `use_media` succeeds and the post then
+  fails to publish, that asset stays reserved. `list_media_libraries` reports the count and
+  names the file; clearing one means editing that JSON by hand.
+- **No CLI command.** Everything above happens through your AI tool.
+
+The usage record is **not recoverable** if you delete it, which is why it is kept in a
+separate file from the index (`<name>.usage.json` beside `<name>.index.json`) — a rescan
+rewrites the index and never touches it.
+
+---
+
+## Video (optional)
+
+Byline does not upload video — that was dropped as a goal entirely. Instead, `embed_video`
+turns a YouTube, Vimeo, or Bunny Stream URL into the `<iframe>` HTML for an article:
+
+```
+Embed https://youtu.be/dQw4w9WgXcQ in the post, captioned "Watch the full talk".
+```
+
+It normalises whatever form you paste — a `watch?v=` link does not work inside an
+`<iframe>`; `/embed/ID` does — and refuses anything that is not one of the three
+supported providers rather than passing an unrecognised URL through as-is:
+
+| Provider | Accepted forms |
+|---|---|
+| YouTube | `youtube.com/watch?v=ID`, `youtu.be/ID`, `youtube.com/shorts/ID`, `youtube.com/embed/ID` (with or without `www.`/`m.`; a `t=`/`start=` value is preserved) |
+| Vimeo | `vimeo.com/ID`, `vimeo.com/channels/NAME/ID`, `player.vimeo.com/video/ID` |
+| Bunny Stream | `iframe.mediadelivery.net/embed/LIBRARY/GUID` or `/play/LIBRARY/GUID` |
+
+Verified by live probe on 2026-08-12: both Ghost and WordPress (for an account holding the
+`unfiltered_html` capability) keep the `<iframe>` and its `<figure>`/`<figcaption>` wrapper
+unchanged on ingest — Ghost additionally wraps it in its own `kg-embed-card` figure. A
+plain `<video>` tag is a separate, worse option: **Ghost strips it completely**, with
+nothing surviving; WordPress keeps it, for the same account.
+
+**For a WordPress account WITHOUT `unfiltered_html`, whether the `<iframe>` survives is
+UNVERIFIED** — WordPress's KSES filter is documented to strip `<iframe>` for such an
+account, but no probe has confirmed it, because no such account has ever been available.
+Pass `site` naming the WordPress site and `embed_video` adds that caveat to its
+`warnings`; it does not change the HTML produced.
+
+---
+
 ## Using it
 
 Talk to your AI tool in plain English. It figures out which tool to call.

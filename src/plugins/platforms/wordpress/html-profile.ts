@@ -70,6 +70,18 @@ const PERMISSIVE_PRESERVED = new Set([
   'p', 'h2', 'h3', 'h4', 'strong', 'em', 'blockquote', 'ul', 'ol', 'li', 'a', 'img', 'hr', 'code',
   'div', 'section', 'aside', 'span', 'small', 'mark', 'pre',
   'table', 'thead', 'tbody', 'tr', 'th', 'td', 'figure', 'figcaption',
+  // Verified by live probe 2026-08-12 against the probed WordPress install,
+  // account holding unfiltered_html: a bare <iframe>, a <figure><iframe>...<figcaption>
+  // wrapper, a Bunny Stream embed, and a `<!-- wp:embed -->` block all
+  // round-tripped in content.raw unchanged. The same probe measured that a
+  // remote <video src> ALSO survives on WordPress — unlike Ghost, which strips
+  // it entirely — but byline still does not upload video, so that only matters
+  // for a hand-written <video> tag, not for embed_video's own output. See
+  // docs/WORDPRESS-NOTES.md for the full probe. Do NOT add 'iframe' to
+  // RESTRICTIVE_PRESERVED below on the strength of this probe — this account
+  // holds unfiltered_html, and whether KSES strips <iframe> for an account
+  // that lacks it remains UNVERIFIED (see that set's doc comment).
+  'iframe',
 ]);
 const PERMISSIVE_UNWRAPPED = new Set<string>([]);
 
@@ -92,6 +104,15 @@ const PERMISSIVE_UNWRAPPED = new Set<string>([]);
  * summary block was required and that `<table>` would be stripped. Do not
  * reintroduce that without a probe that actually shows table elements being
  * deleted, not just destyled, for an account lacking the capability.
+ *
+ * `iframe` is deliberately NOT in this set. WordPress core's documented
+ * `wp_kses_allowed_html('post')` list for an account lacking `unfiltered_html`
+ * does not include `iframe` at all, so the documented (not measured) behaviour
+ * is that KSES strips it outright — UNVERIFIED, same as everything else here:
+ * the only account ever available (2026-07-29 and 2026-08-12) held
+ * `unfiltered_html` unconditionally, so no probe has shown what actually
+ * happens to an <iframe> for an account that lacks it. Do not add 'iframe'
+ * here without a probe against such an account that shows it surviving.
  */
 const RESTRICTIVE_PRESERVED = new Set([
   'p', 'h2', 'h3', 'h4', 'strong', 'em', 'blockquote', 'ul', 'ol', 'li', 'a', 'img', 'hr', 'code',

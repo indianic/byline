@@ -61,6 +61,12 @@ function makeContext(): Context {
     personasDir,
     sites,
     personas,
+    // No media libraries configured for this fixture — matches what
+    // loadMedia returns for a config.yaml with no `media:` block, so
+    // create_post/update_post's promoteUsedMedia has a real (empty)
+    // MediaConfig to read rather than a Context this test double never gave
+    // one, per Context's contract that `media` is never absent.
+    media: { reuseScope: 'site', libraries: {}, problems: [] },
     runsDir,
     env,
     setup: {
@@ -118,6 +124,8 @@ function makeWordPressContext(): Context {
     personasDir,
     sites,
     personas,
+    // See makeContext()'s identical comment above.
+    media: { reuseScope: 'site', libraries: {}, problems: [] },
     runsDir,
     env,
     setup: {
@@ -166,17 +174,20 @@ async function callWith(ctx: Context, name: string, args: Record<string, unknown
 }
 
 describe('tool registration', () => {
-  it('exposes all sixteen tools', async () => {
+  it('exposes all twenty tools', async () => {
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'add_site',
       'build_writing_brief',
       'create_post',
+      'embed_video',
+      'find_media',
       'generate_image',
       'generate_images',
       'get_persona',
       'health_check',
       'list_authors',
+      'list_media_libraries',
       'list_personas',
       'list_sites',
       'remove_site',
@@ -185,6 +196,7 @@ describe('tool registration', () => {
       'update_post',
       'upload_image',
       'upload_images',
+      'use_media',
     ]);
   });
 
