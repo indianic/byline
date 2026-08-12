@@ -83,6 +83,21 @@ describe('nearestAspect', () => {
 });
 
 describe('scanLibrary', () => {
+  // `MEDIA_EXTENSIONS` is a plain object, so `MEDIA_EXTENSIONS["constructor"]`
+  // is `Object.prototype.constructor` — truthy. A file named `x.constructor`
+  // therefore passed the "is this indexable?" test and was then read as if it
+  // declared a `kind` and a `mime`.
+  it('does not index a file whose extension is an Object.prototype key', () => {
+    const lib = libWith({
+      'real.png': PNG_1x1,
+      'weird.constructor': PNG_1x1,
+      'weird.__proto__': PNG_1x1,
+      'weird.valueOf': PNG_1x1,
+    });
+    const idx = scanLibrary(lib, null);
+    expect(idx.assets.map((a) => a.path)).toEqual(['real.png']);
+  });
+
   it('indexes an image with a content-hash id and real dimensions', () => {
     const lib = libWith({ 'portraits/team-standup-01.png': PNG_1x1 });
     const idx = scanLibrary(lib, null);

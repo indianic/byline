@@ -82,7 +82,16 @@ export function loadMedia(configFile: string, env: NodeJS.ProcessEnv): MediaConf
     }
   }
 
-  const libraries: Record<string, LibraryConfig> = {};
+  // A null prototype, deliberately: `libraries['__proto__'] = lib` on an
+  // ordinary object literal hits the prototype SETTER and adds no key at all,
+  // so a library named `__proto__` would vanish from the config instead of
+  // being reported as having an illegal name. With no prototype it is an
+  // ordinary key, `Object.hasOwn` answers for every name, and nothing
+  // disappears silently.
+  const libraries: Record<string, LibraryConfig> = Object.create(null) as Record<
+    string,
+    LibraryConfig
+  >;
   const list = Array.isArray(m.libraries) ? m.libraries : [];
 
   for (const entry of list) {
@@ -145,7 +154,7 @@ export function loadMedia(configFile: string, env: NodeJS.ProcessEnv): MediaConf
     }
 
     if (lib.unavailable) problems.push(lib.unavailable);
-    if (libraries[name]) {
+    if (Object.hasOwn(libraries, name)) {
       problems.push(
         `Media library "${name}" is defined more than once in config.yaml; using the last definition.`,
       );
@@ -154,7 +163,7 @@ export function loadMedia(configFile: string, env: NodeJS.ProcessEnv): MediaConf
   }
 
   const defaultLibrary = typeof m.default_library === 'string' ? m.default_library : undefined;
-  if (defaultLibrary && !libraries[defaultLibrary]) {
+  if (defaultLibrary && !Object.hasOwn(libraries, defaultLibrary)) {
     problems.push(`media.default_library names "${defaultLibrary}", which is not a configured library.`);
   }
 
@@ -164,6 +173,24 @@ export function loadMedia(configFile: string, env: NodeJS.ProcessEnv): MediaConf
     libraries,
     problems,
   };
+}
+
+/**
+ * The library configured under `name`, or `undefined`.
+ *
+ * `libraries[name]` alone is a prototype lookup, and `name` is caller-supplied
+ * — `library: "constructor"` passes `SLUG_PATTERN` and returned
+ * `Object.prototype.constructor`, a truthy function, so `getLibrary` handed
+ * back the Object constructor instead of throwing `LIBRARY_NOT_FOUND` and
+ * `indexFileFor` derived `Object.index.json` from its `.name`. Every read of
+ * this record goes through here, so the same hole cannot be reopened one call
+ * site at a time.
+ */
+export function libraryNamed(
+  libraries: Record<string, LibraryConfig>,
+  name: string,
+): LibraryConfig | undefined {
+  return Object.hasOwn(libraries, name) ? libraries[name] : undefined;
 }
 
 const NO_LIBRARY_HINT =
@@ -194,7 +221,7 @@ export function getLibrary(cfg: MediaConfig, name?: string): LibraryConfig {
     });
   }
 
-  const lib = cfg.libraries[chosen];
+  const lib = libraryNamed(cfg.libraries, chosen);
   if (!lib) {
     throw new ToolError({
       api: 'media',

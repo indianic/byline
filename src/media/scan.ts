@@ -36,6 +36,20 @@ export const MEDIA_EXTENSIONS: Record<string, { kind: MediaKind; mime: string }>
   webm: { kind: 'video', mime: 'video/webm' },
 };
 
+/**
+ * What `MEDIA_EXTENSIONS` says about a filename, or `undefined`.
+ *
+ * `MEDIA_EXTENSIONS[ext]` alone is a prototype lookup: `constructor`,
+ * `valueOf` and `toString` are all inherited keys, so a file named
+ * `holiday.constructor` read as indexable and then carried whatever
+ * `Object.prototype.constructor` looked like when destructured for a `kind`
+ * and a `mime`. `Object.hasOwn` is what makes the allow-list an allow-list.
+ */
+function mediaExtension(filename: string): { kind: MediaKind; mime: string } | undefined {
+  const ext = extensionOf(filename);
+  return Object.hasOwn(MEDIA_EXTENSIONS, ext) ? MEDIA_EXTENSIONS[ext] : undefined;
+}
+
 const ASPECT_RATIOS: Record<Aspect, number> = { '16:9': 16 / 9, '4:3': 4 / 3, '1:1': 1 };
 
 /**
@@ -112,7 +126,7 @@ function walk(root: string, recursive: boolean): string[] {
         continue;
       }
       if (!entry.isFile()) continue;
-      if (!MEDIA_EXTENSIONS[extensionOf(entry.name)]) continue;
+      if (!mediaExtension(entry.name)) continue;
       out.push(relative(root, full).split(sep).join('/'));
     }
   };
@@ -145,8 +159,7 @@ export function scanLibrary(
   for (const rel of walk(lib.path, lib.recursive)) {
     const full = join(lib.path, rel);
     const stat = statSync(full);
-    const ext = extensionOf(rel);
-    const declared = MEDIA_EXTENSIONS[ext]!;
+    const declared = mediaExtension(rel)!;
 
     const prior = cache.get(rel);
     const unchanged =
