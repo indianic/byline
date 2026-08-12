@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
@@ -7,6 +7,7 @@ import { runMedia } from '../../src/cli/media.js';
 
 let out: string;
 const saved: Record<string, string | undefined> = {};
+let savedExitCode: number | string | undefined | null;
 
 function setEnv(k: string, v: string) {
   if (!(k in saved)) saved[k] = process.env[k];
@@ -15,6 +16,8 @@ function setEnv(k: string, v: string) {
 
 beforeEach(() => {
   out = '';
+  savedExitCode = process.exitCode;
+  process.exitCode = 0;
   vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
     out += String(chunk);
     return true;
@@ -23,6 +26,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  // Restore the process's own exit code: these tests assert on it deliberately,
+  // and leaving a 1 behind would fail the whole run for an unrelated reason.
+  process.exitCode = savedExitCode;
   // Restore per key. Never `process.env = { ...saved }` — that detaches the
   // object from the process environment and os.homedir() goes stale for every
   // later test in this worker.
@@ -265,5 +271,296 @@ describe('byline media release', () => {
     out = '';
     await runMedia(['release', 'sha256:neverwas', '--library', 'shots']);
     expect(out).toMatch(/nothing changed/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Findings from the whole-branch review, each reproduced against the binary
+// before it was fixed. Every one of these went green only after the fix.
+// ---------------------------------------------------------------------------
+
+/**
+ * A config naming a library whose folder is NOT reachable, plus a ledger for it
+ * under byline's own home.
+ *
+ * This is the shape the two "unavailable" findings turn on: the library folder
+ * is gone, but the ledger never lived inside it — it is under `<home>/media/`,
+ * so every reservation it holds is still perfectly readable.
+ */
+function unavailableWithReservation(dir: string, name: string, id: string, site = 'blog'): string {
+  writeFileSync(
+    join(dir, 'config.yaml'),
+    `sites: {}\nmedia:\n  libraries:\n    - name: ${name}\n      path: /nope/nowhere\n`,
+  );
+  const ledgerFile = join(dir, 'media', `${name}.usage.json`);
+  mkdirSync(join(dir, 'media'), { recursive: true });
+  writeFileSync(
+    ledgerFile,
+    JSON.stringify({
+      version: 1,
+      library: name,
+      records: [
+        {
+          id,
+          site,
+          state: 'reserved',
+          hosted_url: 'https://example.com/stuck.png',
+          at: new Date().toISOString(),
+        },
+      ],
+    }),
+  );
+  return ledgerFile;
+}
+
+describe('byline media add — when the first scan fails', () => {
+  /**
+   * `<home>/media` is created as a FILE, so the mkdir inside `writeIndex`
+   * fails for real. Same shape as the reviewer's unwritable `~/.byline/media`,
+   * with no filesystem mock.
+   */
+  function breakIndexWrites(dir: string): void {
+    writeFileSync(join(dir, 'media'), 'not a directory');
+  }
+
+  it('SAYS THE LIBRARY WAS ADDED rather than reporting the whole command as a failure', async () => {
+    const dir = home();
+    breakIndexWrites(dir);
+    await runMedia(['add', libraryDir(['a.png']), '--name', 'shots']);
+
+    expect(out).toMatch(/added/i);
+    // The config write already happened, so the entry must be in the file and
+    // the user must be told — otherwise the obvious retry hits LIBRARY_EXISTS.
+    expect(parse(readFileSync(join(dir, 'config.yaml'), 'utf8')).media.libraries).toHaveLength(1);
+    expect(out).not.toMatch(/media command failed/);
+  });
+
+  it('still prints the restart notice, because config.yaml WAS written', async () => {
+    const dir = home();
+    breakIndexWrites(dir);
+    await runMedia(['add', libraryDir(['a.png']), '--name', 'shots']);
+    expect(out).toMatch(/restart/i);
+  });
+
+  it('names the error and points at `byline media scan <name>` to finish', async () => {
+    const dir = home();
+    breakIndexWrites(dir);
+    await runMedia(['add', libraryDir(['a.png']), '--name', 'shots']);
+    expect(out).toMatch(/byline media scan shots/);
+    expect(out).toMatch(/EEXIST|ENOTDIR|not a directory/i);
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+describe('byline media add — --index-path', () => {
+  it('writes index_path, and puts the index there rather than under byline home', async () => {
+    const dir = home();
+    const idx = mkdtempSync(join(tmpdir(), 'bl-idx-'));
+    await runMedia(['add', libraryDir(['a.png']), '--name', 'shots', '--index-path', idx]);
+    const cfg = parse(readFileSync(join(dir, 'config.yaml'), 'utf8'));
+    expect(cfg.media.libraries[0].index_path).toBe(idx);
+    expect(readFileSync(join(idx, 'shots.index.json'), 'utf8')).toMatch(/"assets"/);
+  });
+
+  it('refuses an index path inside the library folder — byline never writes in there', async () => {
+    const dir = home();
+    const root = libraryDir(['a.png']);
+    await runMedia(['add', root, '--name', 'shots', '--index-path', join(root, 'idx')]);
+    expect(out).toMatch(/never write/i);
+    expect(parse(readFileSync(join(dir, 'config.yaml'), 'utf8')).media).toBeUndefined();
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+describe('byline media — unrecognised flags', () => {
+  it('refuses a mistyped flag by name instead of silently doing nothing', async () => {
+    const dir = home();
+    await runMedia(['add', libraryDir(['a.png']), '--name', 'shots', '--defualt']);
+    expect(out).toMatch(/--defualt/);
+    expect(process.exitCode).toBe(1);
+    expect(parse(readFileSync(join(dir, 'config.yaml'), 'utf8')).media).toBeUndefined();
+  });
+
+  it('refuses a flag that belongs to a different subcommand', async () => {
+    home();
+    await runMedia(['list', '--yes']);
+    expect(out).toMatch(/--yes/);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('refuses a value-taking flag given no value', async () => {
+    const dir = home();
+    await runMedia(['add', libraryDir(['a.png']), '--name']);
+    expect(out).toMatch(/--name/);
+    expect(process.exitCode).toBe(1);
+    expect(parse(readFileSync(join(dir, 'config.yaml'), 'utf8')).media).toBeUndefined();
+  });
+
+  it('does not mistake a flag VALUE for a flag', async () => {
+    const dir = home();
+    await runMedia(['add', libraryDir(['a.png']), '--name', 'shots', '--no-recursive']);
+    const cfg = parse(readFileSync(join(dir, 'config.yaml'), 'utf8'));
+    expect(cfg.media.libraries[0].name).toBe('shots');
+    expect(cfg.media.libraries[0].recursive).toBe(false);
+    expect(process.exitCode).toBe(0);
+  });
+});
+
+describe('byline media scan — exit code and what "unchanged" means', () => {
+  it('EXITS NON-ZERO when a library fails, so a script can tell', async () => {
+    home();
+    await runMedia(['scan', 'nosuchlib']);
+    expect(process.exitCode).toBe(1);
+    expect(out).not.toMatch(/Scan complete/);
+    expect(out).toMatch(/1 librar/i);
+  });
+
+  it('exits 0 and says complete when every library scanned', async () => {
+    home();
+    await runMedia(['add', libraryDir(['a.png']), '--name', 'shots']);
+    out = '';
+    await runMedia(['scan']);
+    expect(process.exitCode).toBe(0);
+    expect(out).toMatch(/Scan complete/);
+  });
+
+  it('keeps scanning the rest after one library fails', async () => {
+    const dir = home();
+    const root = libraryDir(['a.png']);
+    // A broken library alongside a good one.
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      `sites: {}\nmedia:\n  libraries:\n    - name: shots\n      path: ${root}\n    - name: gone\n      path: /nope/nowhere\n`,
+    );
+    out = '';
+    await runMedia(['scan']);
+    expect(out).toMatch(/shots/);
+    expect(out).toMatch(/gone/);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('DOES NOT call a file whose bytes changed "unchanged"', async () => {
+    home();
+    const root = libraryDir(['a.png', 'b.png']);
+    await runMedia(['add', root, '--name', 'shots']);
+    // Appending bytes changes the content hash, so the asset's id changes and
+    // its ledger record no longer refers to it. Reporting that as "unchanged"
+    // is what hid the detachment.
+    appendFileSync(join(root, 'a.png'), 'more-bytes');
+    out = '';
+    await runMedia(['scan', 'shots']);
+    expect(out).toMatch(/1 changed/);
+    expect(out).toMatch(/1 unchanged/);
+    expect(out).not.toMatch(/2 unchanged/);
+  });
+});
+
+describe('byline media status — an unavailable library', () => {
+  it('REPORTS its stale reservations: the ledger is not inside the library folder', async () => {
+    const dir = home();
+    unavailableWithReservation(dir, 'archive', 'sha256:stuck');
+    await runMedia(['status']);
+    expect(out).toMatch(/archive/);
+    expect(out).toMatch(/1 stale reservation/);
+  });
+
+  it('says the ledger itself is unreachable rather than inventing a zero', async () => {
+    const dir = home();
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      'sites: {}\nmedia:\n  libraries:\n    - name: archive\n      path: /nope/nowhere\n      index_path: /nope/also-nowhere\n',
+    );
+    await runMedia(['status']);
+    expect(out).not.toMatch(/0 stale reservations/);
+    expect(out).toMatch(/cannot be counted|not reachable/i);
+  });
+});
+
+describe('byline media release — from an unavailable library', () => {
+  it('clears the reservation: nothing about it needs the library folder', async () => {
+    const dir = home();
+    const ledgerFile = unavailableWithReservation(dir, 'archive', 'sha256:stuck');
+    await runMedia(['release', 'sha256:stuck', '--library', 'archive']);
+    expect(out).toMatch(/released/i);
+    expect(JSON.parse(readFileSync(ledgerFile, 'utf8')).records).toHaveLength(0);
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('still says the library folder is unavailable, rather than pretending it is fine', async () => {
+    const dir = home();
+    unavailableWithReservation(dir, 'archive', 'sha256:stuck');
+    await runMedia(['release', 'sha256:stuck', '--library', 'archive']);
+    expect(out).toMatch(/does not exist/i);
+  });
+});
+
+describe('byline media release — what it says about reuse afterwards', () => {
+  function ledgerWith(dir: string, records: unknown[]): string {
+    const file = join(dir, 'media', 'shots.usage.json');
+    mkdirSync(join(dir, 'media'), { recursive: true });
+    writeFileSync(file, JSON.stringify({ version: 1, library: 'shots', records }));
+    return file;
+  }
+
+  it('names the site the reservation belonged to', async () => {
+    const dir = home();
+    await runMedia(['add', libraryDir(['a.png']), '--name', 'shots']);
+    ledgerWith(dir, [
+      {
+        id: 'sha256:x',
+        site: 'personal',
+        state: 'reserved',
+        hosted_url: 'https://example.com/x.png',
+        at: new Date().toISOString(),
+      },
+    ]);
+    out = '';
+    await runMedia(['release', 'sha256:x', '--library', 'shots']);
+    expect(out).toMatch(/personal/);
+    expect(out).toMatch(/free for use_media/);
+  });
+
+  it('DOES NOT claim it is free again when a published record for the same id survives', async () => {
+    const dir = home();
+    const root = libraryDir(['a.png']);
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      `sites: {}\nmedia:\n  reuse_scope: global\n  libraries:\n    - name: shots\n      path: ${root}\n`,
+    );
+    ledgerWith(dir, [
+      {
+        id: 'sha256:x',
+        site: 'personal',
+        state: 'published',
+        hosted_url: 'https://example.com/x.png',
+        post_url: 'https://example.com/p/1',
+        at: new Date().toISOString(),
+      },
+      {
+        id: 'sha256:x',
+        site: 'work',
+        state: 'reserved',
+        hosted_url: 'https://example.com/x2.png',
+        at: new Date().toISOString(),
+      },
+    ]);
+    out = '';
+    await runMedia(['release', 'sha256:x', '--library', 'shots']);
+    expect(out).toMatch(/released/i);
+    expect(out).toMatch(/not free|still/i);
+    expect(out).not.toMatch(/It is free for use_media again\./);
+  });
+});
+
+describe('byline media remove — reporting what actually happened', () => {
+  it('reports the removal only when the config write actually removed something', async () => {
+    const dir = home();
+    const root = libraryDir(['a.png']);
+    await runMedia(['add', root, '--name', 'shots']);
+    out = '';
+    await runMedia(['remove', 'shots', '--yes']);
+    expect(out).toMatch(/Removed "shots" from config.yaml/);
+    expect(parse(readFileSync(join(dir, 'config.yaml'), 'utf8')).media.libraries).toHaveLength(0);
+    expect(process.exitCode).toBe(0);
   });
 });
