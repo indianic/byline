@@ -1,5 +1,35 @@
 import type { Finding } from '../plugins/research/types.js';
 import type { HtmlProfile } from './html-profile.js';
+import { compareVoice, voiceFingerprint, type VoiceFingerprint } from './voice.js';
+
+/**
+ * Every check name `scoreDraft` can return, in the order it pushes them for
+ * a BLOG-mode draft — one rule, one definition, so a caller (and the
+ * `score_draft` tool description) states the count by reading
+ * `CHECK_NAMES.length` rather than retyping a number that drifts the moment
+ * a check is added or removed.
+ *
+ * News mode swaps `experience_markers` for `reporter_voice` and inserts
+ * `attribution` before `generic_opener` — this list documents the blog-mode
+ * order, which is also the order the test suite pins with a full `pass`
+ * scorecard.
+ */
+export const CHECK_NAMES: readonly string[] = [
+  'ai_lexicon',
+  'burstiness',
+  'paragraph_uniformity',
+  'evidence_density',
+  'experience_markers',
+  'generic_opener',
+  'platform_html',
+  'structure',
+  'images',
+  'ai_summary_block',
+  'aeo_answerability',
+  'geo_citability',
+  'citation_provenance',
+  'voice_rhythm',
+];
 
 export interface Check {
   name: string;
@@ -33,8 +63,8 @@ export interface Scorecard {
    * not. `pass` — everything passed.
    *
    * The middle value used to be called `revise`, and the name was the single
-   * most expensive word in this codebase. Ten of the thirteen checks are
-   * declared `blocking: false` precisely because they are improvements rather
+   * most expensive word in this codebase. Every check but three is declared
+   * `blocking: false` precisely because they are improvements rather
    * than defects, and then the verdict handed all of them the same imperative a
    * genuine violation gets. A host model reads an imperative as a gate: measured
    * across one nine-article series, `revise` triggered two to three full-article
@@ -88,6 +118,12 @@ export const THRESHOLDS = {
   minQuestionHeadings: 2,
   /** Sentences carrying an attribution marker, both modes. */
   minAttributionMarkers: 3,
+  /** VOICE ONLY: how far a draft's mean sentence length may drift from the author's samples, as a fraction. */
+  voiceLengthTolerance: 0.35,
+  /** VOICE ONLY: sample contraction rate at or above which the author is considered a heavy contractor. */
+  voiceContractionHigh: 0.2,
+  /** VOICE ONLY: draft contraction rate at or below which a draft is considered to avoid contractions. */
+  voiceContractionLow: 0.05,
 } as const;
 
 /** Evidence items (figures + citation links) required for a draft of `words` words. */
@@ -161,7 +197,16 @@ const stripTags = (html: string): string =>
     .replace(/\s+/g, ' ')
     .trim();
 
-function sentences(text: string): string[] {
+/**
+ * Split running text into sentences of at least three words.
+ *
+ * Exported so `voice.ts` can fingerprint a persona's own writing with the
+ * SAME split the scorer grades against — one rule, one definition. A voice
+ * sample split by different rules than the draft it is compared to would
+ * make `compareVoice` report a rhythm mismatch that is really just two
+ * different tokenisers disagreeing.
+ */
+export function sentences(text: string): string[] {
   return text
     .split(/(?<=[.!?])\s+/)
     .map((s) => s.trim())
@@ -263,12 +308,18 @@ function sameUrl(raw: string): string {
   }
 }
 
+export interface ScoreDraftOptions {
+  /** The persona's own fingerprint, from `voiceFingerprint()` on their `voice_samples`. */
+  voiceSample?: VoiceFingerprint;
+}
+
 export function scoreDraft(
   html: string,
   profile: HtmlProfile,
   feature?: FeatureImageInput,
   findings?: readonly Finding[],
   mode: 'blog' | 'news' = 'blog',
+  opts?: ScoreDraftOptions,
 ): Scorecard {
   const text = stripTags(html);
   const words = text ? text.split(/\s+/).length : 0;
@@ -825,6 +876,31 @@ export function scoreDraft(
     evaluated: provenanceEvaluated,
     detail: provenanceDetail,
     findings: provenanceFindings,
+  });
+
+  // --- Voice rhythm (advisory) ---
+  //
+  // "A persona is all adjectives" is the gap this closes: `writing_style:
+  // Analytical` teaches a writer nothing a model can be held to, but a
+  // persona's own `voice_samples` fingerprint sentence length and
+  // contraction habits, and this check compares the draft against them.
+  // Same honesty as `citation_provenance` and `images`: with no sample
+  // supplied there is nothing to compare against, so this reports
+  // `evaluated: false` and `ok: true` rather than a silent pass.
+  const voiceResult = opts?.voiceSample
+    ? compareVoice(opts.voiceSample, voiceFingerprint(text))
+    : undefined;
+  checks.push({
+    name: 'voice_rhythm',
+    ok: voiceResult ? voiceResult.ok : true,
+    blocking: false,
+    evaluated: voiceResult !== undefined,
+    detail: voiceResult
+      ? voiceResult.ok
+        ? "Draft's rhythm matches the author's voice samples"
+        : `${voiceResult.findings.length} mismatch(es) against the author's voice samples`
+      : 'no persona with voice_samples passed — not evaluated',
+    findings: voiceResult?.findings ?? [],
   });
 
   const blockingFailures = checks.filter((c) => c.blocking && !c.ok);

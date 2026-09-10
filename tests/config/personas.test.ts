@@ -127,4 +127,17 @@ describe('unknown persona fields are kept, not discarded', () => {
   it('drops a key whose value is blank', () => {
     expect(load('use_of_humor: ""\nreading_level: Easy\n').extras).toEqual({ reading_level: 'Easy' });
   });
+
+  // voice_samples is the one exception to "flattens a list into a readable
+  // line": normaliseSamples() (src/craft/voice.ts) splits it back into
+  // separate passages on blank lines, so joining with ", " like every other
+  // list would fuse two samples into one and make the split unrecoverable.
+  it('joins a voice_samples list with blank lines, not commas', () => {
+    const p = load('voice_samples:\n  - "First sample sentence here."\n  - "Second sample sentence here."\n');
+    expect(p.extras.voice_samples).toBe('First sample sentence here.\n\nSecond sample sentence here.');
+  });
+
+  it('still flattens every other list with commas, unaffected by the voice_samples special case', () => {
+    expect(load('target_audience:\n  - Founders\n  - CTOs\n').extras.target_audience).toBe('Founders, CTOs');
+  });
 });

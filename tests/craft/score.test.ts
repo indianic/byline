@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { scoreDraft } from '../../src/craft/score.js';
+import { CHECK_NAMES, scoreDraft } from '../../src/craft/score.js';
 import { HUMAN_TEXTURES, PERSONA_PRESENCES } from '../../src/craft/dimensions.js';
+import { voiceFingerprint } from '../../src/craft/voice.js';
 import { GHOST_HTML_PROFILE } from '../../src/plugins/platforms/ghost/html-profile.js';
 import { buildProfile } from '../../src/plugins/platforms/wordpress/html-profile.js';
 
-// A draft that satisfies ALL THIRTEEN checks at once, in blog mode against the
+// A draft that satisfies ALL checks in CHECK_NAMES at once, in blog mode against the
 // Ghost profile with no feature image and no research findings.
 //
 // It exists because nothing else in this suite proved a full `pass` was
@@ -745,5 +746,44 @@ describe('news mode scores by the opposite standard', () => {
 
   it('does not run the attribution check on a blog post', () => {
     expect(check(REPORT, 'blog', 'attribution')).toBeUndefined();
+  });
+});
+
+describe('voice_rhythm', () => {
+  const rhythm = (html: string, voiceSample?: ReturnType<typeof voiceFingerprint>) =>
+    scoreDraft(html, GHOST_HTML_PROFILE, undefined, undefined, 'blog', voiceSample && { voiceSample }).checks.find(
+      (c) => c.name === 'voice_rhythm',
+    )!;
+
+  it('reports not evaluated, and ok, when no voice sample is passed', () => {
+    const c = rhythm('<p>Anything at all goes here for this draft.</p>');
+    expect(c.evaluated).toBe(false);
+    expect(c.ok).toBe(true);
+    expect(c.blocking).toBe(false);
+    expect(c.detail).toContain('not evaluated');
+  });
+
+  it('flags a draft whose rhythm diverges from the sample', () => {
+    const sample = voiceFingerprint(
+      'When we started this project the team had almost no budget to speak of at all here. ' +
+        'We spent the first six weeks arguing about a database that nobody ever migrated in the end at all. ' +
+        'Eventually somebody senior enough said no and the whole plan finally changed for the better in the end.',
+    );
+    const shortSentences = '<p>' + 'We shipped this fast today somehow. '.repeat(10) + '</p>';
+    const c = rhythm(shortSentences, sample);
+    expect(c.evaluated).not.toBe(false);
+    expect(c.ok).toBe(false);
+    expect(c.findings.join(' ')).toMatch(/Sentences average/);
+  });
+});
+
+describe('CHECK_NAMES', () => {
+  it('lists every check name in the order scoreDraft pushes them, ending with voice_rhythm', () => {
+    expect(CHECK_NAMES[CHECK_NAMES.length - 1]).toBe('voice_rhythm');
+  });
+
+  it('matches exactly what scoreDraft returns for a blog-mode draft', () => {
+    const card = scoreDraft(CLEAN_BLOG_HTML, GHOST_HTML_PROFILE);
+    expect(card.checks.map((c) => c.name)).toEqual(CHECK_NAMES);
   });
 });

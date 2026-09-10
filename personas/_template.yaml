@@ -47,6 +47,9 @@ persona_specific_instructions_for_ai: ""
 #   quote_usage_frequency     shape the evidence and sourcing rules
 #   favorite_rhetorical_devices, commonly_used_transitions, use_of_humor
 #                             join the per-article voice texture
+#   voice_samples             two or three passages of your own writing; the
+#                             brief carries them and score_draft compares
+#                             rhythm against them
 #
 # Do NOT pin the article's opening, ending or overall shape here. Byline draws
 # a fresh hook, arc and closing for every article on purpose, so a weekly blog
@@ -75,5 +78,15 @@ persona_specific_instructions_for_ai: ""
 # opinion_style: "Balanced, evidence-based, forward-looking"
 # technology_writing_style: "Explain simply, remove hype, discuss limitations"
 # leadership_style: "Lead by example, long-term thinking, ownership mindset"
+
+# voice_samples:
+#   - |
+#     We shipped it fast, and it broke by Thursday. Nobody was surprised — the
+#     team had said as much in standup, twice, and I overruled both warnings
+#     because the deadline mattered more that week than it should have.
+#   - |
+#     I don't think the rewrite itself was the mistake. The mistake was doing
+#     it while the old system was still taking live traffic. We learned that
+#     the hard way, and it cost us a very long weekend.
 
 platform_authors: {}

@@ -10,6 +10,7 @@ import {
   evidenceNeeded,
   newsAttributionsNeeded,
 } from './score.js';
+import { normaliseSamples, pct, voiceFingerprint } from './voice.js';
 
 interface BriefBase {
   persona: Persona;
@@ -339,7 +340,36 @@ const WIRED_EXTRAS = new Set([
   'favorite_rhetorical_devices',
   'commonly_used_transitions',
   'use_of_humor',
+  'voice_samples',
 ]);
+
+/**
+ * The VOICE SAMPLES block: passages the author actually wrote, rendered
+ * verbatim so the writer can match their rhythm rather than a description of
+ * it. Empty string when the persona carries no `voice_samples` extra.
+ *
+ * The measured line is not decoration — it is `compareVoice`'s own inputs,
+ * printed so the writer can see what score_draft's `voice_rhythm` check will
+ * grade the draft against before writing a word.
+ */
+function voiceBlock(p: Persona): string {
+  const samples = normaliseSamples(extrasOf(p).voice_samples);
+  if (samples.length === 0) return '';
+  const fp = voiceFingerprint(samples.join('\n\n'));
+  const sampleText = samples.map((s, i) => `--- sample ${i + 1} ---\n${s}`).join('\n');
+  return `=== VOICE SAMPLES — HOW THIS AUTHOR ACTUALLY WRITES ===
+Below are passages the author wrote. They are the voice; everything else in this
+brief is a default. Match their rhythm, sentence length, diction and use of
+contractions. Where a sample contradicts a TEXTURE or HUMANISING instruction, the
+sample wins. Never quote, reuse or paraphrase a sentence from them, and never
+mention that samples exist.
+Measured from the samples: ${fp.sentences} sentences, ${fp.meanLength.toFixed(1)} words per sentence on average,
+spread ${fp.sd.toFixed(1)}, contractions in ${pct(fp.contractionRate)}% of sentences, first person in ${pct(fp.firstPersonRate)}%.
+
+${sampleText}
+
+`;
+}
 
 /**
  * The persona's own length preference, as a minimum word count.
@@ -763,7 +793,7 @@ ${ex(p, 'target_audience', '- Written for: $ — pitch every explanation at the 
 SPECIFIC AUTHOR INSTRUCTIONS
 ${or(p.persona_specific_instructions_for_ai, 'Provide actionable takeaways grounded in real experience.')}
 
-${modeBlock}
+${voiceBlock(p)}${modeBlock}
 
 ${researchBlock}
 

@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Persona `voice_samples`** — two or three passages of your own writing, carried into
+  the writing brief verbatim (a new VOICE SAMPLES block, with a measured line of sentence
+  count, mean length, spread, contraction rate and first-person rate) and compared against
+  the draft by a new `score_draft` check, `voice_rhythm`. Advisory, and honest about its
+  limits: it checks sentence length and contraction use only, and reports "not evaluated"
+  rather than a silent pass when no persona (or no `voice_samples`) is supplied.
+
 ## [1.10.0] - 2026-08-12
 
 ### Added

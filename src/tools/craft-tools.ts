@@ -6,7 +6,8 @@ import { getSite, usableSites } from '../config/sites.js';
 import type { Context } from '../context.js';
 import { buildBrief } from '../craft/brief.js';
 import type { HtmlProfile } from '../craft/html-profile.js';
-import { scoreDraft, type FeatureImageInput } from '../craft/score.js';
+import { CHECK_NAMES, scoreDraft, type FeatureImageInput } from '../craft/score.js';
+import { normaliseSamples, voiceFingerprint } from '../craft/voice.js';
 import { ToolError, ok } from '../errors.js';
 import { getPlugin, makeAdapter } from '../plugins/registry.js';
 import { findingSchema, researchResultSchema } from '../plugins/research/schema.js';
@@ -216,12 +217,18 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
       title: 'Score draft',
       description:
         'Mechanically score a draft for human-voice quality: burstiness, AI-tell phrasing, paragraph uniformity, evidence density, target-platform HTML validity, and — when `findings` is passed — whether every cited URL actually came from the research. Pass `mode` matching how the draft was written: blog is scored for first-hand experience and first person, news for third-person reporter voice and attribution density instead. No external API is called. ' +
-        'READ `publishable` AND `summary`, NOT the verdict alone. Only three of the thirteen checks can block. ' +
+        `READ \`publishable\` AND \`summary\`, NOT the verdict alone. Only three of the ${CHECK_NAMES.length} checks can block. ` +
         'verdict "blocked" (publishable: false) means fix and re-score. ' +
         'verdict "advisory" means the draft IS publishable and the listed items are optional improvements — apply the cheap ones as inline edits if you like, but DO NOT rewrite the article and DO NOT re-score in a loop chasing them. ' +
         'verdict "pass" means everything passed.',
       inputSchema: {
         html: z.string(),
+        persona: z
+          .string()
+          .optional()
+          .describe(
+            "Persona slug. When that persona has voice_samples, the draft's sentence rhythm is compared against them (voice_rhythm). Without it that check reports \"not evaluated\".",
+          ),
         site: z
           .string()
           .optional()
@@ -254,7 +261,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
           .boolean()
           .default(false)
           .describe(
-            'Return the full detail of every check, including the ones that passed. Off by default: a passing check has nothing actionable in it, and returning all thirteen with their prose every call was roughly a thousand wasted tokens per score. With this off you still get every FAILING check in full, plus the names of the ones that passed.',
+            `Return the full detail of every check, including the ones that passed. Off by default: a passing check has nothing actionable in it, and returning all ${CHECK_NAMES.length} with their prose every call was roughly a thousand wasted tokens per score. With this off you still get every FAILING check in full, plus the names of the ones that passed.`,
           ),
       },
     },
@@ -262,6 +269,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
       'score_draft',
       async (a: {
         html: string;
+        persona?: string;
         site?: string;
         feature_image?: FeatureImageInput;
         findings?: Finding[];
@@ -269,7 +277,24 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
         verbose: boolean;
       }) => {
         const profile = await profileFor(ctx, a.site);
-        const card = scoreDraft(a.html, profile, a.feature_image, a.findings, a.mode);
+        // A persona's voice_samples fingerprint their own rhythm once here,
+        // rather than inside scoreDraft — scoreDraft takes the already-computed
+        // fingerprint (via opts.voiceSample) so it never has to know how a
+        // persona file is shaped.
+        const voiceSample = a.persona
+          ? (() => {
+              const samples = normaliseSamples(getPersona(ctx.personas, a.persona!).extras.voice_samples);
+              return samples.length > 0 ? voiceFingerprint(samples.join('\n\n')) : undefined;
+            })()
+          : undefined;
+        const card = scoreDraft(
+          a.html,
+          profile,
+          a.feature_image,
+          a.findings,
+          a.mode,
+          voiceSample ? { voiceSample } : undefined,
+        );
         if (a.verbose) return ok(card);
         // Kept in full: every FAILING check, because it is the only actionable
         // part, and every UNEVALUATED one, because "nothing verified this" is

@@ -715,6 +715,15 @@ persona_specific_instructions_for_ai: |
   marketing version. Never write a paragraph that could apply to any company.
 ```
 
+**Give it two paragraphs you actually wrote.** `writing_style: Analytical` and
+`tone_of_voice: Dry` describe an intent nothing can check; add `voice_samples` — two or
+three passages of your own writing, as a YAML list — and there is something to check
+against. The brief carries your samples into the prompt verbatim, so the writer imitates
+your rhythm directly instead of a description of it, and `score_draft`'s `voice_rhythm`
+check then compares the draft against them on exactly two things: **sentence length** and
+**contraction use**. Nothing else about voice is machine-checked — diction, structure, and
+whether a draft actually sounds like you still need a human read.
+
 #### The persona shapes the writing — it does not get announced in it
 
 A persona pasted into a prompt has a signature: every article opens by introducing the

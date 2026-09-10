@@ -1,9 +1,59 @@
-# Rules for working in this repository
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+```bash
+npm test                                              # unit suite, no network (vitest)
+npx vitest run tests/tools.test.ts                    # one file
+npx vitest run tests/tools.test.ts -t "schedule"      # one test by name
+RUN_INTEGRATION=1 npx vitest run tests/integration/   # live Ghost/WordPress/research APIs; self-skips without a configured site
+npm run typecheck                                     # tsc --noEmit, src/ only
+npm run build                                         # tsc -> dist/
+npm run dev                                           # tsx src/index.ts (MCP server over stdio)
+BYLINE_DEBUG=1 byline <cmd>                           # CLI with stack traces
+```
+
+Two entry points, one binary: `bin/byline.js` dispatches to the CLI when stdin and stdout
+are a TTY, otherwise to the MCP server. Its Node-version guard must stay free of `import`,
+`node:` and top-level `await`.
+
+## Architecture in one screen
+
+The host model does the thinking; Byline does everything that touches the outside world.
+A post moves through the MCP tools in `src/tools/` in this order: `research_topic`
+(optional, `src/plugins/research/`) → `build_writing_brief` (`src/craft/brief.ts` +
+`dimensions.ts`, seeded random per-article hook/arc/voice/texture/author-presence) → the
+host writes HTML → `score_draft` (`src/craft/score.ts`, mechanical regex checks; only
+platform_html, structure and ai_summary_block block) →
+`generate_image(s)`/`upload_image(s)`/`find_media`/`use_media` → `create_post`
+with write-back diffing. Personas are YAML in `~/.byline/personas/` (`src/config/personas.ts`;
+unknown fields are kept as `extras` and rendered into the brief, never dropped).
+
+Three invariants shape the code more than anything else:
+
+- **Brief and scorer share one definition.** `BANNED`, `BANNED_CONSTRUCTIONS` and
+  `THRESHOLDS` live in `score.ts`; `brief.ts` imports them so what the writer is warned
+  about and what it is marked down for cannot drift.
+- **`HtmlProfile` drives platform-specific prose.** Ghost's is a constant; WordPress's is
+  resolved per user from `unfiltered_html` and fails toward restrictive. Nothing under
+  `src/craft/` or `src/tools/` names a platform.
+- **Plugins register in one place each**: platforms in `src/plugins/registry.ts`, provider
+  families (images, research) in `src/plugins/providers.ts`. `src/cli/` walks their
+  `CredentialField` descriptors and names no platform or provider.
+
+`CONTEXT.md` holds the full architecture and the reasons behind it. The rules below are
+the short version.
+
+---
+
+## Rules for working in this repository
 
 Nine defects reached working code here. Every one typechecked, built, and passed its
 tests. Not one was caught by the suite. These rules are what they cost.
 
-## Verification
+### Verification
 
 - **A mocked test proves the code does what you told it. It cannot prove you told it the
   right thing.** For anything crossing a boundary — HTTP, the MCP tool layer, the
@@ -25,7 +75,7 @@ tests. Not one was caught by the suite. These rules are what they cost.
   deliberately does the opposite, correct the file and say why — a prescription nobody
   implemented reads as a to-do.
 
-## Design
+### Design
 
 - **A guard satisfiable by any non-empty string is not a guard.** Name what it actually
   checks, in the code and in the docs. Say plainly when something is trusted rather than
@@ -55,7 +105,7 @@ tests. Not one was caught by the suite. These rules are what they cost.
   `findings`, never both. Never a fallback between Brave and Tavily — they return
   different shapes, and substituting one silently changes what the writer receives.
 
-## Release
+### Release
 
 - **Run the artifact gate before any publish** — grep the staged tree *and* the extracted
   tarball for credentials and personal identifiers. It caught two real leaks on 1.0.0,
@@ -63,14 +113,18 @@ tests. Not one was caught by the suite. These rules are what they cost.
 - **`npmnic publish` bumps the version itself** (`--patch` default, `--minor`, `--major`).
   Set `package.json` to the version *before* the one you want.
 
-## Testing
+### Testing
 
 - `npm test` (unit, no network), `npm run typecheck`, `npm run build`. Integration behind
   `RUN_INTEGRATION=1`.
-- **1263 passing tests is the floor, not the target.** Never delete a test to make a change
+- **1306 passing tests is the floor, not the target.** Never delete a test to make a change
   pass.
 - **`npm run typecheck` covers `src/**/*` only** — test files are not typechecked. A double
   can cast past an interface it does not satisfy. Assert behaviour at runtime.
+- **Never hardcode a future date in a test.** `tests/tools.test.ts` scheduled posts for
+  `2026-09-04`; the day that date passed, three tests failed on a clean tree because the
+  scheduler correctly refuses a `publish_at` in the past. Derive dates from `Date.now()` or
+  use fake timers.
 - **Never write `process.env = { ...saved }`.** It detaches the object from the process
   environment and `os.homedir()` goes stale for every later test in the worker. Restore per
   key.

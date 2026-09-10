@@ -745,6 +745,51 @@ describe('persona extras — fields the schema does not name', () => {
   });
 });
 
+describe('voice samples — VOICE SAMPLES block', () => {
+  const withSamples = (raw: string) => ({
+    ...base,
+    persona: { ...PERSONA, extras: { voice_samples: raw } } as Persona,
+  });
+
+  it('renders the header, both samples, and the measured line', () => {
+    const raw = [
+      'We shipped it fast. The team was tired. Nobody really cared. It broke twice.',
+      "It's a good thing we checked twice. Don't ask me how we found the bug.",
+    ].join('\n\n');
+    const b = buildBrief({ ...withSamples(raw), seed: 1 }).brief;
+    expect(b).toContain('=== VOICE SAMPLES — HOW THIS AUTHOR ACTUALLY WRITES ===');
+    expect(b).toContain('--- sample 1 ---');
+    expect(b).toContain('We shipped it fast. The team was tired. Nobody really cared. It broke twice.');
+    expect(b).toContain('--- sample 2 ---');
+    expect(b).toContain("It's a good thing we checked twice. Don't ask me how we found the bug.");
+    expect(b).toMatch(/Measured from the samples: \d+ sentences, [\d.]+ words per sentence on average,/);
+    expect(b).toMatch(/spread [\d.]+, contractions in \d+% of sentences, first person in \d+%\./);
+  });
+
+  // Mean/sd must show one decimal even when the computed value is a whole
+  // number — "12" reads as an integer count, "12.0" reads as the rounded
+  // average the spec promises.
+  it('always shows one decimal place, even for a whole-number mean', () => {
+    const raw = [
+      'One two three four five six seven eight nine ten eleven twelve.',
+      'One two three four five six seven eight nine ten eleven twelve.',
+    ].join('\n\n');
+    const b = buildBrief({ ...withSamples(raw), seed: 1 }).brief;
+    expect(b).toContain('12.0 words per sentence on average');
+  });
+
+  it('renders nothing when the persona has no voice_samples', () => {
+    const b = buildBrief({ ...base, seed: 1 }).brief;
+    expect(b).not.toContain('VOICE SAMPLES');
+  });
+
+  it('does not also print voice_samples under ADDITIONAL AUTHOR DIRECTION', () => {
+    const raw = 'We shipped it fast. The team was tired. Nobody really cared. It broke twice.';
+    const b = buildBrief({ ...withSamples(raw), seed: 1 }).brief;
+    expect(b).not.toContain('ADDITIONAL AUTHOR DIRECTION');
+  });
+});
+
 describe('news mode is reporting, not commentary', () => {
   const news = (seed: number) => buildBrief({ ...base, mode: 'news' as const, seed }).brief;
 

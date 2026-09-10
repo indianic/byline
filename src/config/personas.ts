@@ -86,7 +86,13 @@ export function splitExtras(raw: unknown): Record<string, string> {
   const extras: Record<string, string> = {};
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (known.has(key)) continue;
-    const text = asText(value);
+    // voice_samples is split back into separate passages by normaliseSamples()
+    // on blank lines, so a YAML list here must join with a blank line rather
+    // than asText's default ", " — every other key keeps that default.
+    const text =
+      key === 'voice_samples' && Array.isArray(value)
+        ? value.map(asText).filter(Boolean).join('\n\n')
+        : asText(value);
     if (text) extras[key] = text;
   }
   return extras;

@@ -11,6 +11,7 @@ import { type Context, loadContext } from '../src/context.js';
 import { buildServer } from '../src/index.js';
 import { MIN_SCHEDULE_LEAD_MS, clearTimezoneCache } from '../src/plugins/platforms/schedule.js';
 import { IMAGE_LOOKS } from '../src/craft/image-style.js';
+import { CHECK_NAMES } from '../src/craft/score.js';
 import type { PlatformPlugin } from '../src/plugins/platforms/types.js';
 import { PLATFORM_PLUGINS } from '../src/plugins/registry.js';
 import { TavilyResearch } from '../src/plugins/research/tavily/index.js';
@@ -35,6 +36,13 @@ writing_style: Analytical
 tone_of_voice: Dry
 platform_authors:
   personal: "author-1"
+voice_samples:
+  - |
+    When we finally sat down and looked at the real numbers instead of trusting the dashboard the whole story changed completely for the team that year.
+    We had assumed the biggest cost was infrastructure until the audit showed something else entirely different from what everyone had guessed for months.
+  - |
+    Nobody wanted to admit the project was behind schedule until the client asked for a demo we could not actually deliver on time that quarter.
+    The fix was smaller than expected but the trust we lost took considerably longer to rebuild than any of us initially thought it would.
 `;
 
 function makeContext(): Context {
@@ -1111,6 +1119,27 @@ describe('score_draft', () => {
   it('returns a scorecard', async () => {
     const r = await call('score_draft', { html: '<p class="x">a</p>' });
     expect(r.verdict).toBe('blocked');
+  });
+
+  it('reports voice_rhythm not evaluated when no persona is passed', async () => {
+    const r = await call('score_draft', { html: '<p>Anything at all goes here for this draft.</p>', verbose: true });
+    const rhythm = r.checks.find((c: { name: string }) => c.name === 'voice_rhythm');
+    expect(rhythm.evaluated).toBe(false);
+    expect(rhythm.ok).toBe(true);
+  });
+
+  it('compares a draft against the jane-doe persona\'s voice_samples and names both numbers', async () => {
+    // jane-doe's voice_samples (see PERSONA above) run long — well over 20
+    // words per sentence. A draft of uniformly 8-word sentences sits far
+    // outside the 35% tolerance either way.
+    const shortSentenceDraft =
+      '<p>' + 'We shipped the whole thing very quickly today. '.repeat(6) + '</p>';
+    const r = await call('score_draft', { html: shortSentenceDraft, persona: 'jane-doe', verbose: true });
+    const rhythm = r.checks.find((c: { name: string }) => c.name === 'voice_rhythm');
+    expect(rhythm.evaluated).not.toBe(false);
+    expect(rhythm.ok).toBe(false);
+    expect(rhythm.findings.join(' ')).toMatch(/Sentences average 8 words/);
+    expect(rhythm.findings.join(' ')).toMatch(/author's samples average \d/);
   });
 
   // Regression: `profileFor`'s bare fallback (no explicit `site`, no
@@ -2763,12 +2792,12 @@ describe('score_draft output trimming', () => {
     }
     expect(Array.isArray(r.passed)).toBe(true);
     // Nothing vanishes: every check is either returned in full or named.
-    expect(returned.length + r.passed.length).toBe(13);
+    expect(returned.length + r.passed.length).toBe(CHECK_NAMES.length);
   });
 
   it('returns every check in full when verbose is set', async () => {
     const r = await call('score_draft', { html: CLEAN, verbose: true });
-    expect(r.checks).toHaveLength(13);
+    expect(r.checks).toHaveLength(CHECK_NAMES.length);
     expect(r.passed).toBeUndefined();
     expect(r.checks.some((c: { ok: boolean }) => c.ok)).toBe(true);
   });
