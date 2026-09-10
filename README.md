@@ -19,10 +19,13 @@ to the company blog as a draft.
 
 That is the whole interface.
 
-Today it publishes to **Ghost** and **WordPress**. The architecture is
-channel-agnostic on purpose: adding a destination is one folder and one line, so a
-newsletter, a local paper's submission inbox, a social channel, or an email to your
-team are all the same shape of problem. Every one of them has a byline.
+Today it publishes to **Ghost** and **WordPress** through their own APIs, shares a
+**LinkedIn** feed post the same way, and hands off a ready-to-paste folder for
+**Medium**, **Substack**, and LinkedIn Article — platforms with no publishing API of
+their own. See [Platforms without an API](#platforms-without-an-api) for how that
+works. The architecture is channel-agnostic on purpose: adding a destination is one
+folder and one line, so a newsletter, a local paper's submission inbox, or an email
+to your team are all the same shape of problem. Every one of them has a byline.
 
 **Many voices, many destinations.** Write as yourself on one blog and as your company
 on another — each persona carries its own writing style, tone, sentence rhythm, and
@@ -40,7 +43,10 @@ the personal blog"*. See [Author personas](#author-personas-optional).
 
 - **Node 20 or newer.** Check with `node --version`. Anything older prints one clear
   line telling you so — not a stack trace.
-- **A blog you can publish to** — Ghost or WordPress, either self-hosted or managed.
+- **A place to publish to** — Ghost or WordPress (self-hosted or managed) publish
+  directly; Medium, Substack, and LinkedIn Article need only an account, since Byline
+  hands you a ready-to-paste folder instead of calling an API. LinkedIn feed posts
+  publish directly too. See [Platforms without an API](#platforms-without-an-api).
 - **An AI tool** — Claude Code, Claude Desktop, Cursor, Windsurf, Gemini CLI, or Codex.
 
 You do **not** need to know what MCP is, edit any JSON, or write any code.
@@ -380,6 +386,15 @@ Application Password**.
 - You will also be asked for your WordPress **username** — the login name, not your
   display name and not your email.
 
+### LinkedIn — an access token, for feed posts (optional)
+
+**developer.linkedin.com → your app → Auth → OAuth 2.0 tools → generate a token**
+with the scopes `openid`, `profile`, `w_member_social`. Tokens last about 60 days;
+repeat this when one expires. Posting as an organisation (a company page) needs
+`w_organization_social`, granted only after a separate Community Management API
+approval — posting as yourself needs none of that. See
+[`docs/platforms/linkedin.md`](docs/platforms/linkedin.md).
+
 ### Google Gemini — for images (optional)
 
 **Google AI Studio → Get API key → Create API key** (<https://aistudio.google.com/apikey>).
@@ -651,6 +666,34 @@ Pass `site` naming the WordPress site and `embed_video` adds that caveat to its
 
 ---
 
+## Platforms without an API
+
+**Medium, Substack, and LinkedIn Article have no publishing API at all** — not a
+limitation of Byline, a fact about those platforms. `create_post` on one of these
+still does something useful: it writes a folder to your own disk — the article as
+HTML and Markdown, every image, and a page with copy buttons — and you paste the
+result into that platform's own editor by hand. `byline init` asks for a folder
+instead of a credential, and `health_check` on one of these confirms only that
+Byline can write there — it says so, because there is nothing else to check.
+
+```
+Write a post about our Q3 retro and publish it to my-medium.
+```
+
+The result names a folder and a page to open (`index.html`). Open it, click **Copy
+article**, paste into the platform's editor, then drag each image from the
+`images/` folder onto the `[Insert image: …]` line it belongs on and delete the
+marker text — the hand-off page shows exactly which image goes where. Full
+step-by-step instructions per platform, including what each one's editor keeps and
+discards on paste: [`docs/platforms/medium.md`](docs/platforms/medium.md),
+[`docs/platforms/substack.md`](docs/platforms/substack.md).
+
+**LinkedIn feed posts are the opposite case** — a real API, called directly, with no
+paste step — see the LinkedIn paragraph under [How it works](#how-it-works) below and
+[`docs/platforms/linkedin.md`](docs/platforms/linkedin.md).
+
+---
+
 ## Using it
 
 Talk to your AI tool in plain English. It figures out which tool to call.
@@ -834,6 +877,16 @@ that touches the outside world:
    unless you say so** — pass `newsletter` (a Ghost-only slug from `list_newsletters`)
    only when you actually want this post emailed — it does nothing (and warns why)
    on a draft, since Ghost only sends mail on a publish or a schedule.
+
+   **On a LinkedIn site, `create_post` publishes a feed post instead of an
+   article** — one plain-text post plus, optionally, an attached link to the
+   article you just published elsewhere. When a LinkedIn site is configured,
+   `build_writing_brief` writes that post's text for you as part of the same
+   brief, ending it with the literal placeholder `[[article_url]]`; once the
+   article is live, swap that placeholder for the real URL and call
+   `create_post` again against the LinkedIn site. LinkedIn posts go live the
+   moment you call it — there is no draft or scheduled state to ask for. See
+   [`docs/platforms/linkedin.md`](docs/platforms/linkedin.md).
 
 That last point is the design rule everywhere in this project: **nothing fails
 silently.** Every tool returns a result or an error naming the API and its HTTP status.

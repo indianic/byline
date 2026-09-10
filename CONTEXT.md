@@ -115,6 +115,40 @@ free, correctly or incorrectly, exactly as its descriptors describe it. `ImagePr
 was widened to carry the same `CredentialField` type for exactly this reason: one walk
 serves both, and `GEMINI_API_KEY` never has to be named inside `src/cli/`.
 
+#### Export platforms
+
+`src/plugins/platforms/export/` (`ExportAdapter`, `ExportSpec`) is one adapter shared
+by every platform with no publishing API — Medium, Substack, and LinkedIn Article. Each
+plugin's `makeAdapter` is one line (`new ExportAdapter(site, MEDIUM_SPEC)`); `ExportSpec`
+carries only what differs — `platformId`, `label`, the platform's own paste steps, and
+its `HtmlProfile`. `createPost`/`updatePost` write a hand-off folder
+(`article.html`, `article.md`, `meta.json`, `images/`, `index.html`) rather than
+calling a remote API; `healthCheck` verifies only that the folder is writable and says
+so — there is no credential, because there is nothing to authenticate against.
+`siteTimezone` throws (`NO_SITE_TIMEZONE`) and `createPost`/`updatePost` refuse
+`status: 'scheduled'` outright, for the same reason: an export platform has no clock
+Byline can read. Every export `HtmlProfile` has `verified: false` — none of it has been
+confirmed by an actual paste, only reasoned from each editor's documented behaviour; see
+`docs/platforms/medium.md` and `docs/platforms/substack.md`.
+
+#### Social platforms
+
+A `kind: 'social'` `HtmlProfile` (see `HtmlProfile` below) describes a feed-post
+platform — currently `linkedin`, which calls a real API directly rather than exporting
+a folder. `create_post` on one refuses anything but `status: 'published'`
+(`DRAFTS_UNSUPPORTED`) and `siteTimezone` throws (`NO_SITE_TIMEZONE`): a feed post
+publishes the instant `createPost` is called, with no draft state and no scheduling.
+`score_draft` refuses a `kind: 'social'` profile outright (`NOT_AN_ARTICLE_PLATFORM`) —
+it grades article craft, none of which describes a feed post. Instead,
+`build_writing_brief` computes `socialTargets` from every usable site whose resolved
+profile is `kind: 'social'` and, when that list is non-empty, adds a LINKEDIN POST
+section and a `linkedin_post` JSON field to the brief for the article's OWN target
+platform — the LinkedIn post is written alongside the article, not as a separate brief.
+`create_post`'s `recordShare` wiring (see The article ledger, below) is what ties a
+LinkedIn publish back to the article it shares. See `docs/platforms/linkedin.md`; every
+request shape in `linkedin/index.ts` is UNVERIFIED until its integration test has run
+against a real token.
+
 ### The image contract
 
 `src/craft/image-style.ts` is the single definition of what a generated image must look
@@ -286,10 +320,12 @@ differently than it did the first time — the seed was never the whole story on
 something to avoid repeating. `Brief.avoided` reports which indexes were skipped per
 dimension for a given call, so that difference is visible rather than silently absorbed.
 
-**`recordShare` exists and is tested, but nothing calls it yet.** It appends a share to
-whichever ledger record's `url` matches, for a future `kind: 'social'` site profile
-(Phase 5) to record a post's cross-posting to LinkedIn, Medium, or similar. `create_post`
-has a comment marking where that branch belongs.
+**`recordShare` is wired into `create_post` (Phase 5b).** Publishing to a `kind: 'social'`
+site (LinkedIn) with `canonical_url` set is a SHARE of an article already recorded
+somewhere, never a new article of its own: `create_post` checks every configured
+persona's ledger — not just the one publishing the LinkedIn post — for a record whose
+`url` matches `canonical_url`, and calls `recordShare` on whichever one(s) match. A
+`canonical_url` matching nothing warns rather than silently doing nothing.
 
 ### `HtmlProfile`
 
@@ -309,6 +345,11 @@ non-empty. WordPress was the first profile to have an empty one, and it produced
 shipped sentence telling a writer to *"add a styled `<div>` summary block (a `<div>`
 card would be stripped)"* — on the one platform where a `<div>` is exactly what
 survives. `tsc` cannot see this; both profiles are structurally valid.
+
+**`HtmlProfile.kind` is `'article'` or `'social'`.** Every profile before Phase 5 was
+implicitly an article; `kind: 'social'` (LinkedIn's `LINKEDIN_POST_PROFILE`) exists so
+`score_draft` can refuse honestly (`NOT_AN_ARTICLE_PLATFORM`) rather than grading a
+feed post by article rules it was never written to satisfy. See Social platforms, above.
 
 ---
 

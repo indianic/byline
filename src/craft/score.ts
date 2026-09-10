@@ -1,3 +1,4 @@
+import { ToolError } from '../errors.js';
 import type { Finding } from '../plugins/research/types.js';
 import type { HtmlProfile } from './html-profile.js';
 import { compareVoice, voiceFingerprint, type VoiceFingerprint } from './voice.js';
@@ -321,6 +322,18 @@ export function scoreDraft(
   mode: 'blog' | 'news' = 'blog',
   opts?: ScoreDraftOptions,
 ): Scorecard {
+  // A feed-post platform has no articles for this to grade — headings, evidence
+  // density, and a summary block above the fold all describe a different craft
+  // than a LinkedIn post or a tweet. Refuse rather than silently apply article
+  // rules to something that was never one.
+  if (profile.kind === 'social') {
+    throw new ToolError({
+      api: 'craft',
+      code: 'NOT_AN_ARTICLE_PLATFORM',
+      message: `${profile.label} is a feed-post platform; score_draft grades articles. Score the article on the site it was published to.`,
+    });
+  }
+
   const text = stripTags(html);
   const words = text ? text.split(/\s+/).length : 0;
   const checks: Check[] = [];
@@ -610,6 +623,18 @@ export function scoreDraft(
 
   const rawUrl = stripTags(html.replace(/<a\s[^>]*>.*?<\/a>/gis, ''));
   if (/https?:\/\/\S+/.test(rawUrl)) htmlFindings.push('raw URL in body text — wrap it in an <a> tag');
+
+  // Separate from the unwrapped/disallowed tag scan above: a platform can list
+  // `table` in `preserved` (the tag survives ingest as an element) while still
+  // having no `table` in `visualContainers` — the tag surviving says nothing
+  // about whether it is usable, only that it is not silently stripped. This
+  // flags the DATA PRESENTATION guidance's own premise: on a platform with no
+  // confirmed table container, a table published this way reads as a wall of
+  // plain text lines, not a table.
+  const tables = profile.visualContainers.includes('table');
+  if (!tables && /<table[\s>]/i.test(html)) {
+    htmlFindings.push(`<table> — ${name} has no tables; it pastes as plain text lines. Use a list.`);
+  }
 
   // A native-rebuilt blockquote is reconstructed by the platform, which throws
   // away the inline style and any inner <p>. Styling one is wasted effort that

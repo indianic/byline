@@ -72,6 +72,21 @@ interface BriefBase {
     avoid: Record<string, number[]>;
     siblings?: ArticleRecord[];
   };
+  /**
+   * Other configured sites whose resolved `HtmlProfile` has `kind: 'social'`
+   * — currently always a LinkedIn feed-post site. `build_writing_brief`
+   * (`craft-tools.ts`) computes this from `usableSites`, resolving each
+   * site's profile and catching a per-site failure into the brief's own
+   * `warnings` rather than failing the whole brief over an unreachable
+   * second blog.
+   *
+   * Optional, defaulting to "no social site configured" (`undefined`, same
+   * as an empty array) — every existing `buildBrief` call site predates this
+   * field and must keep rendering exactly as before. Only a non-empty array
+   * renders the LINKEDIN POST section and adds `linkedin_post` to the JSON
+   * contract; both are absent otherwise.
+   */
+  socialTargets?: Array<{ site: string; label: string }>;
 }
 
 /**
@@ -193,7 +208,7 @@ function rng(seed: number): () => number {
 
 /**
  * The cheap half of `buildBrief`: one RNG draw per dimension in
- * `dimensionsFor(inlineStyles)`'s insertion order, with the anti-repeat walk
+ * `dimensionsFor(profile)`'s insertion order, with the anti-repeat walk
  * for `ANTI_REPEAT_DIMENSIONS` applied against `avoid`. Extracted so
  * `planSeries` can score thousands of candidate seeds per slot without paying
  * for the full brief text (research block, HTML rules, scorecard maths) on
@@ -203,14 +218,19 @@ function rng(seed: number): () => number {
  * Byte-for-byte the same draw `buildBrief` used to do inline: every existing
  * seed-pinning test in `tests/craft/brief.test.ts` is the guard that this
  * extraction changed nothing.
+ *
+ * Takes the same `Pick<HtmlProfile,'inlineStyles'|'visualContainers'>` shape
+ * `dimensionsFor` does, rather than a bare `inlineStyles` boolean — the
+ * dimension set now also depends on whether the platform has a `table` in
+ * `visualContainers` at all (see `dimensionsFor`'s doc comment).
  */
 export function drawChoices(
   seed: number,
-  inlineStyles: boolean,
+  profile: Pick<HtmlProfile, 'inlineStyles' | 'visualContainers'>,
   avoid: Record<string, number[]> | undefined,
 ): { choices: Record<DimensionName, number>; avoided: Record<string, number[]> } {
   const next = rng(seed);
-  const dimensions = dimensionsFor(inlineStyles);
+  const dimensions = dimensionsFor(profile);
   const choices = {} as Record<DimensionName, number>;
   const avoided: Record<string, number[]> = {};
 
@@ -300,6 +320,41 @@ ${lines}
 Link to the pillar article and to one sibling where it fits; never to all of them.
 
 `;
+}
+
+/**
+ * The LINKEDIN POST section — rendered only when at least one configured
+ * site resolved to a `kind: 'social'` profile (`input.socialTargets`,
+ * computed by `build_writing_brief` in `craft-tools.ts`). Empty string when
+ * there is none: an article for an account with no LinkedIn site configured
+ * must not carry an instruction to write a post nowhere can receive it.
+ */
+function socialTargetsBlock(input: BriefInput): string {
+  const targets = input.socialTargets;
+  if (!targets || targets.length === 0) return '';
+  const sites = targets.map((t) => t.site).join(', ');
+  return `=== LINKEDIN POST — WRITE THIS TOO ===
+A LinkedIn site is configured (${sites}). After the article is published, the user may
+ask for a LinkedIn post about it. Write it now, into the linkedin_post field, so it is
+ready: 900–1,500 characters, first person as ${input.persona.name}, ONE idea from the article
+stated as a position — not a summary of everything. The first 200 characters must stand
+alone, because that is all the feed shows before "see more". No "Excited to share", no
+emoji rows, no hashtags in the body. End with the literal text [[article_url]] on its own
+line — create_post replaces nothing; YOU swap it for the published URL before posting. Then
+3–5 hashtags: one broad, the rest specific to the article's subject.
+
+`;
+}
+
+/**
+ * The `linkedin_post` JSON field, appended to the OUTPUT FORMAT contract —
+ * present only alongside `socialTargetsBlock`'s own instruction. Never
+ * asked for with nothing telling the writer to fill it in.
+ */
+function socialJsonField(input: BriefInput): string {
+  if (!input.socialTargets || input.socialTargets.length === 0) return '';
+  return `,
+  "linkedin_post": { "text": "…ends with [[article_url]]", "hashtags": ["Tag", "Tag"] }`;
 }
 
 /**
@@ -577,8 +632,11 @@ export function buildBrief(input: BriefInput): Brief {
   const words = input.wordCount ?? personaWordCount(p) ?? 800;
   const language = input.language ?? p.language_written;
 
-  const dimensions = dimensionsFor(input.profile.inlineStyles);
-  const { choices, avoided } = drawChoices(seed, input.profile.inlineStyles, input.history?.avoid);
+  const dimensions = dimensionsFor(input.profile);
+  const { choices, avoided } = drawChoices(seed, input.profile, input.history?.avoid);
+  // Whether this platform has a `table` in `visualContainers` at all — used
+  // below to phrase the EVIDENCE section honestly for a platform that has none.
+  const tables = input.profile.visualContainers.includes('table');
   const picked = {} as Record<DimensionName, string>;
   for (const name of Object.keys(dimensions) as DimensionName[]) {
     picked[name] = dimensions[name][choices[name]]!;
@@ -941,7 +999,7 @@ ${recentArticlesBlock(input.history)}${seriesBlock(input.history)}${craftBlock}
 
 ${imageSection}
 
-=== TABLE THEME — USE THESE EXACT COLOURS ===
+=== DATA PRESENTATION ===
 ${picked.tableTheme}
 
 === BLOCKQUOTE STYLE — USE EXACTLY ===
@@ -1013,7 +1071,7 @@ ${scorecardTargets(words, input.mode)}
 The counts live in SCORECARD TARGETS above — this section is about what makes an
 evidence item worth citing, not how many you need.
 - Include real figures, percentages, or comparative data rather than adjectives.
-- One data table: benchmarks, tool comparison, case-study metrics, before/after, cost-benefit, or timeline.
+- ${tables ? 'One data table: benchmarks, tool comparison, case-study metrics, before/after, cost-benefit, or timeline.' : 'One comparison, as a list — this platform has no tables.'}
 - Cite recognised sources and hyperlink them.
 ${ex(p, 'citation_preference', '- Prefer these sources, in this order: $')}${ex(p, 'fact_checking_level', '- Fact-checking level: $. A claim you cannot source is cut, not softened.')}${ex(p, 'preferred_quotes_from', '- If you quote a thinker, prefer: $')}${ex(p, 'quote_usage_frequency', '- Quotation frequency: $. Never open the article with someone else\'s words.')}
 - ${input.mode === 'news' ? 'Every substantive fact carries its source in the same sentence or the next.' : 'A first-hand moment means a named scenario, a specific trade-off, or a decision you regretted — not a general claim about your experience.'}
@@ -1026,7 +1084,7 @@ ${HUMANISING}
 ${ex(p, 'avoid_in_writing', '\nAlso never, per this author\'s own rules: $')}
 ${extrasBlock(p)}
 
-=== OUTPUT FORMAT ===
+${socialTargetsBlock(input)}=== OUTPUT FORMAT ===
 Return ONLY a valid JSON object. No markdown, no code fences, no preamble.
 
 Social titles must NOT duplicate the SEO title — a social card competes for a
@@ -1050,7 +1108,7 @@ differently on purpose.
 ${imageJsonFields}  "tags": ["tag1", "tag2"],
   "categories": ["one or two broad categories — used where the platform has them, ignored elsewhere"],
   "primary_keyword": "main keyword",
-  "secondary_keywords": ["k1", "k2", "k3"]
+  "secondary_keywords": ["k1", "k2", "k3"]${socialJsonField(input)}
 }
 
 The faq array must mirror the Frequently asked questions section in html_content

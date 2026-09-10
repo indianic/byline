@@ -20,7 +20,16 @@ export function registerPersonaTools(server: McpServer, ctx: Context): void {
     },
     handler('list_authors', async (a: { site: string }) => {
       requireSetup(ctx, 'sites');
-      const authors = await adapterFor(ctx, a.site).listAuthors();
+      const adapter = adapterFor(ctx, a.site);
+      // Platforms whose author listing has a best-effort part (LinkedIn's
+      // organisation lookup) implement `listAuthorsDetailed` to carry a
+      // failure there as a warning rather than dropping it silently — see
+      // `PlatformAdapter.listAuthorsDetailed`'s doc comment. Platforms with
+      // nothing best-effort about the listing have no reason to implement it,
+      // so this falls back to the plain `listAuthors` when it is absent.
+      const { authors, warnings } = adapter.listAuthorsDetailed
+        ? await adapter.listAuthorsDetailed()
+        : { authors: await adapter.listAuthors(), warnings: [] };
       const byId = new Map(
         [...ctx.personas.values()].flatMap((p) =>
           Object.entries(p.platform_authors)
@@ -34,6 +43,7 @@ export function registerPersonaTools(server: McpServer, ctx: Context): void {
           ...u,
           persona: byId.get(u.id) ?? null,
         })),
+        ...(warnings.length > 0 ? { warnings } : {}),
       });
     }),
   );

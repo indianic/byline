@@ -119,8 +119,26 @@ If the user gave a `publish_at`, pass `status: "scheduled"` with that wall-clock
 **verbatim**, in the blog's own timezone. Do not convert it and do not ask which timezone
 is meant.
 
-<!-- 6b. LinkedIn — when the site list includes a LinkedIn API site and the user asked
-     for a LinkedIn post, share this article there (Phase 5). Not implemented yet. -->
+### 6b. LinkedIn — optional, one or two extra calls
+
+If a LinkedIn site is configured — step 1's brief carried a LINKEDIN POST section
+and its JSON included a `linkedin_post` field when one is — and the user asked for
+a LinkedIn post about this article, share it now:
+
+Take `linkedin_post.text` from step 1's output and replace the literal
+`[[article_url]]` with the URL step 6 just returned — `create_post` refuses html
+still containing that placeholder, on purpose, so this substitution happens here,
+not inside Byline. If the article has a hero image, `upload_image(site: <linkedin
+site>, path: <hero image local path>)` first; LinkedIn's `upload_image` returns an
+image **urn**, not a URL — pass it as `feature_image_id`, not `feature_image`.
+
+Then `create_post(site: <linkedin site>, html: <one <p> per paragraph from
+linkedin_post.text>, canonical_url: <the article's URL>, tags:
+linkedin_post.hashtags, feature_image_id: <the urn, if uploaded>)`. LinkedIn feed
+posts publish immediately — there is no draft or schedule to choose.
+
+Report both URLs to the user: the article's, and the LinkedIn post's
+(`https://www.linkedin.com/feed/update/<id>/`).
 
 ### 7. Report
 

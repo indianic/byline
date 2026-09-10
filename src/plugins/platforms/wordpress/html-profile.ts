@@ -234,6 +234,8 @@ export function buildProfile(inlineStyles: boolean): HtmlProfile {
     // conditioned on this so an unverified profile never claims to be
     // "VERIFIED BY LIVE PROBE".
     verified: inlineStyles,
+
+    kind: 'article',
   };
 }
 

@@ -1,14 +1,20 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { parse } from 'yaml';
-import { SLUG_PATTERN, SLUG_RULE } from '../config/sites.js';
+import { SLUG_PATTERN, SLUG_RULE } from '../config/slug.js';
 import { ToolError } from '../errors.js';
 import type { LibraryConfig, MediaConfig } from './types.js';
 
 const EMPTY: MediaConfig = { reuseScope: 'site', libraries: {}, problems: [] };
 
-/** Expand a leading `~` against the supplied environment's HOME, then absolutise. */
-function expandPath(raw: string, env: NodeJS.ProcessEnv): string {
+/**
+ * Expand a leading `~` against the supplied environment's HOME, then absolutise.
+ *
+ * Exported so `src/plugins/platforms/export/adapter.ts` (`export_dir` in a
+ * site's credentials, e.g. `~/Documents/byline-post`) can reuse this instead
+ * of writing a second `~`-expansion helper — one rule, one definition.
+ */
+export function expandPath(raw: string, env: NodeJS.ProcessEnv): string {
   const home = env.HOME ?? env.USERPROFILE ?? '';
   const expanded = raw === '~' ? home : raw.startsWith('~/') ? join(home, raw.slice(2)) : raw;
   return isAbsolute(expanded) ? expanded : resolve(expanded);

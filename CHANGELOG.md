@@ -9,6 +9,44 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Medium, Substack, and LinkedIn Article exports; LinkedIn feed posts.** Three
+  platforms with no publishing API — Medium, Substack, and LinkedIn Article — now
+  publish through a shared `ExportAdapter` (`src/plugins/platforms/export/`):
+  `create_post` writes a hand-off folder (`article.html`, `article.md`,
+  `meta.json`, `images/`, and a self-contained `index.html` with copy-to-clipboard
+  buttons) instead of calling a remote API, and you paste the result in by hand.
+  `healthCheck` on these verifies only that the folder is writable, and says so —
+  there is no credential. Scheduling and every field with nowhere to go (SEO/OG/
+  Twitter metadata, newsletters, per-post authors) are refused or warned about by
+  name, never silently dropped. Each platform's `HtmlProfile` is `verified: false`
+  — reasoned from that editor's documented paste behaviour, never confirmed by an
+  actual paste.
+
+  A fourth, genuinely different platform — `linkedin` — publishes a real LinkedIn
+  feed post through LinkedIn's REST API: one plain-text `commentary` (built from
+  `html`, 3000-character LinkedIn limit enforced), optionally with one attached
+  article link, published immediately with no draft state and no scheduling
+  (`DRAFTS_UNSUPPORTED`, `NO_SITE_TIMEZONE`). `author_urn` accepts the literal
+  `urn:li:person:me`, resolved from `/v2/userinfo`'s `sub` at request time.
+  `upload_image` returns the image's own urn, not a URL — LinkedIn exposes no
+  public one. Every request/response shape in this plugin is UNVERIFIED until its
+  integration test has run against a real access token — marked so in the code,
+  the plugin's `README.md`, and `docs/platforms/linkedin.md`.
+
+  `HtmlProfile` gains `kind: 'article' | 'social'` to describe this honestly:
+  `score_draft` refuses a `kind: 'social'` profile outright
+  (`NOT_AN_ARTICLE_PLATFORM`) rather than grading a feed post by article rules.
+  `build_writing_brief` computes `socialTargets` from every usable site whose
+  profile is `kind: 'social'` and, when non-empty, adds a LINKEDIN POST section
+  and a `linkedin_post` JSON field to the brief for whichever site the article
+  itself is being written for — the post text ends with the literal placeholder
+  `[[article_url]]`, swapped for the real URL by the caller before publishing.
+  `create_post`'s long-standing `recordShare` hook is finally wired: publishing to
+  a `kind: 'social'` site with `canonical_url` set records a share against
+  whichever persona's ledger has a matching article URL, instead of recording a
+  new article, and warns rather than failing when nothing matches. New
+  per-platform help files answer connect/publish/paste/troubleshoot for each of
+  the four in `docs/platforms/`.
 - **Per-persona article ledger.** `create_post` now records a successful publish to
   `~/.byline/articles/<persona>.json` — id, url, title, tags, and whatever of
   `brief_seed`/`brief_choices`/`topic`/`primary_keyword`/`series` were passed through

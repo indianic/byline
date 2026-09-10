@@ -1,5 +1,6 @@
 import type { SiteConfig } from '../../../config/sites.js';
 import { ToolError } from '../../../errors.js';
+import { mimeFor } from '../../images/inspect.js';
 import { basicAuthHeader } from './auth.js';
 import {
   assertScheduleApplied,
@@ -35,29 +36,16 @@ interface WordPressPostResponse {
   content?: { raw?: string; rendered?: string };
 }
 
-const IMAGE_MIME: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-  avif: 'image/avif',
-};
-
 /**
- * WordPress's media endpoint takes raw bytes rather than a multipart part, but
- * still needs to know what those bytes are. Confirmed by live probe on
- * 2026-07-29 against a real WordPress install: an upload with no `Content-Type`
- * at all is rejected outright with a 400
- * `{"code":"rest_upload_no_content_type","message":"No Content-Type supplied."}`
- * — harder than Ghost's 415 for the same class of mistake. The `Content-Type`
- * header is therefore always set explicitly, never left to guesswork.
+ * Re-exported so every existing `import { mimeFor } from '.../wordpress/index.js'`
+ * keeps working unchanged. The definition itself now lives in
+ * `src/plugins/images/inspect.ts` — see that file's doc comment — because the
+ * `linkedin` plugin's `uploadImage` needs the exact same filename→mime mapping
+ * for its own `PUT uploadUrl` step, and a second hand-maintained copy is
+ * exactly how `SLUG_PATTERN` and the image providers' env var names drifted
+ * before.
  */
-export function mimeFor(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
-  return IMAGE_MIME[ext] ?? 'application/octet-stream';
-}
+export { mimeFor } from '../../images/inspect.js';
 
 /**
  * Fields `PostInput` carries that WordPress core has no place to store.

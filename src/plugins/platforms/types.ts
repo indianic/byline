@@ -211,6 +211,25 @@ export interface PlatformAdapter {
   listTags(): Promise<Array<{ id: string; name: string; slug: string }>>;
   listAuthors(): Promise<Array<{ id: string; name: string; email?: string }>>;
   /**
+   * `listAuthors`, plus any warning from a best-effort part of the listing
+   * that failed rather than one that legitimately found nothing.
+   *
+   * Exists for platforms whose author listing is not one clean call: LinkedIn's
+   * is the person (always resolvable) plus any organisation the token
+   * administers (best-effort — most personal tokens have no organisation
+   * access at all, which is not a failure). `listAuthors`'s return shape is a
+   * bare array with no channel for a non-fatal warning, so a platform with
+   * nothing best-effort about its listing has no reason to implement this;
+   * `list_authors` (`src/tools/persona-tools.ts`) calls it when present and
+   * falls back to `listAuthors` otherwise, surfacing `warnings` in its result
+   * when there are any rather than swallowing the failure — see LinkedIn's
+   * `listAuthorsDetailed` for the one implementation today.
+   */
+  listAuthorsDetailed?(): Promise<{
+    authors: Array<{ id: string; name: string; email?: string }>;
+    warnings: string[];
+  }>;
+  /**
    * Newsletters this platform can email a post to on publish (Ghost's
    * `newsletter` field). Platforms with no such concept — WordPress core —
    * simply do not implement this; `list_newsletters` (`src/tools/site-tools.ts`)

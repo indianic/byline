@@ -3,6 +3,7 @@
 // purpose is to work for a caller who never ran `build_writing_brief` — and two
 // hand-maintained copies of one rule is exactly how SLUG_PATTERN and the image
 // providers' env var names drifted in earlier phases.
+import type { HtmlProfile } from './html-profile.js';
 import { IMAGE_LOOKS } from './image-style.js';
 
 export { IMAGE_LOOKS };
@@ -123,6 +124,32 @@ export const PLAIN_TABLE_THEMES = [
 ] as const;
 
 /**
+ * For a platform whose `visualContainers` has no `table` at all — not merely
+ * one that strips styling from a table it does have. A paste-based export
+ * platform (Medium, Substack, LinkedIn Article) has no confirmed table
+ * container, so instructing one here would ask the writer for markup that
+ * either has nowhere to survive or pastes as an unreadable wall of text.
+ */
+export const NO_TABLE_PRESENTATION = [
+  'DATA PRESENTATION — No tables: this platform has none. Present comparison data as a bulleted list, one bullet per row, each opening with the row label in bold, or as one short paragraph per row.',
+] as const;
+
+/**
+ * Summary-block and callout skins for a platform with no table container at
+ * all. Every other skin in this file is a `<table>`, because a table is the
+ * one element that keeps custom styling on every platform that has one — a
+ * platform with none has no equivalent, so these fall back to the one
+ * container such a platform DOES list: a `<blockquote>`.
+ */
+export const QUOTE_SUMMARY_BLOCKS = [
+  "SUMMARY BLOCK — Quote: a <blockquote> containing ONE <strong>bolded one-sentence answer</strong> to the article's core question, immediately followed (outside the blockquote) by a <ul> of 3-4 takeaways each opening with a bolded 2-4 word label. No style attributes.",
+] as const;
+
+export const QUOTE_CALLOUTS = [
+  'CALLOUT PANEL — Quote: a <blockquote> with <strong>Short bolded label.</strong> then the point, two sentences at most.',
+] as const;
+
+/**
  * How the author's identity surfaces in the prose.
  *
  * This exists because the brief used to do exactly one thing with a persona:
@@ -213,20 +240,30 @@ export const NEWS_STRUCTURES = [
 
 /**
  * Pick the dimension set matching what the target platform preserves.
- * Styled variants are used only where inline styles actually survive.
+ *
+ * Two independent facts decide the table-shaped dimensions (`tableTheme`,
+ * `summaryBlock`, `callout` — every styled skin for these is a `<table>`):
+ * whether the platform has a `table` in `visualContainers` at all (`tables`),
+ * and whether inline `style=` attributes survive ingest (`profile.inlineStyles`).
+ * A platform with no table container (an export platform pasted by hand) gets
+ * the blockquote-based `QUOTE_*` variants regardless of `inlineStyles` — there
+ * is no table to style. `blockquote` itself varies on `inlineStyles` alone, as
+ * before: a blockquote is a container every profile in this codebase lists.
  */
-export function dimensionsFor(inlineStyles: boolean) {
+export function dimensionsFor(profile: Pick<HtmlProfile, 'inlineStyles' | 'visualContainers'>) {
+  const tables = profile.visualContainers.includes('table');
+  const stylable = profile.inlineStyles && tables;
   return {
     hook: HOOKS,
     arc: ARCS,
     voice: VOICES,
     story: STORIES,
     imagePlacement: IMAGE_PLACEMENTS,
-    tableTheme: inlineStyles ? TABLE_THEMES : PLAIN_TABLE_THEMES,
-    blockquote: inlineStyles ? BLOCKQUOTES : PLAIN_BLOCKQUOTES,
+    tableTheme: stylable ? TABLE_THEMES : tables ? PLAIN_TABLE_THEMES : NO_TABLE_PRESENTATION,
+    blockquote: profile.inlineStyles ? BLOCKQUOTES : PLAIN_BLOCKQUOTES,
     cta: CTAS,
-    summaryBlock: inlineStyles ? SUMMARY_BLOCKS : PLAIN_SUMMARY_BLOCKS,
-    callout: inlineStyles ? CALLOUTS : PLAIN_CALLOUTS,
+    summaryBlock: stylable ? SUMMARY_BLOCKS : tables ? PLAIN_SUMMARY_BLOCKS : QUOTE_SUMMARY_BLOCKS,
+    callout: stylable ? CALLOUTS : tables ? PLAIN_CALLOUTS : QUOTE_CALLOUTS,
     // Last on purpose. `buildBrief` consumes one RNG draw per dimension in
     // insertion order, so appending keeps every existing seed → pick mapping
     // intact; inserting higher up would silently rewrite every brief anyone

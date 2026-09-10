@@ -1123,3 +1123,96 @@ describe('RECENT ARTICLES and THIS SERIES SO FAR (Task 3.3)', () => {
     expect(recentIdx).toBeGreaterThan(researchIdx);
   });
 });
+
+// Task 5.1: a platform with no `table` in `visualContainers` at all — the
+// shape every future export platform (Medium, Substack, LinkedIn Article)
+// will have — must get the blockquote-based DATA PRESENTATION guidance, never
+// the renamed TABLE THEME heading or a table-based skin.
+describe('a no-table profile (Task 5.1)', () => {
+  const NO_TABLE_PROFILE = {
+    ...GHOST_HTML_PROFILE,
+    platform: 'testnotable',
+    label: 'TestNoTable',
+    inlineStyles: false,
+    visualContainers: ['blockquote'],
+  };
+
+  it('renders quote-based SUMMARY BLOCK, DATA PRESENTATION, and no TABLE THEME heading', () => {
+    const text = buildBrief({ ...base, profile: NO_TABLE_PROFILE, seed: 7 }).brief;
+    expect(text).toContain('SUMMARY BLOCK — Quote');
+    expect(text).toContain('=== DATA PRESENTATION ===');
+    expect(text).toContain('No tables');
+    expect(text).not.toContain('TABLE THEME');
+    expect(text).not.toContain('=== TABLE THEME — USE THESE EXACT COLOURS ===');
+  });
+
+  it('states the EVIDENCE comparison as a list instead of a data table', () => {
+    const text = buildBrief({ ...base, profile: NO_TABLE_PROFILE, seed: 7 }).brief;
+    expect(text).toContain('One comparison, as a list — this platform has no tables.');
+    expect(text).not.toContain('One data table:');
+  });
+
+  it('still names a data table for a profile that has one', () => {
+    const text = buildBrief({ ...base, profile: GHOST_HTML_PROFILE, seed: 7 }).brief;
+    expect(text).toContain('One data table:');
+    expect(text).toContain('=== DATA PRESENTATION ===');
+  });
+});
+
+// Task 5.5: build_writing_brief computes socialTargets from usable sites
+// whose resolved profile has kind: 'social' (currently always LinkedIn) and
+// the brief renders a LINKEDIN POST section only when that list is non-empty.
+describe('socialTargets — the LINKEDIN POST section (Task 5.5)', () => {
+  it('renders nothing when socialTargets is absent', () => {
+    const text = buildBrief({ ...base, seed: 3 }).brief;
+    expect(text).not.toContain('LINKEDIN POST');
+    expect(text).not.toContain('linkedin_post');
+  });
+
+  it('renders nothing when socialTargets is an empty array', () => {
+    const text = buildBrief({ ...base, seed: 3, socialTargets: [] }).brief;
+    expect(text).not.toContain('LINKEDIN POST');
+    expect(text).not.toContain('linkedin_post');
+  });
+
+  it('renders the LINKEDIN POST section verbatim, naming the site and the persona', () => {
+    const text = buildBrief({
+      ...base,
+      seed: 3,
+      socialTargets: [{ site: 'li', label: 'LinkedIn' }],
+    }).brief;
+    expect(text).toContain('=== LINKEDIN POST — WRITE THIS TOO ===');
+    expect(text).toContain('A LinkedIn site is configured (li).');
+    expect(text).toContain('first person as Jane Doe');
+    expect(text).toContain('900–1,500 characters');
+    expect(text).toContain('The first 200 characters must stand');
+    expect(text).toContain('No "Excited to share", no');
+    expect(text).toContain('End with the literal text [[article_url]] on its own');
+    expect(text).toContain('3–5 hashtags: one broad, the rest specific to the article\'s subject.');
+  });
+
+  it('lists every configured social site by slug', () => {
+    const text = buildBrief({
+      ...base,
+      seed: 3,
+      socialTargets: [
+        { site: 'li', label: 'LinkedIn' },
+        { site: 'li-company', label: 'LinkedIn' },
+      ],
+    }).brief;
+    expect(text).toContain('A LinkedIn site is configured (li, li-company).');
+  });
+
+  it('adds the linkedin_post field to the JSON contract only when socialTargets is non-empty', () => {
+    const without = buildBrief({ ...base, seed: 3 }).brief;
+    const withTargets = buildBrief({
+      ...base,
+      seed: 3,
+      socialTargets: [{ site: 'li', label: 'LinkedIn' }],
+    }).brief;
+    expect(without).not.toContain('"linkedin_post"');
+    expect(withTargets).toContain('"linkedin_post"');
+    expect(withTargets).toContain('[[article_url]]');
+    expect(withTargets).toContain('"hashtags"');
+  });
+});

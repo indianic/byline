@@ -93,6 +93,26 @@ off the menu. Adding a blog does not move `default_site` off one you already had
 created discards it — a config that loads "usable" with a blank credential fails at
 publish time. "Empty means keep" applies only where there is a stored value to keep.
 
+**Example — adding an export site (no publishing API).** Medium, Substack, and
+LinkedIn Article ask for a folder instead of a credential, and there is nothing to
+validate live — every answer below is the exact prompt text `init` shows:
+
+```
+? Set up a blog to publish to now? › Yes
+[or, with a blog already configured: Which blog? › Add a new blog]
+? Which kind of blog? › Medium
+? Short name for this blog, used when you say "publish to …" (Enter nothing to skip) › medium
+? Your blog address (Enter nothing to skip) › https://medium.com/@jordan
+? Folder for exported posts (Enter nothing to skip) › ~/Documents/byline-post
+● Connected to https://medium.com/@jordan — Folder writable:
+  ~/Documents/byline-post/medium. No credential is involved — this checks only
+  that Byline can write here.
+```
+
+`create_post` on `medium` from here writes a folder under that path per article —
+see [`docs/platforms/medium.md`](platforms/medium.md) for what it produces and how
+to paste it in.
+
 ---
 
 ## `byline status`

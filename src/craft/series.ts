@@ -133,7 +133,7 @@ before writing anything.`;
 export function planSeries(input: PlanSeriesInput): SeriesPlan {
   const seriesSeed = input.seed ?? Math.floor(Math.random() * 2 ** 31);
   const series_id = `srs-${seriesSeed.toString(36)}`;
-  const options = dimensionsFor(input.profile.inlineStyles);
+  const options = dimensionsFor(input.profile);
 
   // Per dimension: the set of indexes used by an already-accepted slot.
   const used: Record<SeriesDimension, Set<number>> = {
@@ -150,7 +150,7 @@ export function planSeries(input: PlanSeriesInput): SeriesPlan {
 
     for (let k = 0; k < CANDIDATES_PER_SLOT; k++) {
       const candidateSeed = seriesSeed + i * SLOT_SEED_STRIDE + k;
-      const { choices } = drawChoices(candidateSeed, input.profile.inlineStyles, input.history?.avoid);
+      const { choices } = drawChoices(candidateSeed, input.profile, input.history?.avoid);
 
       const score = SERIES_DIMENSIONS.reduce(
         (acc, dim) => acc + (used[dim].has(choices[dim]) ? 1 : 0),

@@ -64,4 +64,18 @@ export interface HtmlProfile {
    * with its own value here.
    */
   verified: boolean;
+  /**
+   * Whether this describes a long-form article platform or a short-form
+   * feed-post platform.
+   *
+   * `score_draft` grades article craft — headings, evidence density, summary
+   * blocks above the fold — none of which describes a LinkedIn feed post, a
+   * tweet, or any other short-form share. A `'social'` profile exists to
+   * describe that ingest surface honestly without pretending `score_draft`
+   * can grade it: `scoreDraft` refuses outright with `NOT_AN_ARTICLE_PLATFORM`
+   * rather than silently applying article rules to something that is not one.
+   * No `'social'` profile exists yet — this is here so the refusal has
+   * something to check before one does.
+   */
+  kind: 'article' | 'social';
 }

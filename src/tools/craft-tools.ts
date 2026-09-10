@@ -32,11 +32,50 @@ import { handler } from './shared.js';
  * site works, and an unlucky ordering (the broken site declared first) must not
  * refuse scoring when a working site is right there.
  */
-async function profileFor(ctx: Context, slug?: string): Promise<HtmlProfile> {
+async function profileFor(ctx: Context, slug?: string): Promise<{ profile: HtmlProfile; slug: string }> {
   requireSetup(ctx, 'sites');
   const target = slug ?? ctx.sites.defaultSite ?? usableSites(ctx.sites)[0]!;
   const site = getSite(ctx.sites, target);
-  return getPlugin(site.platform).htmlProfile(makeAdapter(site));
+  const profile = await getPlugin(site.platform).htmlProfile(makeAdapter(site));
+  return { profile, slug: target };
+}
+
+/**
+ * Other configured sites whose resolved `HtmlProfile` has `kind: 'social'` —
+ * currently always LinkedIn — for the brief's LINKEDIN POST section
+ * (`BriefInput.socialTargets`). Resolves EVERY usable site's profile except
+ * the one the brief is being written for: `htmlProfile` costs a network round
+ * trip for a non-constant profile (WordPress's capability check), and the
+ * caller (`build_writing_brief`) has already paid that cost once, via
+ * `profileFor`, for the target site — re-resolving it here would pay it
+ * twice for no reason, so `targetSlug`/`targetProfile` are reused instead. A
+ * failure resolving any OTHER site is caught into `warnings` rather than
+ * failing the whole brief — an unreachable second blog must not block
+ * writing the article for the first one.
+ */
+async function socialTargets(
+  ctx: Context,
+  targetSlug: string,
+  targetProfile: HtmlProfile,
+): Promise<{ targets: Array<{ site: string; label: string }>; warnings: string[] }> {
+  const targets: Array<{ site: string; label: string }> = [];
+  const warnings: string[] = [];
+  for (const slug of usableSites(ctx.sites)) {
+    try {
+      const profile =
+        slug === targetSlug
+          ? targetProfile
+          : await getPlugin(getSite(ctx.sites, slug).platform).htmlProfile(makeAdapter(getSite(ctx.sites, slug)));
+      if (profile.kind === 'social') {
+        targets.push({ site: slug, label: profile.label });
+      }
+    } catch (e) {
+      warnings.push(
+        `socialTargets: could not resolve site "${slug}" (${e instanceof Error ? e.message : String(e)}) — it was left out of the LINKEDIN POST section.`,
+      );
+    }
+  }
+  return { targets, warnings };
 }
 
 /**
@@ -89,7 +128,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
         seed?: number;
       }) => {
         requireSetup(ctx, 'personas');
-        const profile = await profileFor(ctx, a.site);
+        const { profile } = await profileFor(ctx, a.site);
         const persona = getPersona(ctx.personas, a.persona);
         const history = personaHistory(ctx, persona);
 
@@ -255,7 +294,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
           }
         }
 
-        const profile = await profileFor(ctx, a.site);
+        const { profile, slug: targetSlug } = await profileFor(ctx, a.site);
         const persona = getPersona(ctx.personas, a.persona);
 
         // A missing ledger is a brand-new persona — empty history, nothing to
@@ -265,6 +304,13 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
         // an example, or a keyword it should be avoiding without any signal
         // that the memory itself is broken.
         const history = personaHistory(ctx, persona, a.series);
+
+        // Every other usable site whose resolved profile is a LinkedIn-style
+        // feed-post target — a per-site failure here becomes a warning
+        // (merged into the result below), never a failed brief. Reuses the
+        // profile already resolved above for `targetSlug` rather than paying
+        // its network cost twice.
+        const social = await socialTargets(ctx, targetSlug, profile);
 
         // Three explicit call sites, NOT one call with a cast past the union.
         // `as Parameters<typeof buildBrief>[0]` would typecheck unconditionally
@@ -286,6 +332,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
           ...(a.word_count !== undefined ? { wordCount: a.word_count } : {}),
           ...(a.language !== undefined ? { language: a.language } : {}),
           ...(a.seed !== undefined ? { seed: a.seed } : {}),
+          ...(social.targets.length > 0 ? { socialTargets: social.targets } : {}),
         };
 
         const brief = a.findings
@@ -297,7 +344,11 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
         // Echoed unchanged so a caller can pass it straight back into
         // create_post's `series` input and record it against this article —
         // Task 4.2 extends what series actually does beyond this.
-        return ok({ ...brief, ...(a.series !== undefined ? { series: a.series } : {}) });
+        return ok({
+          ...brief,
+          ...(social.warnings.length > 0 ? { warnings: [...brief.warnings, ...social.warnings] } : {}),
+          ...(a.series !== undefined ? { series: a.series } : {}),
+        });
       },
     ),
   );
@@ -368,7 +419,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
         mode: 'blog' | 'news';
         verbose: boolean;
       }) => {
-        const profile = await profileFor(ctx, a.site);
+        const { profile } = await profileFor(ctx, a.site);
         // A persona's voice_samples fingerprint their own rhythm once here,
         // rather than inside scoreDraft — scoreDraft takes the already-computed
         // fingerprint (via opts.voiceSample) so it never has to know how a

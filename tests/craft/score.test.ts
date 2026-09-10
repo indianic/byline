@@ -777,6 +777,56 @@ describe('voice_rhythm', () => {
   });
 });
 
+// Task 5.1: a profile with no `table` in `visualContainers` — the shape every
+// future export platform (Medium, Substack, LinkedIn Article) will have.
+describe('a no-table profile (Task 5.1)', () => {
+  const NO_TABLE_PROFILE = {
+    ...GHOST_HTML_PROFILE,
+    platform: 'testnotable',
+    label: 'TestNoTable',
+    inlineStyles: false,
+    visualContainers: ['blockquote'],
+  };
+
+  it('passes ai_summary_block with a leading <blockquote>', () => {
+    const html =
+      '<blockquote><strong>The answer, stated completely.</strong></blockquote><ul><li><strong>One:</strong> a fact.</li></ul><h2>A</h2><p>b</p>';
+    const c = scoreDraft(html, NO_TABLE_PROFILE).checks.find((x) => x.name === 'ai_summary_block')!;
+    expect(c.ok).toBe(true);
+  });
+
+  it('flags a <table> as unusable on a platform with no table container', () => {
+    const html =
+      '<blockquote><strong>The answer.</strong></blockquote><ul><li><strong>One:</strong> a fact.</li></ul><h2>A</h2><table><tr><td>x</td></tr></table>';
+    const c = scoreDraft(html, NO_TABLE_PROFILE).checks.find((x) => x.name === 'platform_html')!;
+    expect(c.ok).toBe(false);
+    expect(c.findings.join(' ')).toContain('<table> — TestNoTable has no tables');
+    expect(c.findings.join(' ')).toContain('Use a list');
+  });
+
+  it('does not flag a <table> on a platform that has one', () => {
+    const c = find(
+      '<table style="width:100%;"><tr><td>In short</td></tr></table><h2>A</h2><p>b</p>',
+      'platform_html',
+    );
+    expect(c.findings.join(' ')).not.toContain('has no tables');
+  });
+});
+
+describe('score_draft on a social profile', () => {
+  it('refuses with NOT_AN_ARTICLE_PLATFORM rather than grading a feed post', () => {
+    const socialProfile = { ...GHOST_HTML_PROFILE, label: 'TestFeed', kind: 'social' as const };
+    expect(() => scoreDraft('<p>A short post.</p>', socialProfile)).toThrowError(
+      expect.objectContaining({
+        code: 'NOT_AN_ARTICLE_PLATFORM',
+        message: expect.stringContaining(
+          'TestFeed is a feed-post platform; score_draft grades articles.',
+        ),
+      }),
+    );
+  });
+});
+
 describe('CHECK_NAMES', () => {
   it('lists every check name in the order scoreDraft pushes them, ending with voice_rhythm', () => {
     expect(CHECK_NAMES[CHECK_NAMES.length - 1]).toBe('voice_rhythm');

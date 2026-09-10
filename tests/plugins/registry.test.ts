@@ -7,6 +7,12 @@ describe('plugin registry', () => {
     expect(Object.keys(PLATFORM_PLUGINS)).toContain('ghost');
   });
 
+  it('registers the three export platforms', () => {
+    expect(Object.keys(PLATFORM_PLUGINS)).toContain('medium');
+    expect(Object.keys(PLATFORM_PLUGINS)).toContain('substack');
+    expect(Object.keys(PLATFORM_PLUGINS)).toContain('linkedin-article');
+  });
+
   it('throws a named error for an unknown platform', () => {
     try {
       getPlugin('joomla');
@@ -61,10 +67,17 @@ describe('credential fields', () => {
   it('every declared field name is accepted by the credential schema', () => {
     // A field the schema rejects would make add_site write a config that
     // loadSites then refuses — the exact whole-file brick this guards against.
+    // A non-secret value is taken from the field's own FIRST example token
+    // (not a bare 'literal') because a shape-constrained field — LinkedIn's
+    // `author_urn`, matched against a `urn:li:...` regex — needs a value that
+    // could plausibly pass; every pre-existing field's example is a single
+    // token, so this changes nothing for them.
     for (const id of PLATFORM_IDS) {
       const plugin = getPlugin(id);
       const block: Record<string, unknown> = { platform: id, url: 'https://e.example.com' };
-      for (const f of plugin.credentialFields) block[f.name] = f.secret ? '${X}' : 'literal';
+      for (const f of plugin.credentialFields) {
+        block[f.name] = f.secret ? '${X}' : f.example.split(/\s+/)[0]!;
+      }
       expect(plugin.credentialSchema.safeParse(block).success).toBe(true);
     }
   });

@@ -239,7 +239,8 @@ export function registerImageTools(server: McpServer, ctx: Context): void {
     {
       title: 'Upload image',
       description:
-        "Upload ONE local image to a site's media store and return the hosted URL. To upload several, use upload_images — one call instead of one per file.",
+        "Upload ONE local image to a site's media store and return the hosted URL. To upload several, use upload_images — one call instead of one per file. " +
+        'On LinkedIn the returned url is an image URN, not a web address; pass it as feature_image_id.',
       inputSchema: {
         site: z.string(),
         path: z.string().describe('Local path returned by generate_image'),

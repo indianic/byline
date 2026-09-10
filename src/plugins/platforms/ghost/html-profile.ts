@@ -76,4 +76,5 @@ export const GHOST_HTML_PROFILE: HtmlProfile = {
   ],
 
   verified: true,
+  kind: 'article',
 };

@@ -40,6 +40,44 @@ const MIME_BY_FORMAT = {
   webp: 'image/webp',
 } as const;
 
+/**
+ * Extension -> upload `Content-Type`, for a caller that only has a FILENAME,
+ * not the bytes — WordPress's and LinkedIn's media-upload endpoints both take
+ * this instead of a multipart part, so `Content-Type` has to be set from
+ * whatever the filename claims to be. Moved here from `wordpress/index.ts`
+ * (still re-exported there so existing imports keep working) so a second
+ * platform needing the same filename→mime mapping does not duplicate it —
+ * see this file's own doc comment on how out of sync `mimeFor` and `IMAGE_MIME`
+ * (Ghost's own, separate map) already were before `inspectImage` existed.
+ */
+const IMAGE_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  avif: 'image/avif',
+};
+
+/**
+ * WordPress's media endpoint takes raw bytes rather than a multipart part, but
+ * still needs to know what those bytes are. Confirmed by live probe on
+ * 2026-07-29 against a real WordPress install: an upload with no `Content-Type`
+ * at all is rejected outright with a 400
+ * `{"code":"rest_upload_no_content_type","message":"No Content-Type supplied."}`
+ * — harder than Ghost's 415 for the same class of mistake. The `Content-Type`
+ * header is therefore always set explicitly, never left to guesswork.
+ *
+ * LinkedIn's `initializeUpload`/`PUT uploadUrl` two-step (UNVERIFIED — see
+ * `linkedin/index.ts`) is assumed to need the same thing for the same reason;
+ * this is the one function both adapters derive it from.
+ */
+export function mimeFor(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+  return IMAGE_MIME[ext] ?? 'application/octet-stream';
+}
+
 /** The canonical file extension for a mime, so a file is named what it is. */
 export function extensionFor(mime: string | null | undefined): string {
   switch ((mime ?? '').toLowerCase().split(';')[0]!.trim()) {

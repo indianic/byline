@@ -4,6 +4,38 @@ This is written from actually adding one — WordPress, against the probed WordP
 — not from how the architecture was supposed to work. It reports what that took,
 including the parts that went wrong, so the next platform doesn't repeat them.
 
+## Two kinds of platform
+
+Everything below was written against Ghost and WordPress, both of which have a real
+publishing API and an article-shaped `HtmlProfile` (`kind: 'article'`). Two other
+shapes exist now, and most of this checklist still applies to both — only steps 3, 4,
+6, 7 and 12 (the ones that assume a live API to probe) do not, for the reason each
+one states:
+
+- **An export platform** (Medium, Substack, LinkedIn Article) has no publishing API at
+  all. It never implements `PlatformAdapter` directly — `makeAdapter` returns
+  `new ExportAdapter(site, spec)` (`src/plugins/platforms/export/adapter.ts`), and the
+  new plugin's own work is writing an `ExportSpec`: its `platformId`, `label`, paste
+  steps, and `HtmlProfile`. `healthCheck` here checks only that the configured folder
+  is writable, and says so — there is no credential, so step 4 does not apply, and
+  nothing here can ever be probed live (step 3), which is why every export
+  `HtmlProfile.verified` is `false` permanently, not provisionally.
+- **A social (feed-post) platform** (`kind: 'social'`, currently only LinkedIn) has a
+  real API, but not an article to publish — one short text plus, at most, one attached
+  link, with no draft state and no scheduling. `score_draft` refuses a `kind: 'social'`
+  profile outright (`NOT_AN_ARTICLE_PLATFORM`); it grades article craft, none of which
+  describes a feed post. Steps 6 and 7 (mapping `PostStatus` and scheduling) do not
+  apply the same way: `createPost` simply refuses anything but `status: 'published'`,
+  and `siteTimezone` always throws.
+
+Everything else — `credentialFields` driving the installer with no platform-specific
+branch in `src/cli/`, `UNSUPPORTED_FIELD_REASONS` naming every dropped field, marking
+an unmeasured claim `UNVERIFIED` rather than promoting it on documentation alone —
+applies to all three shapes equally. Read the rest of this document for an article
+platform's version of the claim; `src/plugins/platforms/linkedin/README.md` and
+`docs/platforms/linkedin.md` are the social-platform equivalent of the WordPress
+lessons below, for what changes when there is a real API but no article.
+
 ## The claim, and how far it actually holds
 
 The claim: adding a platform means adding a folder under `src/plugins/platforms/`

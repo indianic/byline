@@ -57,28 +57,15 @@ export const ENV_REF = /^\$\{([A-Z0-9_]+)\}$/;
 /**
  * The one definition of a legal site slug, for both writers of `config.yaml`.
  *
- * `envVarNameFor` (`src/cli/home-config.ts`) uppercases a slug and collapses
- * every non-alphanumeric run to `_`, so `my-blog` and `my_blog` both produce
- * `MY_BLOG_*` — two sites silently sharing one credential env var, where
- * adding the second overwrites the first's key. Restricting the alphabet to
- * lowercase alphanumerics and hyphens makes that collision unreachable rather
- * than merely unlikely, and guarantees the derived name matches `ENV_REF`
- * above (a name outside `[A-Z0-9_]` fails to match on reload, and the `${…}`
- * text is then treated as a LITERAL credential).
- *
- * Both writers enforce THIS constant — `add_site`'s input schema and the CLI's
- * `promptSlug`. They already disagreed once, when only the CLI checked; a
- * second hand-written copy of the regex is how that happens again.
- *
- * Deliberately NOT enforced by `loadSites`: an existing config with an
- * unconventional slug keeps working. This constrains what gets written from
- * here on, and does not invalidate what someone already has on disk.
+ * Re-exported from `./slug.js` rather than defined here — see that file's doc
+ * comment for why: this file imports the plugin registry, and a platform
+ * this project now has (an export platform) needs `media/library.ts`'s
+ * `expandPath`, so defining these two constants here would close a real
+ * import cycle the moment `media/library.ts` imported them from this file
+ * instead. Every existing `import { SLUG_PATTERN, SLUG_RULE } from
+ * '../config/sites.js'` keeps working unchanged.
  */
-export const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
-
-/** The human-facing statement of {@link SLUG_PATTERN}, shared by both writers. */
-export const SLUG_RULE =
-  'Use lowercase letters, digits, and hyphens only, starting with a letter or digit — e.g. "personal" or "company-blog".';
+export { SLUG_PATTERN, SLUG_RULE } from './slug.js';
 
 /**
  * Resolve a `${VAR}` reference, or return the literal if it isn't one.

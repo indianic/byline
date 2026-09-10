@@ -1,7 +1,7 @@
 // src/tools/post-tools.ts
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { recordArticle } from '../articles/ledger.js';
+import { recordArticle, recordShare } from '../articles/ledger.js';
 import { articleLedgerPath, readArticleLedger, writeArticleLedger } from '../articles/store.js';
 import { getPersona } from '../config/personas.js';
 import { getSite } from '../config/sites.js';
@@ -82,7 +82,9 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
     {
       title: 'Create post',
       description:
-        'Publish an article. Defaults to status "published" — pass "draft" only when the user asked for a draft, or "scheduled" with publish_at to go live at a set time. The author accepts a persona slug and resolves to that site\'s author id. HTML must not still contain [[content_image]]. Every article gets a hero (feature_image) and an inline <img> by default when an image provider is configured — refused otherwise; pass images: "hero" | "inline" | "none" to opt out.',
+        'Publish an article. Defaults to status "published" — pass "draft" only when the user asked for a draft, or "scheduled" with publish_at to go live at a set time. The author accepts a persona slug and resolves to that site\'s author id. HTML must not still contain [[content_image]]. Every article gets a hero (feature_image) and an inline <img> by default when an image provider is configured — refused otherwise; pass images: "hero" | "inline" | "none" to opt out. ' +
+        'On an export platform (Medium, Substack, LinkedIn Article) this writes a folder and returns its path as url — tell the user where it is and to open index.html. ' +
+        "On a LinkedIn site this publishes a feed post: pass the linkedin_post text as html (one <p> per paragraph), the article's live URL as canonical_url, the hashtags as tags, and the image URN from upload_image as feature_image_id.",
       inputSchema: {
         site: z.string(),
         title: z.string().min(1),
@@ -398,22 +400,55 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         const promotion = promoteUsedMedia(ctx, referenced, result.url);
         warnings.push(...promotion.problems);
 
-        // Record this publish in the persona's article ledger, so a later
-        // build_writing_brief for the same persona can avoid repeating its
-        // shape and can link back to it. Only when `author` resolved to an
-        // actual persona (not a raw platform author id) — there is no ledger
-        // to write for someone with no persona file. A failure here (a
-        // corrupt or unwritable ledger) becomes a warning naming what broke
-        // rather than a failed publish: the post is already live, and losing
-        // this bookkeeping is recoverable in a way that pretending the
-        // publish failed would not be.
+        // Record this publish. On an article platform, into the AUTHORING
+        // persona's own ledger (recordArticle) — only when `author` resolved
+        // to an actual persona (not a raw platform author id); there is no
+        // ledger to write for someone with no persona file.
         //
-        // Phase 5: when getPlugin(site.platform).kind === 'social' and
-        // a.canonical_url is set, this should call recordShare on every
-        // persona ledger whose record matches canonical_url instead of
-        // recordArticle here.
-        if (persona) {
-          try {
+        // On a `kind: 'social'` platform (LinkedIn) with `canonical_url` set,
+        // this is a SHARE of an article already recorded somewhere, never a
+        // new article of its own — recordArticle is skipped entirely.
+        // `canonical_url` is matched against every configured PERSONA's
+        // ledger, not just this post's own author: the person sharing an
+        // article on LinkedIn need not be the persona who originally wrote
+        // it (a house LinkedIn account sharing an individual writer's post,
+        // say). A canonical_url with no match anywhere warns rather than
+        // silently doing nothing — the caller asked this to be linked to an
+        // article and it wasn't.
+        //
+        // Either way, a failure here (a corrupt or unwritable ledger, or a
+        // network hiccup resolving the target's HtmlProfile) becomes a
+        // warning naming what broke rather than a failed publish: the post
+        // is already live, and losing this bookkeeping is recoverable in a
+        // way that pretending the publish failed would not be.
+        try {
+          const isSocialShare =
+            a.canonical_url !== undefined &&
+            (await getPlugin(site.platform).htmlProfile(adapter)).kind === 'social';
+
+          if (isSocialShare) {
+            const share = {
+              site: a.site,
+              platform: site.platform,
+              url: result.url,
+              at: new Date().toISOString(),
+            };
+            let matchedAny = false;
+            for (const p of ctx.personas.values()) {
+              const file = articleLedgerPath(ctx.paths.home, p.slug);
+              const ledger = readArticleLedger(file, p.slug);
+              const { ledger: updatedLedger, matched } = recordShare(ledger, a.canonical_url!, share);
+              if (matched) {
+                writeArticleLedger(file, updatedLedger);
+                matchedAny = true;
+              }
+            }
+            if (!matchedAny) {
+              warnings.push(
+                `article ledger: no recorded article matches canonical_url "${a.canonical_url}" — this post was not linked to any persona's ledger as a share.`,
+              );
+            }
+          } else if (persona) {
             const file = articleLedgerPath(ctx.paths.home, persona.slug);
             const ledger = readArticleLedger(file, persona.slug);
             const updated = recordArticle(ledger, {
@@ -435,11 +470,11 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
               ...(result.publish_at !== undefined ? { publish_at: result.publish_at } : {}),
             });
             writeArticleLedger(file, updated);
-          } catch (e) {
-            warnings.push(
-              `article ledger: could not record this post (${(e as Error).message}). Later briefs will not know about it.`,
-            );
           }
+        } catch (e) {
+          warnings.push(
+            `article ledger: could not record this post (${(e as Error).message}). Later briefs will not know about it.`,
+          );
         }
 
         return ok({

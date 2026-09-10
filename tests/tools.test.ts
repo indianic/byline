@@ -1,10 +1,12 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { recordArticle } from '../src/articles/ledger.js';
+import { articleLedgerPath, readArticleLedger, writeArticleLedger } from '../src/articles/store.js';
 import { loadPersonas } from '../src/config/personas.js';
 import { SLUG_PATTERN, loadSites, usableSites } from '../src/config/sites.js';
 import { type Context, loadContext } from '../src/context.js';
@@ -134,6 +136,119 @@ function makeWordPressContext(): Context {
     sites,
     personas,
     // See makeContext()'s identical comment above.
+    media: { reuseScope: 'site', libraries: {}, problems: [] },
+    runsDir,
+    articlesDir: join(dir, 'articles'),
+    env,
+    setup: {
+      configured: usableSites(sites).length > 0,
+      paths,
+      siteCount: Object.keys(sites.sites).length,
+      usableSiteCount: usableSites(sites).length,
+      personaCount: personas.size,
+      imageProviders: ['gemini'],
+      problems: [],
+      siteProblems: [],
+    },
+  };
+}
+
+const MEDIUM_SITES = (exportDir: string) => `
+default_site: mediumsite
+sites:
+  mediumsite:
+    platform: medium
+    url: https://medium.com/@me
+    export_dir: ${exportDir}
+`;
+
+/**
+ * A Medium (export-platform) equivalent of `makeContext()`, for Task 5.5's
+ * "create_post on a medium fixture returns a file:// url and writes the
+ * folder" test — Medium needs a real writable `export_dir`, not a mocked
+ * fetch, since `ExportAdapter` never calls the network at all.
+ */
+function makeMediumContext(): Context {
+  const dir = mkdtempSync(join(tmpdir(), 'wb-medium-ctx-'));
+  const exportDir = mkdtempSync(join(tmpdir(), 'wb-medium-export-'));
+  const sitesFile = join(dir, 'sites.yaml');
+  writeFileSync(sitesFile, MEDIUM_SITES(exportDir));
+  const personasDir = mkdtempSync(join(tmpdir(), 'wb-medium-p-'));
+  const env = {};
+  const sites = loadSites(sitesFile, env);
+  const personas = loadPersonas(personasDir);
+  const runsDir = mkdtempSync(join(tmpdir(), 'wb-medium-runs-'));
+  const paths = {
+    home: dir,
+    source: 'env' as const,
+    configFile: sitesFile,
+    personasDir,
+    envFile: join(dir, '.env'),
+    runsDir,
+  };
+  return {
+    paths,
+    sitesFile,
+    personasDir,
+    sites,
+    personas,
+    media: { reuseScope: 'site', libraries: {}, problems: [] },
+    runsDir,
+    articlesDir: join(dir, 'articles'),
+    env,
+    setup: {
+      configured: usableSites(sites).length > 0,
+      paths,
+      siteCount: Object.keys(sites.sites).length,
+      usableSiteCount: usableSites(sites).length,
+      personaCount: personas.size,
+      imageProviders: ['gemini'],
+      problems: [],
+      siteProblems: [],
+    },
+  };
+}
+
+const LI_SITES = `
+default_site: li
+sites:
+  li:
+    platform: linkedin
+    url: https://www.linkedin.com/in/janedoe
+    access_token: \${LI_ACCESS_TOKEN}
+    author_urn: urn:li:person:abc123
+`;
+
+/**
+ * A LinkedIn (`kind: 'social'`) equivalent of `makeContext()` — includes the
+ * same `jane-doe` persona as `makeContext()` so Task 5.5's `recordShare`
+ * wiring test can pre-seed that persona's article ledger and then publish a
+ * LinkedIn post whose `canonical_url` matches the seeded record.
+ */
+function makeLinkedInContext(): Context {
+  const dir = mkdtempSync(join(tmpdir(), 'wb-li-ctx-'));
+  const sitesFile = join(dir, 'sites.yaml');
+  writeFileSync(sitesFile, LI_SITES);
+  const personasDir = mkdtempSync(join(tmpdir(), 'wb-li-p-'));
+  writeFileSync(join(personasDir, 'jane-doe.yaml'), PERSONA);
+  const env = { LI_ACCESS_TOKEN: FAKE_KEY_SECRET };
+  const sites = loadSites(sitesFile, env);
+  const personas = loadPersonas(personasDir);
+  const runsDir = mkdtempSync(join(tmpdir(), 'wb-li-runs-'));
+  const paths = {
+    home: dir,
+    source: 'env' as const,
+    configFile: sitesFile,
+    personasDir,
+    envFile: join(dir, '.env'),
+    runsDir,
+  };
+  return {
+    paths,
+    sitesFile,
+    personasDir,
+    sites,
+    personas,
     media: { reuseScope: 'site', libraries: {}, problems: [] },
     runsDir,
     articlesDir: join(dir, 'articles'),
@@ -3497,5 +3612,186 @@ describe('generate_images / upload_images — the batch pair', () => {
     expect(r.failed).toBe(1);
     expect(r.images[0].ok).toBe(false);
     expect(r.images[0].error.code).toBe('FILE_NOT_FOUND');
+  });
+});
+
+// Task 5.5: create_post/upload_image hand off to the export platforms and to
+// LinkedIn feed posts in the exact words the brief specifies.
+describe('create_post / upload_image descriptions name the hand-off (Task 5.5)', () => {
+  it('create_post describes the export-platform hand-off and the LinkedIn feed-post mapping', async () => {
+    const tools = (await client.listTools()).tools;
+    const createPost = tools.find((t) => t.name === 'create_post')!;
+    expect(createPost.description).toContain(
+      'On an export platform (Medium, Substack, LinkedIn Article) this writes a folder and returns its path as url — tell the user where it is and to open index.html.',
+    );
+    expect(createPost.description).toContain(
+      'On a LinkedIn site this publishes a feed post: pass the linkedin_post text as html (one <p> per paragraph), the article\'s live URL as canonical_url, the hashtags as tags, and the image URN from upload_image as feature_image_id.',
+    );
+  });
+
+  it('upload_image describes the LinkedIn URN return value', async () => {
+    const tools = (await client.listTools()).tools;
+    const uploadImage = tools.find((t) => t.name === 'upload_image')!;
+    expect(uploadImage.description).toContain(
+      'On LinkedIn the returned url is an image URN, not a web address; pass it as feature_image_id.',
+    );
+  });
+});
+
+describe('create_post on an export platform (Medium) (Task 5.5)', () => {
+  it('returns a file:// url and writes the hand-off folder', async () => {
+    const ctx = makeMediumContext();
+    const r = await callWith(ctx, 'create_post', {
+      site: 'mediumsite',
+      title: 'My Medium Article',
+      html: '<p>Hello from Medium.</p>',
+      status: 'published',
+      images: 'none',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.url).toMatch(/^file:\/\/.+index\.html$/);
+    const folder = r.url.replace(/^file:\/\//, '').replace(/\/index\.html$/, '');
+    expect(existsSync(folder)).toBe(true);
+    expect(existsSync(join(folder, 'article.html'))).toBe(true);
+    expect(existsSync(join(folder, 'meta.json'))).toBe(true);
+  });
+});
+
+describe('create_post on a LinkedIn site (Task 5.5)', () => {
+  it('refuses html containing [[article_url]] with UNRESOLVED_PLACEHOLDER', async () => {
+    const ctx = makeLinkedInContext();
+    const r = await callWith(ctx, 'create_post', {
+      site: 'li',
+      title: 'A LinkedIn post',
+      html: '<p>Read the full piece: [[article_url]]</p>',
+      status: 'published',
+      images: 'none',
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('UNRESOLVED_PLACEHOLDER');
+  });
+
+  // Phase 3's recordShare hook, finally wired: publishing to a kind: 'social'
+  // site with a canonical_url matching an already-recorded article records a
+  // SHARE against that article's own ledger entry, not a new article record.
+  it('records a share on the matching persona ledger entry instead of a new article', async () => {
+    const ctx = makeLinkedInContext();
+    const articleUrl = 'https://blog.example.com/original-article';
+
+    const ledgerFile = articleLedgerPath(ctx.paths.home, 'jane-doe');
+    const seeded = recordArticle(readArticleLedger(ledgerFile, 'jane-doe'), {
+      id: 'personal:1',
+      persona: 'jane-doe',
+      site: 'personal',
+      platform: 'ghost',
+      post_id: '1',
+      url: articleUrl,
+      title: 'The Original Article',
+      tags: [],
+      status: 'published',
+    });
+    writeArticleLedger(ledgerFile, seeded);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init: RequestInit = {}) => {
+        const u = String(url);
+        if (u.includes('/rest/posts/') && init.method === undefined) {
+          return new Response(JSON.stringify({ commentary: 'ignored' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({}), {
+          status: 201,
+          headers: { 'content-type': 'application/json', 'x-restli-id': 'urn:li:share:555' },
+        });
+      }),
+    );
+
+    const r = await callWith(ctx, 'create_post', {
+      site: 'li',
+      title: 'The Original Article',
+      html: '<p>One idea from the article.</p>',
+      status: 'published',
+      canonical_url: articleUrl,
+      images: 'none',
+    });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+
+    const after = readArticleLedger(ledgerFile, 'jane-doe');
+    expect(after.records).toHaveLength(1);
+    expect(after.records[0]!.url).toBe(articleUrl);
+    expect(after.records[0]!.shares).toHaveLength(1);
+    expect(after.records[0]!.shares[0]).toMatchObject({
+      site: 'li',
+      platform: 'linkedin',
+      url: 'https://www.linkedin.com/feed/update/urn:li:share:555/',
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it('warns, rather than failing, when canonical_url matches no recorded article', async () => {
+    const ctx = makeLinkedInContext();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init: RequestInit = {}) => {
+        const u = String(url);
+        if (u.includes('/rest/posts/') && init.method === undefined) {
+          return new Response(JSON.stringify({ commentary: 'ignored' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({}), {
+          status: 201,
+          headers: { 'content-type': 'application/json', 'x-restli-id': 'urn:li:share:556' },
+        });
+      }),
+    );
+    const r = await callWith(ctx, 'create_post', {
+      site: 'li',
+      title: 'Orphan post',
+      html: '<p>No matching article.</p>',
+      status: 'published',
+      canonical_url: 'https://blog.example.com/no-such-article',
+      images: 'none',
+    });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.warnings?.some((w: string) => w.includes('no recorded article matches'))).toBe(true);
+    vi.unstubAllGlobals();
+  });
+});
+
+// A failed organisation lookup inside LinkedIn's listAuthors must reach the
+// tool result as a warning, not vanish — proven through the real tool layer
+// (`callWith`), not against the adapter directly, since it is `list_authors`
+// (`src/tools/persona-tools.ts`) that is responsible for surfacing it.
+describe('list_authors on a LinkedIn site surfaces the organisation-lookup warning', () => {
+  it('includes the person author plus a warning naming the failed endpoint', async () => {
+    const ctx = makeLinkedInContext();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes('/v2/userinfo')) {
+          return new Response(JSON.stringify({ sub: 'abc123', name: 'Jane Doe' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ message: 'no access' }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        });
+      }),
+    );
+    const r = await callWith(ctx, 'list_authors', { site: 'li' });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.authors).toEqual([{ id: 'urn:li:person:abc123', name: 'Jane Doe', persona: null }]);
+    expect(r.warnings).toHaveLength(1);
+    expect(r.warnings[0]).toContain('GET /rest/organizationAcls');
+    expect(r.warnings[0]).toContain('403');
+    vi.unstubAllGlobals();
   });
 });

@@ -2,8 +2,12 @@
 import type { SiteConfig } from '../config/sites.js';
 import { ToolError } from '../errors.js';
 import { ghostPlugin } from './platforms/ghost/plugin.js';
-import { wordpressPlugin } from './platforms/wordpress/plugin.js';
+import { linkedinPlugin } from './platforms/linkedin/plugin.js';
+import { linkedinArticlePlugin } from './platforms/linkedin-article/plugin.js';
+import { mediumPlugin } from './platforms/medium/plugin.js';
+import { substackPlugin } from './platforms/substack/plugin.js';
 import type { PlatformAdapter, PlatformPlugin } from './platforms/types.js';
+import { wordpressPlugin } from './platforms/wordpress/plugin.js';
 
 /**
  * Every supported platform. Adding one means adding its folder and one line here.
@@ -11,6 +15,10 @@ import type { PlatformAdapter, PlatformPlugin } from './platforms/types.js';
 export const PLATFORM_PLUGINS: Record<string, PlatformPlugin> = {
   [ghostPlugin.id]: ghostPlugin,
   [wordpressPlugin.id]: wordpressPlugin,
+  [mediumPlugin.id]: mediumPlugin,
+  [substackPlugin.id]: substackPlugin,
+  [linkedinArticlePlugin.id]: linkedinArticlePlugin,
+  [linkedinPlugin.id]: linkedinPlugin,
 };
 
 export const PLATFORM_IDS = Object.keys(PLATFORM_PLUGINS);
