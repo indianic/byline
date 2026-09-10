@@ -9,6 +9,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Per-persona article ledger.** `create_post` now records a successful publish to
+  `~/.byline/articles/<persona>.json` — id, url, title, tags, and whatever of
+  `brief_seed`/`brief_choices`/`topic`/`primary_keyword`/`series` were passed through
+  from `build_writing_brief`'s result. `build_writing_brief` reads it back and steers a
+  new anti-repeat draw away from a persona's recently used hook, arc, voice, story, cta,
+  persona presence, human texture, and (news mode) lede/structure; lists the persona's
+  recent articles in the brief to link back to (never repeat their opening device,
+  central example, or keyword); and, given a new `series` input, surfaces earlier
+  articles in the same series to link to as well. `list_personas` reports each
+  persona's article count. Corrupt like the media usage ledger: a missing ledger is an
+  empty history, a corrupt one throws rather than silently forgetting what a persona has
+  already published. A brief's seed is now reproducible only against the same ledger
+  state, once history exists to avoid.
 - **WordPress categories; Ghost newsletter email, off by default.** `create_post`/
   `update_post` gain `categories` (resolved to WordPress term ids the same way tags
   are, creating any that don't exist yet; Ghost has no categories and warns instead

@@ -92,6 +92,13 @@ describe('loadContext', () => {
     expect(ctx.setup.problems.length).toBeGreaterThan(0);
   });
 
+  it('exposes articlesDir under paths.home, mirroring media\'s layout', () => {
+    const home = mkdtempSync(join(tmpdir(), 'wb-ctx-articles-'));
+    const ctx = loadContext({ BYLINE_HOME: home });
+    expect(ctx.articlesDir).toBe(join(home, 'articles'));
+    expect(ctx.articlesDir).toBe(join(ctx.paths.home, 'articles'));
+  });
+
   // Finding 6: a `ToolError`'s `hint` never survived `loadContext`'s catch —
   // only `.message` was pushed into `problems` — so a fresh user with no
   // config at all saw a bare "Cannot read site config at …" with no fix

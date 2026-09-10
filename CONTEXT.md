@@ -248,6 +248,49 @@ reason `iframe` was added to `GHOST_HTML_PROFILE.preserved` and to WordPress's p
 UNVERIFIED for `iframe` the same way it does for everything else no non-`unfiltered_html`
 account has ever been available to probe.
 
+### The article ledger
+
+`src/articles/` records what each persona has actually published, so `build_writing_brief`
+can tell a writer "you already wrote this" instead of letting every article start from a
+blank slate that happens to reuse last week's hook, example, and keyword. It is the same
+shape of problem the media library solves for photographs, solved the same way.
+
+**One ledger per persona, under `<byline home>/articles/<persona>.json`.** `create_post`
+writes to it after a successful publish, when `author` resolved to a persona (not a raw
+platform author id) — recording the post's id, url, title, tags, and whatever of
+`brief_seed`, `brief_choices`, `topic`, `primary_keyword`, and `series` the caller passed
+through from `build_writing_brief`'s result. `build_writing_brief` reads it back and feeds
+`buildBrief` a `history`: the persona's most recent articles (rendered as YOUR RECENT
+ARTICLES, so a piece can link to one it genuinely depends on), the union of recent
+`choices` per dimension (fed to an anti-repeat draw that steers `hook`, `arc`, `voice`,
+`story`, `cta`, `personaPresence`, `humanTexture`, `newsLede`, and `newsStructure` away from
+what this persona just used), and, when `series` is given, the earlier articles in that
+same series (rendered as THIS SERIES SO FAR).
+
+**It is unrecoverable, exactly like the media usage ledger.** A missing file is a
+brand-new persona — an empty ledger, nothing to avoid yet. A file that exists but fails to
+parse or carries a version this build does not understand THROWS `LEDGER_UNREADABLE`
+rather than silently continuing empty: continuing would let a brief repeat a hook or a
+keyword with no signal that the persona's memory of its own back catalogue is broken.
+`readArticleLedger` (`src/articles/store.ts`) mirrors `media/store.ts`'s `readLedger` on
+this exactly, sharing the same atomic-write helper (`writeJsonAtomic`,
+`src/config/atomic.ts`, extracted from `media/store.ts`'s private `writeAtomic`) so a crash
+mid-write leaves the previous ledger intact rather than truncated. `list_personas` is the
+one caller that does not let that throw propagate: it is an ungated listing of every
+persona, so a single corrupt ledger reports `articles: null` and `articles_error` for that
+persona alone and keeps listing the rest, rather than taking the whole listing down with it.
+
+**A brief's seed is reproducible only against the same ledger state.** Once history exists
+to avoid, replaying a stored seed after the ledger has gained new records can draw
+differently than it did the first time — the seed was never the whole story once there is
+something to avoid repeating. `Brief.avoided` reports which indexes were skipped per
+dimension for a given call, so that difference is visible rather than silently absorbed.
+
+**`recordShare` exists and is tested, but nothing calls it yet.** It appends a share to
+whichever ledger record's `url` matches, for a future `kind: 'social'` site profile
+(Phase 5) to record a post's cross-posting to LinkedIn, Medium, or similar. `create_post`
+has a comment marking where that branch belongs.
+
 ### `HtmlProfile`
 
 `src/craft/html-profile.ts` defines what a platform does to your HTML on ingest —

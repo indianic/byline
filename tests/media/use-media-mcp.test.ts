@@ -85,6 +85,7 @@ function makeContext(): Context {
     personas,
     media: loadMedia(mediaFile, env),
     runsDir,
+    articlesDir: join(dir, 'articles'),
     env,
     setup: {
       configured: usableSites(sites).length > 0,

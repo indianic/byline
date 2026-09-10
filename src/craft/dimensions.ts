@@ -279,3 +279,24 @@ export const DIMENSIONS = {
 } as const;
 
 export type DimensionName = keyof typeof DIMENSIONS;
+
+/**
+ * Dimensions the anti-repeat draw in `buildBrief` applies to: craft choices a
+ * reader would notice repeating across two articles by the same persona. The
+ * purely visual/mechanical dimensions (`imagePlacement`, `tableTheme`,
+ * `blockquote`, `summaryBlock`, `callout`, `imageLook`) are deliberately
+ * excluded — a repeated table theme is not a "you wrote this before" tell the
+ * way a repeated hook or arc is, and forcing variety on it would spend the
+ * anti-repeat budget on something nobody notices.
+ */
+export const ANTI_REPEAT_DIMENSIONS = [
+  'hook',
+  'arc',
+  'voice',
+  'story',
+  'cta',
+  'personaPresence',
+  'humanTexture',
+  'newsLede',
+  'newsStructure',
+] as const;

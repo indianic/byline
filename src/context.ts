@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { loadPersonas, type Persona } from './config/personas.js';
 import { loadSites, usableSites, type SitesConfig } from './config/sites.js';
 import { checkEnvPermissions, loadEnvFile } from './config/dotenv.js';
@@ -19,6 +20,12 @@ export interface Context {
   /** Local media libraries. Empty when none are configured — never absent. */
   media: MediaConfig;
   runsDir: string;
+  /**
+   * Where per-persona article ledgers live: `<articlesDir>/<persona>.json`.
+   * Mirrors `media`'s own ledger layout under `paths.home` — see "The article
+   * ledger" in CONTEXT.md.
+   */
+  articlesDir: string;
   setup: SetupState;
   /**
    * The environment `loadContext` resolved everything against. Tools that
@@ -163,6 +170,7 @@ export function loadContext(env: NodeJS.ProcessEnv = process.env): Context {
     personas,
     media,
     runsDir: paths.runsDir,
+    articlesDir: join(paths.home, 'articles'),
     setup: buildSetupState(paths, sites, personas, extraProblems, env),
     env,
   };

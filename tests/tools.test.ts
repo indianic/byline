@@ -1,6 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -76,6 +76,7 @@ function makeContext(): Context {
     // one, per Context's contract that `media` is never absent.
     media: { reuseScope: 'site', libraries: {}, problems: [] },
     runsDir,
+    articlesDir: join(dir, 'articles'),
     env,
     setup: {
       configured: usableSites(sites).length > 0,
@@ -135,6 +136,7 @@ function makeWordPressContext(): Context {
     // See makeContext()'s identical comment above.
     media: { reuseScope: 'site', libraries: {}, problems: [] },
     runsDir,
+    articlesDir: join(dir, 'articles'),
     env,
     setup: {
       configured: usableSites(sites).length > 0,
@@ -892,6 +894,186 @@ describe('get_persona', () => {
     expect(r.ok).toBe(false);
     expect(r.code).toBe('UNKNOWN_PERSONA');
     expect(r.message).toContain('jane-doe');
+  });
+});
+
+describe('article ledger (Task 3.4)', () => {
+  function stubGhostCreate() {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: string, i: RequestInit = {}) => {
+        const body = JSON.parse(String(i.body));
+        return new Response(
+          JSON.stringify({
+            posts: [{ ...body.posts[0], id: 'p1', url: 'https://blog.example.com/t/', status: 'draft' }],
+          }),
+          { status: 201 },
+        );
+      }),
+    );
+  }
+
+  it('create_post writes the persona ledger with the brief fields it was given', async () => {
+    const ctx = makeContext();
+    stubGhostCreate();
+
+    const result = await callWith(ctx, 'create_post', {
+      site: 'personal',
+      title: 'Legacy modernisation in the Gulf',
+      html: '<p>x</p>',
+      status: 'draft',
+      images: 'none',
+      author: 'jane-doe',
+      brief_seed: 6,
+      brief_choices: { hook: 2 },
+      topic: 'legacy modernisation',
+      primary_keyword: 'legacy modernisation gulf',
+    });
+    expect(result.ok).toBe(true);
+
+    const ledgerPath = join(ctx.paths.home, 'articles', 'jane-doe.json');
+    const ledger = JSON.parse(readFileSync(ledgerPath, 'utf8'));
+    expect(ledger.records).toHaveLength(1);
+    expect(ledger.records[0].seed).toBe(6);
+    expect(ledger.records[0].choices).toEqual({ hook: 2 });
+    expect(ledger.records[0].topic).toBe('legacy modernisation');
+    expect(ledger.records[0].primary_keyword).toBe('legacy modernisation gulf');
+    expect(ledger.records[0].url).toBe('https://blog.example.com/t/');
+  });
+
+  it('a following build_writing_brief avoids the recorded hook and reports it in avoided', async () => {
+    const ctx = makeContext();
+    stubGhostCreate();
+
+    await callWith(ctx, 'create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'draft',
+      images: 'none',
+      author: 'jane-doe',
+      brief_choices: { hook: 2 },
+    });
+
+    // Seed 6 draws hook: 2 naturally with no history (verified offline against
+    // this exact persona/profile). With the ledger now recording hook: 2, the
+    // anti-repeat draw must move off it and report the skip in `avoided`.
+    const brief = await callWith(ctx, 'build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'AI',
+      mode: 'blog',
+      seed: 6,
+    });
+    expect(brief.ok).toBe(true);
+    expect(brief.avoided.hook).toContain(2);
+    expect(brief.choices.hook).not.toBe(2);
+  });
+
+  it('list_personas reports articles: 0 for a persona with none, and 1 after one is recorded', async () => {
+    const ctx = makeContext();
+
+    const before = await callWith(ctx, 'list_personas');
+    expect(before.personas.find((p: any) => p.slug === 'jane-doe').articles).toBe(0);
+
+    stubGhostCreate();
+    await callWith(ctx, 'create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'draft',
+      images: 'none',
+      author: 'jane-doe',
+    });
+
+    const after = await callWith(ctx, 'list_personas');
+    expect(after.personas.find((p: any) => p.slug === 'jane-doe').articles).toBe(1);
+  });
+
+  it('list_personas degrades only the persona with a corrupt ledger, and keeps listing the rest', async () => {
+    const ctx = makeContext();
+    writeFileSync(
+      join(ctx.personasDir, 'john-roe.yaml'),
+      `
+slug: john-roe
+name: John Roe
+role: Analyst
+writing_style: Plain
+tone_of_voice: Neutral
+platform_authors: {}
+`,
+    );
+    ctx.personas = loadPersonas(ctx.personasDir);
+
+    const articlesDir = join(ctx.paths.home, 'articles');
+    mkdirSync(articlesDir, { recursive: true });
+    writeFileSync(join(articlesDir, 'jane-doe.json'), '{ not json');
+
+    const result = await callWith(ctx, 'list_personas');
+    expect(result.ok).toBe(true);
+    expect(result.personas).toHaveLength(2);
+
+    const jane = result.personas.find((p: any) => p.slug === 'jane-doe');
+    expect(jane.articles).toBeNull();
+    expect(typeof jane.articles_error).toBe('string');
+    expect(jane.articles_error.length).toBeGreaterThan(0);
+    // No other field is lost for the persona whose ledger is corrupt.
+    expect(jane.name).toBe('Jane Doe');
+    expect(jane.role).toBe('CTO');
+    expect(jane.sites).toEqual(['personal']);
+
+    const john = result.personas.find((p: any) => p.slug === 'john-roe');
+    expect(john.articles).toBe(0);
+    expect(john.articles_error).toBeUndefined();
+  });
+
+  it('a read-only articles dir makes create_post succeed with a warning naming the article ledger', async () => {
+    const ctx = makeContext();
+    const articlesDir = join(ctx.paths.home, 'articles');
+    mkdirSync(articlesDir, { recursive: true });
+    chmodSync(articlesDir, 0o500); // read + execute, no write
+    stubGhostCreate();
+
+    try {
+      const result = await callWith(ctx, 'create_post', {
+        site: 'personal',
+        title: 'T',
+        html: '<p>x</p>',
+        status: 'draft',
+        images: 'none',
+        author: 'jane-doe',
+      });
+      expect(result.ok).toBe(true);
+      expect(result.warnings?.some((w: string) => w.includes('article ledger'))).toBe(true);
+    } finally {
+      chmodSync(articlesDir, 0o700);
+    }
+  });
+
+  it('a series article is recorded, and build_writing_brief surfaces it as a sibling and echoes series', async () => {
+    const ctx = makeContext();
+    stubGhostCreate();
+
+    await callWith(ctx, 'create_post', {
+      site: 'personal',
+      title: 'Pillar article',
+      html: '<p>x</p>',
+      status: 'draft',
+      images: 'none',
+      author: 'jane-doe',
+      series: 'gulf-modernisation',
+    });
+
+    const brief = await callWith(ctx, 'build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'AI',
+      mode: 'blog',
+      seed: 1,
+      series: 'gulf-modernisation',
+    });
+    expect(brief.ok).toBe(true);
+    expect(brief.series).toBe('gulf-modernisation');
+    expect(brief.brief).toContain('THIS SERIES SO FAR');
+    expect(brief.brief).toContain('Pillar article');
   });
 });
 

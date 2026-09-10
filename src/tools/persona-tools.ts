@@ -1,9 +1,10 @@
 // src/tools/persona-tools.ts
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { articleLedgerPath, readArticleLedger } from '../articles/store.js';
 import { getPersona } from '../config/personas.js';
 import type { Context } from '../context.js';
-import { ok } from '../errors.js';
+import { ToolError, fail, ok } from '../errors.js';
 import { requireSetup } from '../setup.js';
 import { adapterFor, handler } from './shared.js';
 
@@ -44,13 +45,39 @@ export function registerPersonaTools(server: McpServer, ctx: Context): void {
     { title: 'List personas', description: 'List available author personas.', inputSchema: {} },
     handler('list_personas', async () =>
       ok({
-        personas: [...ctx.personas.values()].map((p) => ({
-          slug: p.slug,
-          name: p.name,
-          role: p.role,
-          focus: p.beats_or_focus_areas,
-          sites: Object.keys(p.platform_authors),
-        })),
+        personas: [...ctx.personas.values()].map((p) => {
+          // A missing ledger is a persona with nothing recorded yet — 0 is
+          // the honest count. A CORRUPT ledger, read here for EVERY persona,
+          // must not take the whole ungated listing down with it: one
+          // persona's damaged file is not a reason to hide every other
+          // persona's real article count, or their name and sites, from a
+          // caller. So a corrupt ledger is caught per persona and reported as
+          // `articles: null` with the failure named in `articles_error` —
+          // never as a fabricated 0, which would read as "nothing published"
+          // when the truth is "unreadable". `build_writing_brief` still
+          // throws loudly for the one persona actually being drafted for.
+          let articles: number | null;
+          let articles_error: string | undefined;
+          try {
+            articles = readArticleLedger(
+              articleLedgerPath(ctx.paths.home, p.slug),
+              p.slug,
+            ).records.length;
+          } catch (e) {
+            articles = null;
+            const err = e instanceof ToolError ? e : new ToolError(fail(e, 'articles'));
+            articles_error = err.hint ? `${err.message} ${err.hint}` : err.message;
+          }
+          return {
+            slug: p.slug,
+            name: p.name,
+            role: p.role,
+            focus: p.beats_or_focus_areas,
+            sites: Object.keys(p.platform_authors),
+            articles,
+            ...(articles_error !== undefined ? { articles_error } : {}),
+          };
+        }),
       }),
     ),
   );

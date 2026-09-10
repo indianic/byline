@@ -1,6 +1,8 @@
 // src/tools/craft-tools.ts
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { recentArticles, recentChoices, siblings } from '../articles/ledger.js';
+import { articleLedgerPath, readArticleLedger } from '../articles/store.js';
 import { getPersona } from '../config/personas.js';
 import { getSite, usableSites } from '../config/sites.js';
 import type { Context } from '../context.js';
@@ -48,7 +50,8 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
         'or a research_topic result as `findings` (checked to exist, and that AT LEAST ONE finding is dated and inside the window; any that are not are marked on the brief). Passing both is refused. ' +
         'Do not summarise a recent topic from your own knowledge — the model cutoff cannot know the last 30 days, and an article built on recalled facts will carry stale or invented figures. ' +
         'If it is unclear whether a topic depends on recent events, ASK THE USER rather than guessing; an evergreen topic should use mode: "blog", which needs no research at all. ' +
-        'Returns the seed so a brief can be reproduced, plus researchOrigin and any warnings.',
+        "Also reads this persona's article ledger: recent articles are listed in the brief so it does not repeat their hook, example, or keyword, and can link back to them; pass `series` to also surface earlier articles in the same series. " +
+        'Returns the seed so a brief can be reproduced (given the same ledger state — see `avoided`), plus researchOrigin and any warnings.',
       inputSchema: {
         persona: z.string(),
         topic: z.string(),
@@ -68,6 +71,12 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
           .describe(
             'Which site this is written for — its platform decides the HTML rules. Defaults to the default site.',
           ),
+        series: z
+          .string()
+          .optional()
+          .describe(
+            'Groups this article with others this persona has published under the same series name. When set, earlier articles recorded with the same series appear in the brief as THIS SERIES SO FAR, to link back to. Echoed unchanged in the result.',
+          ),
       },
     },
     handler(
@@ -82,6 +91,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
         language?: string;
         seed?: number;
         site?: string;
+        series?: string;
       }) => {
         requireSetup(ctx, 'personas');
 
@@ -177,6 +187,20 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
         }
 
         const profile = await profileFor(ctx, a.site);
+        const persona = getPersona(ctx.personas, a.persona);
+
+        // A missing ledger is a brand-new persona — empty history, nothing to
+        // avoid. A CORRUPT one is surfaced as a ToolError rather than quietly
+        // treated as empty: continuing would silently drop this persona's
+        // memory of what it already published, letting a brief repeat a hook,
+        // an example, or a keyword it should be avoiding without any signal
+        // that the memory itself is broken.
+        const ledger = readArticleLedger(articleLedgerPath(ctx.paths.home, persona.slug), persona.slug);
+        const history = {
+          recent: recentArticles(ledger, 5),
+          avoid: recentChoices(ledger, 3),
+          ...(a.series ? { siblings: siblings(ledger, a.series) } : {}),
+        };
 
         // Three explicit call sites, NOT one call with a cast past the union.
         // `as Parameters<typeof buildBrief>[0]` would typecheck unconditionally
@@ -185,7 +209,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
         // src/plugins/images/types.ts). A conditional spread cannot narrow to a
         // discriminated union, so branch at the call instead.
         const base = {
-          persona: getPersona(ctx.personas, a.persona),
+          persona,
           topic: a.topic,
           mode: a.mode,
           profile,
@@ -194,18 +218,22 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
           // see the comment on `const now` for why this must not be a
           // second `Date.now()` call.
           now,
+          history,
           ...(a.word_count !== undefined ? { wordCount: a.word_count } : {}),
           ...(a.language !== undefined ? { language: a.language } : {}),
           ...(a.seed !== undefined ? { seed: a.seed } : {}),
         };
 
-        return ok(
-          a.findings
-            ? buildBrief({ ...base, findings: a.findings })
-            : a.research !== undefined
-              ? buildBrief({ ...base, research: a.research })
-              : buildBrief(base),
-        );
+        const brief = a.findings
+          ? buildBrief({ ...base, findings: a.findings })
+          : a.research !== undefined
+            ? buildBrief({ ...base, research: a.research })
+            : buildBrief(base);
+
+        // Echoed unchanged so a caller can pass it straight back into
+        // create_post's `series` input and record it against this article —
+        // Task 4.2 extends what series actually does beyond this.
+        return ok({ ...brief, ...(a.series !== undefined ? { series: a.series } : {}) });
       },
     ),
   );

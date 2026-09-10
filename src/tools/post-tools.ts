@@ -1,6 +1,8 @@
 // src/tools/post-tools.ts
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { recordArticle } from '../articles/ledger.js';
+import { articleLedgerPath, readArticleLedger, writeArticleLedger } from '../articles/store.js';
 import { getPersona } from '../config/personas.js';
 import { getSite } from '../config/sites.js';
 import type { Context } from '../context.js';
@@ -164,6 +166,38 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
           .describe(
             "Byline. Either a persona slug (resolved to that site's author id) or a raw platform-native author id, to attribute the post to someone with no persona file — the id's format is specific to the target site's platform and is not the same across every site. Omit to use the site default_author. Run list_authors against the target site to find its ids.",
           ),
+
+        brief_seed: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            "From build_writing_brief's result; recorded so later briefs avoid repeating this article's shape and can link to it.",
+          ),
+        brief_choices: z
+          .record(z.string(), z.number().int())
+          .optional()
+          .describe(
+            "The `choices` object from build_writing_brief's result; recorded so later briefs avoid repeating this article's shape and can link to it.",
+          ),
+        topic: z
+          .string()
+          .optional()
+          .describe(
+            "The topic passed to build_writing_brief; recorded so later briefs avoid repeating this article's shape and can link to it.",
+          ),
+        primary_keyword: z
+          .string()
+          .optional()
+          .describe(
+            "This article's primary keyword; recorded so later briefs avoid repeating this article's shape and can link to it.",
+          ),
+        series: z
+          .string()
+          .optional()
+          .describe(
+            'Groups this article with others in the same series in this persona\'s article ledger, so a later build_writing_brief called with the same `series` can link back to it.',
+          ),
       },
     },
     handler(
@@ -198,6 +232,11 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         newsletter?: string;
         email_segment?: string;
         author?: string;
+        brief_seed?: number;
+        brief_choices?: Record<string, number>;
+        topic?: string;
+        primary_keyword?: string;
+        series?: string;
       }) => {
         requireSetup(ctx, 'sites');
         const site = getSite(ctx.sites, a.site);
@@ -358,6 +397,50 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         ];
         const promotion = promoteUsedMedia(ctx, referenced, result.url);
         warnings.push(...promotion.problems);
+
+        // Record this publish in the persona's article ledger, so a later
+        // build_writing_brief for the same persona can avoid repeating its
+        // shape and can link back to it. Only when `author` resolved to an
+        // actual persona (not a raw platform author id) — there is no ledger
+        // to write for someone with no persona file. A failure here (a
+        // corrupt or unwritable ledger) becomes a warning naming what broke
+        // rather than a failed publish: the post is already live, and losing
+        // this bookkeeping is recoverable in a way that pretending the
+        // publish failed would not be.
+        //
+        // Phase 5: when getPlugin(site.platform).kind === 'social' and
+        // a.canonical_url is set, this should call recordShare on every
+        // persona ledger whose record matches canonical_url instead of
+        // recordArticle here.
+        if (persona) {
+          try {
+            const file = articleLedgerPath(ctx.paths.home, persona.slug);
+            const ledger = readArticleLedger(file, persona.slug);
+            const updated = recordArticle(ledger, {
+              id: `${a.site}:${result.id}`,
+              persona: persona.slug,
+              site: a.site,
+              platform: site.platform,
+              post_id: result.id,
+              url: result.url,
+              title: a.title,
+              ...(a.slug !== undefined ? { slug: a.slug } : {}),
+              ...(a.topic !== undefined ? { topic: a.topic } : {}),
+              ...(a.primary_keyword !== undefined ? { primary_keyword: a.primary_keyword } : {}),
+              tags: a.tags ?? [],
+              ...(a.brief_seed !== undefined ? { seed: a.brief_seed } : {}),
+              ...(a.brief_choices !== undefined ? { choices: a.brief_choices } : {}),
+              ...(a.series !== undefined ? { series: a.series } : {}),
+              status: result.status,
+              ...(result.publish_at !== undefined ? { publish_at: result.publish_at } : {}),
+            });
+            writeArticleLedger(file, updated);
+          } catch (e) {
+            warnings.push(
+              `article ledger: could not record this post (${(e as Error).message}). Later briefs will not know about it.`,
+            );
+          }
+        }
 
         return ok({
           ...result,

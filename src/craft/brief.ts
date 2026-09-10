@@ -1,7 +1,8 @@
+import type { ArticleRecord } from '../articles/types.js';
 import type { Persona } from '../config/personas.js';
 import type { ResearchResult } from '../plugins/research/types.js';
 import { tallyWindow } from '../plugins/research/window.js';
-import { dimensionsFor, type DimensionName } from './dimensions.js';
+import { ANTI_REPEAT_DIMENSIONS, dimensionsFor, type DimensionName } from './dimensions.js';
 import type { HtmlProfile } from './html-profile.js';
 import {
   BANNED,
@@ -54,6 +55,23 @@ interface BriefBase {
    * defer to — exists to make impossible.
    */
   now?: number;
+  /**
+   * This persona's publishing history, from `create_post`'s article ledger
+   * (`src/articles/`). Absent for a caller with no ledger access yet, or a
+   * brand-new persona with nothing recorded — both are treated as "no history
+   * to avoid", never as an error.
+   *
+   * `avoid` is keyed by `DimensionName` (as a plain string, so `articles/`
+   * never has to import `craft/dimensions.ts`) to the indexes this persona's
+   * `ANTI_REPEAT_DIMENSIONS` picks have used recently — see `recentChoices` in
+   * `src/articles/ledger.ts`. `recent` and `siblings` are rendered verbatim as
+   * the RECENT ARTICLES and THIS SERIES SO FAR blocks.
+   */
+  history?: {
+    recent: ArticleRecord[];
+    avoid: Record<string, number[]>;
+    siblings?: ArticleRecord[];
+  };
 }
 
 /**
@@ -137,8 +155,24 @@ ${profile.notes.map((n) => `- ${n}`).join('\n')}`;
 
 export interface Brief {
   brief: string;
+  /**
+   * Reproducible given the same seed AND the same ledger state for this
+   * persona. Once `history` starts influencing the anti-repeat draw, replaying
+   * a stored seed against a ledger that has since gained new records can pick
+   * differently than it did the first time — the seed alone was never the
+   * whole story once history exists to avoid.
+   */
   seed: number;
   choices: Partial<Record<DimensionName, number>>;
+  /**
+   * Per anti-repeat dimension, the indexes that were drawn and then skipped
+   * during this call because `history.avoid` listed them. Empty for a
+   * dimension whose natural draw was not in `avoid`, and absent entirely
+   * (an empty object) when nothing was skipped anywhere — including when
+   * `history` itself is absent, or when every option for a dimension was
+   * being avoided and the draw was left untouched.
+   */
+  avoided: Record<string, number[]>;
   /** Which origin grounded this article. Recorded so a correction can be traced. */
   researchOrigin: 'provider' | 'byor' | 'none';
   /** Non-fatal. Names what the research cannot support, without refusing it. */
@@ -158,6 +192,59 @@ function rng(seed: number): () => number {
 }
 
 const or = (v: string, fallback: string): string => (v.trim() ? v : fallback);
+
+/** `ANTI_REPEAT_DIMENSIONS` as a Set, for a cheap membership check per dimension drawn. */
+const ANTI_REPEAT_SET = new Set<string>(ANTI_REPEAT_DIMENSIONS);
+
+/**
+ * `YYYY-MM-DD`, from whichever of `publish_at`/`recorded_at` this record has —
+ * the platform's own confirmed publish instant when known, the moment Byline
+ * recorded it otherwise. Both are full ISO timestamps; the RECENT ARTICLES
+ * block only needs the date a reader would recognise the article by.
+ */
+function articleDate(rec: ArticleRecord): string {
+  return (rec.publish_at ?? rec.recorded_at).slice(0, 10);
+}
+
+/**
+ * "You already wrote these" — rendered so the writer can avoid repeating an
+ * opening device, a central example, or a keyword, and can link back where it
+ * genuinely helps. Empty when there is no history, or the ledger has nothing
+ * recorded yet for this persona; an empty section would read as filler.
+ */
+function recentArticlesBlock(history: BriefInput['history']): string {
+  if (!history || history.recent.length === 0) return '';
+  const lines = history.recent
+    .map(
+      (r) =>
+        `- ${r.title} — ${r.url} — keyword: ${r.primary_keyword ?? '(none)'} — ${articleDate(r)}`,
+    )
+    .join('\n');
+  return `=== YOUR RECENT ARTICLES — DO NOT REPEAT, DO LINK ===
+You published these recently. Do not reuse their opening device, their central
+example, or their primary keyword. Where this article genuinely depends on ground
+one of them covers, link to it ONCE with descriptive anchor text — an internal link
+counts as a citation link. Do not link to one that is not relevant.
+${lines}
+
+`;
+}
+
+/**
+ * Rendered only for an article that is part of a series (`history.siblings`
+ * non-empty) — see Task 4.2 for how `series` grows beyond this. One link to
+ * the pillar and one to a sibling is the target; linking to every sibling on
+ * every article in the series would make each one a link farm to the others.
+ */
+function seriesBlock(history: BriefInput['history']): string {
+  if (!history?.siblings || history.siblings.length === 0) return '';
+  const lines = history.siblings.map((r) => `- ${r.title} — ${r.url}`).join('\n');
+  return `=== THIS SERIES SO FAR ===
+${lines}
+Link to the pillar article and to one sibling where it fits; never to all of them.
+
+`;
+}
 
 /**
  * `undefined` (the field omitted) assumes a provider IS configured — see
@@ -437,10 +524,37 @@ export function buildBrief(input: BriefInput): Brief {
 
   const dimensions = dimensionsFor(input.profile.inlineStyles);
   const choices: Partial<Record<DimensionName, number>> = {};
+  const avoided: Record<string, number[]> = {};
   const picked = {} as Record<DimensionName, string>;
   for (const name of Object.keys(dimensions) as DimensionName[]) {
     const options = dimensions[name];
-    const idx = Math.floor(next() * options.length);
+    // One draw per dimension, always — an existing seed with no `history`
+    // must resolve identically to before, and `avoid` defaulting to `[]`
+    // below makes the `while` loop a no-op rather than a second draw.
+    let idx = Math.floor(next() * options.length);
+    if (ANTI_REPEAT_SET.has(name)) {
+      // A stale index from a ledger recorded against a longer-lived version
+      // of this dimension (or simply corrupt input) must not count toward
+      // "every option is being avoided" below — an out-of-range index can
+      // never match a real draw, so keeping it in `avoid` only inflates the
+      // length and can block the walk for a dimension that still has real
+      // room to move.
+      const avoid = (input.history?.avoid[name] ?? []).filter(
+        (i) => i >= 0 && i < options.length,
+      );
+      // Every option being avoided means there is nothing left to move to —
+      // leave the natural draw untouched rather than spin forever or land on
+      // an arbitrary index that is "avoided" just the same as the one drawn.
+      if (avoid.length < options.length) {
+        const skipped: number[] = [];
+        let guard = 0;
+        while (avoid.includes(idx) && guard++ < options.length) {
+          skipped.push(idx);
+          idx = (idx + 1) % options.length;
+        }
+        if (skipped.length > 0) avoided[name] = skipped;
+      }
+    }
     choices[name] = idx;
     picked[name] = options[idx]!;
   }
@@ -757,6 +871,7 @@ ${input.research}`;
   return {
     seed,
     choices,
+    avoided,
     researchOrigin,
     warnings,
     brief: `You are ${p.name}, ${or(p.role, 'an industry expert')} with ${p.years_of_experience} years of experience in ${or(p.subject_expertise, or(p.description, 'your field'))}.
@@ -797,7 +912,7 @@ ${voiceBlock(p)}${modeBlock}
 
 ${researchBlock}
 
-${craftBlock}
+${recentArticlesBlock(input.history)}${seriesBlock(input.history)}${craftBlock}
 
 ${imageSection}
 

@@ -760,6 +760,16 @@ credentials interactively and validates each one against the live platform befor
 accepting it. You can skip every prompt and fill things in later — everything lives in
 two files it will tell you the path of, and `byline status` prints them any time.
 
+#### Byline remembers what you published
+
+Each persona has its own ledger — `~/.byline/articles/<persona>.json` — of what it has
+already published. Every `build_writing_brief` call reads it back, so a persona's next
+article steers away from the hook, structure, and prose texture its last few articles just
+used, lists those recent articles for the writer to link to where it genuinely helps, and,
+when you pass `series`, pulls in the earlier articles in that series to link to as well.
+It is what makes "don't repeat yourself" and real internal linking possible across a
+persona's whole back catalogue instead of one article at a time.
+
 ---
 
 ## How it works

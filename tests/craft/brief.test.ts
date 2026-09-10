@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ArticleRecord } from '../../src/articles/types.js';
 import type { Persona } from '../../src/config/personas.js';
 import { buildBrief } from '../../src/craft/brief.js';
 import {
@@ -948,5 +949,177 @@ describe('scorecard targets are rendered from the scorer, not restated', () => {
     expect(b).toContain(`at least ${THRESHOLDS.minAnecdotes} concrete first-hand moments`);
     expect(b).toContain('FIRST PERSON — required');
     expect(b).not.toContain('FIRST PERSON — ZERO');
+  });
+});
+
+describe('history — anti-repeat draw (Task 3.3)', () => {
+  it('an absent history leaves every seed resolving exactly as before', () => {
+    for (const seed of [0, 1, 2, 7, 29]) {
+      const withoutHistory = buildBrief({ ...base, seed }).choices;
+      const withEmptyAvoid = buildBrief({ ...base, seed, history: { recent: [], avoid: {} } }).choices;
+      expect(withEmptyAvoid).toEqual(withoutHistory);
+    }
+  });
+
+  it('avoided is an empty object when history is absent', () => {
+    expect(buildBrief({ ...base, seed: 0 }).avoided).toEqual({});
+  });
+
+  it('changes only the avoided dimension, and records the skipped index in `avoided`', () => {
+    const seed = 0;
+    const without = buildBrief({ ...base, seed });
+    const naturalHook = without.choices.hook!;
+
+    const withAvoid = buildBrief({
+      ...base,
+      seed,
+      history: { recent: [], avoid: { hook: [naturalHook] } },
+    });
+
+    expect(withAvoid.choices.hook).not.toBe(naturalHook);
+    expect(withAvoid.avoided.hook).toEqual([naturalHook]);
+
+    // Every other dimension's pick is untouched.
+    const { hook: _wh, ...restWithout } = without.choices;
+    const { hook: _ah, ...restWith } = withAvoid.choices;
+    expect(restWith).toEqual(restWithout);
+  });
+
+  it('leaves the draw untouched, and avoided empty for that dimension, when every option is being avoided', () => {
+    const seed = 0;
+    const without = buildBrief({ ...base, seed });
+    const allHookIndexes = Array.from({ length: HOOKS.length }, (_, i) => i);
+
+    const withAvoid = buildBrief({
+      ...base,
+      seed,
+      history: { recent: [], avoid: { hook: allHookIndexes } },
+    });
+
+    expect(withAvoid.choices.hook).toBe(without.choices.hook);
+    expect(withAvoid.avoided.hook).toBeUndefined();
+  });
+
+  it('ignores stale avoid indexes past the current option count rather than letting them block the walk', () => {
+    // Seed 7 draws hook: 0 naturally with no history (verified offline
+    // against this exact persona/profile — see the seed search this fix's
+    // test used). `avoid.hook` carries the real index (0) alongside four
+    // indexes past HOOKS.length: a ledger record from a dimension that used
+    // to have more options. Those stale indexes must not count toward "every
+    // option is avoided" and block the natural walk off index 0.
+    const seed = 7;
+    const withAvoid = buildBrief({
+      ...base,
+      seed,
+      history: {
+        recent: [],
+        avoid: { hook: [0, 901, 902, 903, 904] },
+      },
+    });
+
+    expect(withAvoid.choices.hook).toBe(1);
+    expect(withAvoid.avoided.hook).toEqual([0]);
+  });
+
+  it('does not touch a dimension outside ANTI_REPEAT_DIMENSIONS even when told to avoid every option', () => {
+    const seed = 0;
+    const without = buildBrief({ ...base, seed });
+    const allTableThemeIndexes = Array.from({ length: DIMENSIONS.tableTheme.length }, (_, i) => i);
+
+    const withAvoid = buildBrief({
+      ...base,
+      seed,
+      history: { recent: [], avoid: { tableTheme: allTableThemeIndexes } },
+    });
+
+    expect(withAvoid.choices.tableTheme).toBe(without.choices.tableTheme);
+    expect(withAvoid.avoided.tableTheme).toBeUndefined();
+  });
+});
+
+describe('RECENT ARTICLES and THIS SERIES SO FAR (Task 3.3)', () => {
+  const record = (overrides: Partial<ArticleRecord> = {}): ArticleRecord => ({
+    id: 'personal:1',
+    persona: 'jane-doe',
+    site: 'personal',
+    platform: 'ghost',
+    post_id: '1',
+    url: 'https://blog.example.com/first/',
+    title: 'First article',
+    tags: [],
+    status: 'published',
+    recorded_at: '2026-08-01T00:00:00.000Z',
+    shares: [],
+    ...overrides,
+  });
+
+  it('renders no block when history is absent', () => {
+    const b = buildBrief({ ...base, seed: 0 }).brief;
+    expect(b).not.toContain('YOUR RECENT ARTICLES');
+    expect(b).not.toContain('THIS SERIES SO FAR');
+  });
+
+  it('renders no RECENT ARTICLES block when history.recent is empty', () => {
+    const b = buildBrief({ ...base, seed: 0, history: { recent: [], avoid: {} } }).brief;
+    expect(b).not.toContain('YOUR RECENT ARTICLES');
+  });
+
+  it('lists a recent article by title, url, keyword, and publish date', () => {
+    const b = buildBrief({
+      ...base,
+      seed: 0,
+      history: {
+        recent: [
+          record({
+            title: 'Legacy modernisation in the Gulf',
+            url: 'https://blog.example.com/legacy/',
+            primary_keyword: 'legacy modernisation',
+            publish_at: '2026-08-20T09:00:00.000Z',
+          }),
+        ],
+        avoid: {},
+      },
+    }).brief;
+    expect(b).toContain('YOUR RECENT ARTICLES');
+    expect(b).toContain('Legacy modernisation in the Gulf — https://blog.example.com/legacy/ — keyword: legacy modernisation — 2026-08-20');
+  });
+
+  it('falls back to recorded_at and "(none)" when publish_at/primary_keyword are missing', () => {
+    const b = buildBrief({
+      ...base,
+      seed: 0,
+      history: { recent: [record({ title: 'No keyword piece' })], avoid: {} },
+    }).brief;
+    expect(b).toContain(
+      'No keyword piece — https://blog.example.com/first/ — keyword: (none) — 2026-08-01',
+    );
+  });
+
+  it('renders THIS SERIES SO FAR only when siblings is non-empty', () => {
+    const withoutSiblings = buildBrief({ ...base, seed: 0, history: { recent: [], avoid: {} } }).brief;
+    expect(withoutSiblings).not.toContain('THIS SERIES SO FAR');
+
+    const withSiblings = buildBrief({
+      ...base,
+      seed: 0,
+      history: { recent: [], avoid: {}, siblings: [record({ title: 'Pillar article' })] },
+    }).brief;
+    expect(withSiblings).toContain('THIS SERIES SO FAR');
+    expect(withSiblings).toContain('Pillar article');
+    expect(withSiblings).toContain(
+      'Link to the pillar article and to one sibling where it fits; never to all of them.',
+    );
+  });
+
+  it('renders the RECENT ARTICLES block after the research block', () => {
+    const b = buildBrief({
+      ...base,
+      seed: 0,
+      history: { recent: [record()], avoid: {} },
+    }).brief;
+    const researchIdx = b.indexOf('=== NO RESEARCH SUPPLIED ===');
+    const recentIdx = b.indexOf('YOUR RECENT ARTICLES');
+    expect(researchIdx).toBeGreaterThan(-1);
+    expect(recentIdx).toBeGreaterThan(researchIdx);
   });
 });
