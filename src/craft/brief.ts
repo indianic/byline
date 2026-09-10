@@ -7,6 +7,8 @@ import type { HtmlProfile } from './html-profile.js';
 import {
   BANNED,
   BANNED_CONSTRUCTIONS,
+  PARTICIPLE_RIDERS,
+  STACKED_HEDGES,
   THRESHOLDS,
   evidenceNeeded,
   newsAttributionsNeeded,
@@ -308,7 +310,7 @@ ${lines}
 
 /**
  * Rendered only for an article that is part of a series (`history.siblings`
- * non-empty) — see Task 4.2 for how `series` grows beyond this. One link to
+ * non-empty) — `series` is what grows this beyond a single article. One link to
  * the pillar and one to a sibling is the target; linking to every sibling on
  * every article in the series would make each one a link farm to the others.
  */
@@ -386,31 +388,26 @@ const hasImageProvider = (imageProviders: readonly string[] | undefined): boolea
  * model-written prose gives itself away far more through uniform paragraph
  * length, relentlessly parallel lists, and an argument that never once concedes
  * anything than through any individual word.
+ *
+ * Credits: the five-group taxonomy in the REVISION PASS below (staging,
+ * rhythm-by-rule, inflation, formatting-by-rule, leftovers) is adapted from
+ * `blader/humanizer` (MIT licence) and from Wikipedia's "Signs of AI writing".
+ * Repeated because it matters: this makes **no claim about any AI-detection
+ * tool**. It is a craft standard for specific, well-rhythmed prose — writing
+ * that follows it is better to read, which is the whole justification, and
+ * that claim could not be verified from inside this codebase regardless.
  */
-const HUMANISING = `=== NEVER USE THESE ===
-GRADED — score_draft reports every hit. The list below is not advice. It is the exact
-lexicon the check matches, printed from the same array the check uses, so what you are
-warned about and what you are marked down for cannot drift apart:
+const HUMANISING = `=== NEVER USE THESE — GRADED ===
+score_draft reports every hit. This list is printed from the scorer's own array:
 ${BANNED.join(', ')}.
 
 Graded constructions: ${BANNED_CONSTRUCTIONS.join('; ')}.
 
-=== ALSO AVOID — NOT GRADED, SAME TELL ===
-These are not machine-checked, so nothing will flag them. They give a draft away
-just as fast: realm, myriad, plethora, pivotal, crucial, vital, elevate, harness,
-streamline, cutting-edge, foster, bolster, underscore, embark, meticulous,
-intricate, multifaceted, holistic, synergy, leverage (as a verb) — and the broader
-figurative forms of the graded terms ("landscape", "navigate", "unlock", "paradigm"
-on its own).
-
-Constructions: "when it comes to", "it's worth noting that", "at the end of the
-day", "in conclusion", "the fact that", "one thing is clear", "let's dive in",
-"buckle up", "the bottom line", "that said" used more than once, "moreover" and
-"furthermore" anywhere at all.
-
-Openings: never begin the article, or any section, with a dictionary definition,
-with "In an era where", with a rhetorical question you answer in the next
-sentence, or by restating the H2 you just wrote.
+Also graded, by count: dashes (more than one per ${THRESHOLDS.emDashPerWords} words), participle riders
+after a comma (${PARTICIPLE_RIDERS.join(', ')}), stacked hedges (${STACKED_HEDGES.join(', ')}), three
+sentences in a row opening with the same word, bold in body prose beyond the summary block and
+callout labels, a heading restated by its first sentence, and a one-line paragraph that restates
+the paragraph above it.
 
 === STRUCTURAL TELLS — THESE MATTER MORE THAN THE WORD LIST ===
 - Paragraph length must be genuinely uneven. Three consecutive paragraphs of
@@ -431,6 +428,24 @@ sentence, or by restating the H2 you just wrote.
   in a room. If nothing in the draft qualifies, the draft is not finished.
 - Contractions are allowed and usually better. Write "doesn't" unless the
   emphasis genuinely needs "does not".
+- These instructions use dashes freely. Your article may not: one per ${THRESHOLDS.emDashPerWords} words at most.
+- A paragraph of one sentence is allowed only when it carries a claim the reader has not yet read.
+  Never as a closer that restates the paragraph above.
+- Bold is for the summary block's labels and the callout panel's label. Nowhere else.
+
+=== REVISION PASS — DO THIS BEFORE score_draft ===
+Read the whole draft once, start to finish. Then mark the tells, strongest first:
+1. Staging instead of stating — "not X but Y", one-line closers, sayings that sound deep,
+   run-ups before the point, arguing with an objection nobody raised.
+2. Rhythm by rule — triads for their own sake, repeated sentence openings, dashes as the
+   universal connector, stacked hedges, hyphenated pairs everywhere, passive voice hiding the actor.
+3. Inflation — "pivotal", "landscape", "testament"; ordinary facts framed as turning points;
+   "associated with" instead of the actual relationship; unnamed experts; "serves as" for "is".
+4. Formatting by rule — bold as decoration, title-case headings, a heading repeated in its first line.
+5. Leftovers — greetings, offers, "in this article we will", knowledge-cutoff disclaimers.
+Act on a single sighting of group 1. Groups 2–5 need two tells in one passage before you edit.
+Rewrite only what you marked. Keep every sourced claim. Add no name, number, date, quote or
+citation that was not already there. Then read it aloud once.
 
 === WHAT NOT TO DO IN THE NAME OF SOUNDING HUMAN ===
 Do not introduce errors, typos, or slang to seem informal. Do not pad with
@@ -539,6 +554,8 @@ const WIRED_EXTRAS = new Set([
   'commonly_used_transitions',
   'use_of_humor',
   'voice_samples',
+  'profile_url',
+  'social_profiles',
 ]);
 
 /**
@@ -800,7 +817,7 @@ ${picked.imagePlacement}
 Leave the literal text [[content_image]] on its own, exactly once, while drafting.
 
 YOU replace it yourself before calling create_post — nothing does it for you, and
-both platforms REFUSE an article that still contains it. After upload_image returns
+every platform Byline publishes to will REFUSE an article that still contains it. After upload_image returns
 the hosted URL, swap the placeholder for exactly this, filling in the url and alt:
 
 ${figureMarkup}
@@ -833,10 +850,10 @@ Never ask for text, logos, screens with readable words, or signage in either ima
     : `=== IMAGES ===
 No image provider is configured for this account, so this article publishes with NO
 images. Do NOT write a [[content_image]] placeholder anywhere — nothing will ever
-replace it, and both platforms refuse an article that still contains one when it is
-published. Do not call generate_image; it will fail with SETUP_INCOMPLETE. If the
-user wants images, tell them to add a Gemini or xAI key with \`byline init\`, then
-build the brief again.`;
+replace it, and every platform Byline publishes to refuses an article that still
+contains one when it is published. Do not call generate_image; it will fail with
+SETUP_INCOMPLETE. If the user wants images, tell them to add a Gemini or xAI key with
+\`byline init\`, then build the brief again.`;
 
   // The JSON contract's image fields, present only when the writer was
   // actually told to produce images. Leaving them in unconditionally used to

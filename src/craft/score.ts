@@ -30,7 +30,50 @@ export const CHECK_NAMES: readonly string[] = [
   'geo_citability',
   'citation_provenance',
   'voice_rhythm',
+  'em_dash_density',
+  'participle_riders',
+  'stacked_hedges',
+  'sentence_openers',
+  'bold_decoration',
+  'heading_echo',
+  'closer_fragments',
 ];
+
+/**
+ * One imperative sentence per ADVISORY check name — what `score_draft`
+ * returns as `revision_guidance` for every advisory check that failed, in the
+ * order `checks` lists them. Blocking checks (`platform_html`, `structure`,
+ * `ai_summary_block`) are absent on purpose: their own `findings` already say
+ * exactly what to fix, and they are never optional the way advisory findings
+ * are.
+ *
+ * One rule, one definition: a check name not listed here would fall back to
+ * its own name in `craft-tools.ts` rather than throw, but every advisory check
+ * this file can push a name for is listed, including the mode-specific
+ * `reporter_voice` and `attribution` news checks.
+ */
+export const CHECK_GUIDANCE: Record<string, string> = {
+  ai_lexicon: 'Replace every flagged word or construction with a plain, specific one.',
+  burstiness: 'Put a four-word sentence next to a thirty-word one; read the paragraph aloud.',
+  paragraph_uniformity: 'Break up the run of same-length paragraphs — cut one short or let one run long.',
+  evidence_density: 'Add a concrete figure or cite a named source.',
+  experience_markers: 'Add a first-hand moment — a scenario, a date, a decision you made — after the midpoint.',
+  reporter_voice: 'Rewrite every first-person reference as an attributed statement or reported speech.',
+  attribution: 'Name the source for the claim, or cut it.',
+  generic_opener: 'Rewrite the opening so it states something specific, not a template.',
+  images: 'Write real alt text describing what is visible in the frame.',
+  aeo_answerability: 'Phrase at least two headings as the question a reader would type, answered in the next 40-60 words.',
+  geo_citability: 'Name the source and the date inline for every asserted figure.',
+  citation_provenance: 'Cite only URLs that came from the research, and cite every source you used.',
+  voice_rhythm: "Match the author's own sentence length and contraction habits.",
+  em_dash_density: 'Replace most dashes with a full stop, a comma, or a colon.',
+  participle_riders: 'Cut the participle rider, or give it its own sentence with a source.',
+  stacked_hedges: 'Say the claim or cut it; hedge once at most.',
+  sentence_openers: 'Vary where the subject lands instead of opening three sentences the same way.',
+  bold_decoration: 'Remove bold from body prose; keep it only in the summary block and callout labels.',
+  heading_echo: 'Start the first sentence after the heading with the answer, not a restatement of it.',
+  closer_fragments: 'Make the one-line paragraph carry a new claim, or fold it into the paragraph above.',
+};
 
 export interface Check {
   name: string;
@@ -125,7 +168,57 @@ export const THRESHOLDS = {
   voiceContractionHigh: 0.2,
   /** VOICE ONLY: draft contraction rate at or below which a draft is considered to avoid contractions. */
   voiceContractionLow: 0.05,
+  /** One dash (em, en, or " -- ") per this many words, at most. */
+  emDashPerWords: 150,
+  /** Floor on participle-rider hits (", highlighting…") before the check fires. */
+  minRiderHits: 2,
+  /** Floor on stacked-hedge hits before the check fires. */
+  minHedgeHits: 2,
+  /** Consecutive sentences sharing an opening word, at most. */
+  sameOpenerRun: 3,
+  /** <strong> tags in body prose (outside the preamble, table, and blockquote), at most. */
+  maxBodyBold: 3,
+  /** Content-word overlap between a heading and its first following sentence, at or above which it echoes. */
+  headingEchoOverlap: 0.7,
 } as const;
+
+/**
+ * Participle riders — a comma followed by one of these, tacking an unsourced
+ * claim onto the end of a sentence rather than making it its own, defensible
+ * statement ("…, highlighting the shift toward…"). Exported so the brief
+ * prints the exact list the check matches.
+ */
+export const PARTICIPLE_RIDERS = [
+  'highlighting',
+  'underscoring',
+  'reflecting',
+  'showcasing',
+  'signalling',
+  'signaling',
+  'emphasising',
+  'emphasizing',
+  'demonstrating',
+  'reinforcing',
+  'illustrating',
+  'marking',
+  'cementing',
+  'solidifying',
+];
+
+/**
+ * Hedges stacked on top of one another rather than stated once —
+ * "could potentially", "it's possible that". Exported so the brief prints the
+ * exact list the check matches.
+ */
+export const STACKED_HEDGES = [
+  'could potentially',
+  'might possibly',
+  'may potentially',
+  'might arguably',
+  'it is possible that',
+  "it's possible that",
+  'arguably',
+];
 
 /** Evidence items (figures + citation links) required for a draft of `words` words. */
 export function evidenceNeeded(words: number): number {
@@ -166,21 +259,68 @@ export const BANNED = [
   'revolutionary',
   'tapestry',
   'testament',
-  'unlock the power',
   "in today's world",
   'ever-evolving',
   'ever-changing',
-  'navigate the landscape',
-  'the landscape of',
   'dive deep',
   'game-changer',
   'paradigm shift',
-  'leverage the power',
+  'realm',
+  'myriad',
+  'plethora',
+  'pivotal',
+  'crucial',
+  'vital',
+  'elevate',
+  'harness',
+  'streamline',
+  'cutting-edge',
+  'foster',
+  'bolster',
+  'underscore',
+  'embark',
+  'meticulous',
+  'intricate',
+  'multifaceted',
+  'holistic',
+  'synergy',
+  'leverage',
+  'garner',
+  'enduring',
+  'landscape',
+  'navigate',
+  'unlock',
 ];
 
 const BANNED_PATTERNS: Array<[RegExp, string]> = [
-  [/it['’]s not just [^,.]{2,40}, it['’]s/i, '"it\'s not just X, it\'s Y" construction'],
-  [/\bnot only [^,.]{2,40} but also\b/i, '"not only X but also Y" construction'],
+  [/it['’]s not just [^,.]{2,40}, it['’]s/i, '"it\'s not just X, it\'s Y"'],
+  [/\bnot only [^,.]{2,40} but also\b/i, '"not only X but also Y"'],
+  [
+    /\bnot (just|merely|simply|about) [^.]{3,60}\b(but|rather|it['’]s|it is)\b/i,
+    '"not X but Y" staging across a clause',
+  ],
+  [/\bwhen it comes to\b/i, '"when it comes to"'],
+  [/\bit['’]s worth noting\b/i, '"it\'s worth noting"'],
+  [/\bat the end of the day\b/i, '"at the end of the day"'],
+  [/\bin conclusion\b/i, '"in conclusion"'],
+  [/\bone thing is clear\b/i, '"one thing is clear"'],
+  [/\blet['’]s dive in\b/i, '"let\'s dive in"'],
+  [/\bbuckle up\b/i, '"buckle up"'],
+  [/\bthe bottom line\b/i, '"the bottom line"'],
+  [/\b(moreover|furthermore)\b/i, '"moreover" / "furthermore"'],
+  [
+    /\b(the real question is|at its core|here['’]s the thing|the truth is|make no mistake|let that sink in)\b/i,
+    'a saying that sounds deep',
+  ],
+  [
+    /\b(to be clear|i['’]m not saying|this isn['’]t (mainly |really )?about|you might think)\b/i,
+    'arguing with no one',
+  ],
+  [
+    /\b(i hope this helps|great question|let me know if|in this (article|post),? (we|i)(['’]ll| will) (explore|cover|look at|walk through)|want me to)\b/i,
+    'chatbot residue',
+  ],
+  [/\b(serves as|stands as|acts as a testament|boasts|is home to)\b/i, 'a dressed-up "is"'],
 ];
 
 /**
@@ -191,7 +331,26 @@ const BANNED_PATTERNS: Array<[RegExp, string]> = [
  */
 export const BANNED_CONSTRUCTIONS: readonly string[] = BANNED_PATTERNS.map(([, label]) => label);
 
-const stripTags = (html: string): string =>
+/**
+ * Escape a phrase's regex metacharacters, then let every straight apostrophe
+ * in it also match a typographic one (`’`) — one rule, one definition, used
+ * for `BANNED` words, `STACKED_HEDGES`, and `PARTICIPLE_RIDERS` alike, so
+ * "it's possible that" grades "it's possible that" and "it’s possible that"
+ * the same way instead of drifting the way `BANNED_PATTERNS` (which already
+ * hand-wrote `['’]` per pattern) and the two hedge/rider loops once did.
+ */
+export function phraseToRegexSource(phrase: string): string {
+  return phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/'/g, "['’]");
+}
+
+/**
+ * Strip tags and collapse whitespace down to running text.
+ *
+ * Exported so `create_post` (`src/tools/post-tools.ts`) can compute the same
+ * `wordCount` this file's own word count is derived from — one rule, one
+ * definition, rather than a second regex counting words a different way.
+ */
+export const stripTags = (html: string): string =>
   html
     .replace(/<[^>]*>/g, ' ')
     .replace(/&nbsp;/g, ' ')
@@ -341,7 +500,7 @@ export function scoreDraft(
   // --- AI-tell lexicon (advisory) ---
   const lexHits: string[] = [];
   for (const word of BANNED) {
-    const re = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+    const re = new RegExp(`\\b${phraseToRegexSource(word)}\\b`, 'gi');
     const n = (text.match(re) ?? []).length;
     if (n > 0) lexHits.push(`"${word}" ×${n}`);
   }
@@ -926,6 +1085,204 @@ export function scoreDraft(
         : `${voiceResult.findings.length} mismatch(es) against the author's voice samples`
       : 'no persona with voice_samples passed — not evaluated',
     findings: voiceResult?.findings ?? [],
+  });
+
+  // --- Em-dash density (advisory) ---
+  //
+  // A dash used as the universal connector — instead of a full stop, a comma,
+  // or a colon — is one of the cheapest AI tells there is, precisely because it
+  // never forces a writer to decide what relationship two clauses actually
+  // have. Counted against the article's own length: a 3,000-word piece can
+  // carry more dashes than a 400-word one and still read as sparing.
+  const dashCount = (text.match(/—|–| -- /g) ?? []).length;
+  const maxDashes = Math.ceil(words / THRESHOLDS.emDashPerWords);
+  const dashOk = dashCount <= maxDashes;
+  checks.push({
+    name: 'em_dash_density',
+    ok: dashOk,
+    blocking: false,
+    score: dashCount,
+    detail: `${dashCount} dash(es) in ${words} words (max ${maxDashes})`,
+    findings: dashOk
+      ? []
+      : [`${dashCount} dashes in ${words} words (max ${maxDashes}). Replace most with a full stop, a comma, or a colon.`],
+  });
+
+  // --- Participle riders (advisory) ---
+  //
+  // ", highlighting the shift toward…" tacks an unsourced editorial claim onto
+  // the end of a sentence instead of making it its own, defensible statement.
+  const riderRe = new RegExp(`,\\s+(?:${PARTICIPLE_RIDERS.map(phraseToRegexSource).join('|')})\\b`, 'gi');
+  const riderHits = (text.match(riderRe) ?? []).length;
+  const riderOk = riderHits < THRESHOLDS.minRiderHits;
+  checks.push({
+    name: 'participle_riders',
+    ok: riderOk,
+    blocking: false,
+    score: riderHits,
+    detail: `${riderHits} participle rider(s) (threshold ${THRESHOLDS.minRiderHits})`,
+    findings: riderOk
+      ? []
+      : [`${riderHits} participle riders (", highlighting…"). Cut the rider or make it its own sentence with a source.`],
+  });
+
+  // --- Stacked hedges (advisory) ---
+  //
+  // "could potentially" says nothing "could" did not already say. One hedge
+  // makes a claim honest; a second on top of it makes the writer sound afraid
+  // of the sentence.
+  const hedgeRe = new RegExp(`\\b(?:${STACKED_HEDGES.map(phraseToRegexSource).join('|')})\\b`, 'gi');
+  const hedgeHits = (text.match(hedgeRe) ?? []).length;
+  const hedgeOk = hedgeHits < THRESHOLDS.minHedgeHits;
+  checks.push({
+    name: 'stacked_hedges',
+    ok: hedgeOk,
+    blocking: false,
+    score: hedgeHits,
+    detail: `${hedgeHits} stacked hedge(s) (threshold ${THRESHOLDS.minHedgeHits})`,
+    findings: hedgeOk ? [] : [`${hedgeHits} stacked hedges. Say the claim or cut it; hedge once at most.`],
+  });
+
+  // --- Sentence openers (advisory) ---
+  //
+  // Three sentences in a row opening with the same word is the shape a model
+  // falls into when it has no reason to vary the sentence's subject position.
+  // `sentences()` already drops fragments under three words, which is also the
+  // table's own "skip sentences under 3 words" rule.
+  const sentenceList = sentences(text);
+  let openerRun = 1;
+  let openerWorstRun = sentenceList.length > 0 ? 1 : 0;
+  let openerWorstWord = '';
+  let prevOpener = '';
+  for (let i = 0; i < sentenceList.length; i++) {
+    const first = (/^([a-z0-9']+)/i.exec(sentenceList[i]!)?.[1] ?? '').toLowerCase();
+    if (i > 0 && first !== '' && first === prevOpener) {
+      openerRun++;
+    } else {
+      openerRun = 1;
+    }
+    if (openerRun > openerWorstRun) {
+      openerWorstRun = openerRun;
+      openerWorstWord = first;
+    }
+    prevOpener = first;
+  }
+  const openerOk = openerWorstRun < THRESHOLDS.sameOpenerRun;
+  checks.push({
+    name: 'sentence_openers',
+    ok: openerOk,
+    blocking: false,
+    score: openerWorstRun,
+    detail: `Longest run of sentences sharing an opening word: ${openerWorstRun} (max ${THRESHOLDS.sameOpenerRun - 1})`,
+    findings: openerOk
+      ? []
+      : [
+          `${openerWorstRun} consecutive sentences open with "${openerWorstWord}". Vary where the subject lands.`,
+        ],
+  });
+
+  // --- Bold decoration (advisory) ---
+  //
+  // Bold belongs to the summary block's labels and the callout panel's label —
+  // both of which sit outside ordinary body <p> tags (a table cell, or a
+  // blockquote). <strong> used freely THROUGHOUT body prose is a formatting
+  // tell a reader notices before they notice any single word choice.
+  const firstH2ForBold = html.search(/<h2[\s>]/i);
+  const bodyForBold = firstH2ForBold === -1 ? html : html.slice(firstH2ForBold);
+  const boldScanTarget = bodyForBold
+    .replace(/<table[\s\S]*?<\/table>/gi, '')
+    .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '');
+  const boldInBody = [...boldScanTarget.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].reduce(
+    (n, m) => n + (m[1]?.match(/<strong[\s>]/gi)?.length ?? 0),
+    0,
+  );
+  const boldOk = boldInBody <= THRESHOLDS.maxBodyBold;
+  checks.push({
+    name: 'bold_decoration',
+    ok: boldOk,
+    blocking: false,
+    score: boldInBody,
+    detail: `${boldInBody} bolded phrase(s) in body prose (max ${THRESHOLDS.maxBodyBold})`,
+    findings: boldOk
+      ? []
+      : [
+          `${boldInBody} bolded phrases in body prose (max ${THRESHOLDS.maxBodyBold}). Bold belongs in the summary block and callout labels only.`,
+        ],
+  });
+
+  // --- Heading echo (advisory) ---
+  //
+  // A heading restated by the sentence directly under it wastes the one
+  // sentence an answer engine would otherwise lift as the answer. Overlap is
+  // measured on content words only (longer than three characters) so shared
+  // function words ("the", "is", "to") never trigger it.
+  //
+  // Reports the first offending heading only, consistent with `generic_opener`.
+  const contentWords = (s: string): Set<string> =>
+    new Set((s.toLowerCase().match(/\b[a-z0-9]{4,}\b/g) ?? []));
+
+  const headingMatches = [...html.matchAll(/<h([23])[^>]*>([\s\S]*?)<\/h\1>/gi)];
+  let headingEchoFinding: string | undefined;
+  for (let i = 0; i < headingMatches.length; i++) {
+    const m = headingMatches[i]!;
+    const headingText = stripTags(m[2] ?? '');
+    const headingWords = contentWords(headingText);
+    if (headingWords.size === 0) continue;
+    const sectionStart = (m.index ?? 0) + m[0].length;
+    const sectionEnd = headingMatches[i + 1]?.index ?? html.length;
+    const sectionText = stripTags(html.slice(sectionStart, sectionEnd));
+    const firstSentence = sentences(sectionText)[0] ?? '';
+    const sentenceWords = contentWords(firstSentence);
+    const overlap = [...headingWords].filter((w) => sentenceWords.has(w)).length;
+    if (overlap / headingWords.size >= THRESHOLDS.headingEchoOverlap) {
+      headingEchoFinding = `The first sentence after "${headingText}" restates it. Start with the answer instead.`;
+      break;
+    }
+  }
+  checks.push({
+    name: 'heading_echo',
+    ok: headingEchoFinding === undefined,
+    blocking: false,
+    detail:
+      headingEchoFinding === undefined
+        ? 'No heading is restated by its first sentence'
+        : 'A heading is restated by its first sentence',
+    findings: headingEchoFinding ? [headingEchoFinding] : [],
+  });
+
+  // --- Closer fragments (advisory) ---
+  //
+  // A one-line paragraph is a legitimate rhythm device (see HUMAN_TEXTURES'
+  // Asymmetry) exactly when it carries a claim the reader has not yet read.
+  // Used as a closer that just restates the paragraph above it, it is filler
+  // dressed up as emphasis.
+  //
+  // Reports the first offending paragraph only, consistent with `generic_opener`.
+  const bodyParagraphs = [...html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].map((m) => stripTags(m[1] ?? ''));
+  let closerFinding: string | undefined;
+  for (let i = 1; i < bodyParagraphs.length; i++) {
+    const prevPara = bodyParagraphs[i - 1]!;
+    const curPara = bodyParagraphs[i]!;
+    const prevSentenceCount = sentences(prevPara).length;
+    const curSentenceCount = sentences(curPara).length;
+    const curWordCount = curPara.trim() === '' ? 0 : curPara.trim().split(/\s+/).length;
+    if (prevSentenceCount < 3 || curSentenceCount !== 1 || curWordCount >= 8) continue;
+    const prevWords = contentWords(prevPara);
+    const shared = [...contentWords(curPara)].filter((w) => prevWords.has(w)).length;
+    if (shared >= 2) {
+      closerFinding = `"${curPara}" restates the paragraph above it. A one-line paragraph must carry a new claim.`;
+      break;
+    }
+  }
+  checks.push({
+    name: 'closer_fragments',
+    ok: closerFinding === undefined,
+    blocking: false,
+    detail:
+      closerFinding === undefined
+        ? 'No closer paragraph merely restates the one above it'
+        : 'A closer paragraph restates the one above it',
+    findings: closerFinding ? [closerFinding] : [],
   });
 
   const blockingFailures = checks.filter((c) => c.blocking && !c.ok);

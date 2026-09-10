@@ -83,6 +83,7 @@ coverage/
 # silently does nothing.
 .claude/*
 !.claude/commands/
+!.claude/skills/
 
 # Throwaway scripts. Anything named zz-* in the repo root is a scratch probe
 # written during a session; several in this project loaded real credentials in

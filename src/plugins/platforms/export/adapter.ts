@@ -238,6 +238,14 @@ export class ExportAdapter implements PlatformAdapter {
    * this adapter turns caller-supplied input into a filesystem path — the
    * article folder, `updatePost`'s id, `uploadImage`'s destination, and the
    * inbox move below all go through this.
+   *
+   * This is a LEXICAL check (`resolve`, not `realpath`): it reasons about the
+   * path string, never the bytes actually on disk. A symlink already sitting
+   * inside `_inbox` pointing outside `base` would resolve its containing
+   * path as confined and is not detected. Nothing Byline itself ever writes
+   * is a symlink, and planting one here first needs write access to the
+   * user's own home directory — at which point confine() is no longer the
+   * layer doing the protecting.
    */
   private confine(base: string, candidate: string, what: string): string {
     const root = resolve(base);

@@ -74,8 +74,8 @@ export interface HtmlProfile {
    * describe that ingest surface honestly without pretending `score_draft`
    * can grade it: `scoreDraft` refuses outright with `NOT_AN_ARTICLE_PLATFORM`
    * rather than silently applying article rules to something that is not one.
-   * No `'social'` profile exists yet — this is here so the refusal has
-   * something to check before one does.
+   * `LINKEDIN_POST_PROFILE` (`plugins/platforms/linkedin/html-profile.ts`) is
+   * the one `'social'` profile that exists today.
    */
   kind: 'article' | 'social';
 }

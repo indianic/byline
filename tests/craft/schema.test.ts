@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildArticleSchema } from '../../src/craft/schema.js';
+import { buildArticleSchema, languageTag } from '../../src/craft/schema.js';
 
 const base = {
   title: 'Outcome-Based Pricing Is Replacing IT Billable Hours',
@@ -90,5 +90,58 @@ describe('buildArticleSchema', () => {
     expect(full.image).toEqual(['https://blog.example.com/content/images/hero.png']);
     expect(full.dateModified).toBe('2026-07-28T00:00:00.000Z');
     expect(full.keywords).toBe('AI, IT services');
+  });
+});
+
+// Task 6.4: GEO signals — inLanguage, wordCount, and author.sameAs.
+describe('GEO fields (Task 6.4)', () => {
+  it('emits author.sameAs, inLanguage, and datePublished when supplied', () => {
+    const g = parse(
+      buildArticleSchema({
+        ...base,
+        authorUrls: ['https://example.com/jane-doe', 'https://linkedin.com/in/janedoe'],
+        inLanguage: 'English',
+        wordCount: 1400,
+        datePublished: '2026-08-01T00:00:00.000Z',
+      }),
+    )['@graph'][0];
+    expect(g.author.sameAs).toEqual([
+      'https://example.com/jane-doe',
+      'https://linkedin.com/in/janedoe',
+    ]);
+    expect(g.inLanguage).toBe('English');
+    expect(g.wordCount).toBe(1400);
+    expect(g.datePublished).toBe('2026-08-01T00:00:00.000Z');
+  });
+
+  it('produces no sameAs key for a persona with no profile_url (empty authorUrls)', () => {
+    const g = parse(buildArticleSchema(base))['@graph'][0];
+    expect(g.author.sameAs).toBeUndefined();
+    expect('sameAs' in g.author).toBe(false);
+  });
+
+  it('produces no inLanguage or wordCount key when omitted', () => {
+    const g = parse(buildArticleSchema(base))['@graph'][0];
+    expect(g.inLanguage).toBeUndefined();
+    expect(g.wordCount).toBeUndefined();
+  });
+});
+
+// "English" is not a BCP 47 tag, though the field that used to carry it
+// straight through claimed it was one. languageTag() is what create_post
+// actually calls before setting inLanguage.
+describe('languageTag', () => {
+  it('maps a common language name to its BCP 47 tag', () => {
+    expect(languageTag('English')).toBe('en');
+    expect(languageTag('Hindi')).toBe('hi');
+  });
+
+  it('passes an already-tag-shaped value through unchanged', () => {
+    expect(languageTag('en-GB')).toBe('en-GB');
+    expect(languageTag('en')).toBe('en');
+  });
+
+  it('omits rather than guesses for a name it does not recognise', () => {
+    expect(languageTag('Klingon')).toBeUndefined();
   });
 });

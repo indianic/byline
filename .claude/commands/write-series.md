@@ -67,6 +67,14 @@ Write the full HTML now, to the brief and to those targets. Two things people ge
   printed from the scorer's own array, so there is no second list to guess at.
 - Leave exactly one `[[content_image]]` placeholder for the in-body image.
 
+### 2b. Revision pass
+
+Apply the REVISION PASS section of the brief to body prose only; leave the summary
+block, tables, callouts, FAQ and JSON untouched; add no facts. Read the whole draft
+once first, then mark the tells — a single sighting of staging-instead-of-stating is
+enough to rewrite; every other group needs two tells in the same passage. See the
+`humanizer` skill for the full definitions behind the brief's compressed version.
+
 ### 3. Images — one call
 
 `generate_images` with every image the article needs in a single call: a hero, the in-body

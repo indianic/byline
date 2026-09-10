@@ -37,8 +37,10 @@ Three invariants shape the code more than anything else:
   `THRESHOLDS` live in `score.ts`; `brief.ts` imports them so what the writer is warned
   about and what it is marked down for cannot drift.
 - **`HtmlProfile` drives platform-specific prose.** Ghost's is a constant; WordPress's is
-  resolved per user from `unfiltered_html` and fails toward restrictive. Nothing under
-  `src/craft/` or `src/tools/` names a platform.
+  resolved per user from `unfiltered_html` and fails toward restrictive. `src/cli/` names
+  no platform or provider; `src/craft/` and `src/tools/` take platform-specific prose from
+  `HtmlProfile` rather than branching on the platform, with one documented exception in
+  `media-tools.ts`.
 - **Plugins register in one place each**: platforms in `src/plugins/registry.ts`, provider
   families (images, research) in `src/plugins/providers.ts`. `src/cli/` walks their
   `CredentialField` descriptors and names no platform or provider.
@@ -117,7 +119,7 @@ tests. Not one was caught by the suite. These rules are what they cost.
 
 - `npm test` (unit, no network), `npm run typecheck`, `npm run build`. Integration behind
   `RUN_INTEGRATION=1`.
-- **1462 passing tests is the floor, not the target.** Never delete a test to make a change
+- **1532 passing tests is the floor, not the target.** Never delete a test to make a change
   pass.
 - **`npm run typecheck` covers `src/**/*` only** — test files are not typechecked. A double
   can cast past an interface it does not satisfy. Assert behaviour at runtime.

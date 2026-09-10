@@ -1,5 +1,6 @@
 import type { SiteConfig } from '../../../config/sites.js';
 import { ToolError } from '../../../errors.js';
+import { mimeFor } from '../../images/inspect.js';
 import { ghostToken } from './auth.js';
 import {
   assertScheduleApplied,
@@ -27,20 +28,23 @@ const GHOST_UNSUPPORTED_FIELDS: Record<string, string> = {
   categories: 'Ghost has no categories — use tags. Nothing was sent for this field.',
 };
 
-const IMAGE_MIME: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-  avif: 'image/avif',
-};
+/**
+ * Re-exported so every existing `import { mimeFor } from '.../ghost/index.js'`
+ * keeps working unchanged. The definition itself lives in
+ * `src/plugins/images/inspect.js` — see that file's doc comment — which is
+ * also where WordPress's and LinkedIn's own `mimeFor` imports come from; this
+ * used to be a second, separately hand-maintained `IMAGE_MIME` map here.
+ */
+export { mimeFor } from '../../images/inspect.js';
 
-/** Ghost validates the uploaded part's MIME type, so it has to be set explicitly. */
-export function mimeFor(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
-  return IMAGE_MIME[ext] ?? 'application/octet-stream';
+/**
+ * Treats an empty-after-`.trim()` string as unset, same as `undefined` — used
+ * for `newsletter` on the way both into a write request (`newsletterParams`)
+ * and back out of a read response (`unsupportedFieldWarnings`'s newsletter
+ * check), which used to each hand-maintain this same one-liner.
+ */
+function normaliseNewsletterField(value: string | undefined): string | undefined {
+  return typeof value === 'string' ? value.trim() || undefined : value;
 }
 
 export class GhostAdapter implements PlatformAdapter {
@@ -309,8 +313,7 @@ export class GhostAdapter implements PlatformAdapter {
    * `.trim()` is not considered set.
    */
   private newsletterParams(post: Partial<PostInput>, warnings: string[]): string {
-    // Treat empty strings (after trim) as undefined.
-    const newsletter = typeof post.newsletter === 'string' ? post.newsletter.trim() || undefined : post.newsletter;
+    const newsletter = normaliseNewsletterField(post.newsletter);
     const email_segment = typeof post.email_segment === 'string' ? post.email_segment.trim() || undefined : post.email_segment;
 
     if (email_segment !== undefined && newsletter === undefined) {
@@ -392,8 +395,7 @@ export class GhostAdapter implements PlatformAdapter {
     // docs/GHOST-NOTES.md. Until then this treats a missing echo as
     // inconclusive rather than a confirmed failure, which is why it warns
     // rather than throws.
-    // Empty strings (after trim) are treated as not set, same as undefined.
-    const newsletter = typeof sent.newsletter === 'string' ? sent.newsletter.trim() || undefined : sent.newsletter;
+    const newsletter = normaliseNewsletterField(sent.newsletter);
     if (newsletter !== undefined && (sent.status === 'published' || sent.status === 'scheduled')) {
       const returnedNewsletter = returned.newsletter;
       if (returnedNewsletter === null || returnedNewsletter === undefined) {

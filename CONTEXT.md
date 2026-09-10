@@ -351,6 +351,46 @@ implicitly an article; `kind: 'social'` (LinkedIn's `LINKEDIN_POST_PROFILE`) exi
 `score_draft` can refuse honestly (`NOT_AN_ARTICLE_PLATFORM`) rather than grading a
 feed post by article rules it was never written to satisfy. See Social platforms, above.
 
+### The humanizer: three halves, one set of numbers
+
+Keeping a draft from reading as machine-written is split across three places, and each
+one exists because the one before it is not enough on its own:
+
+1. **The brief's `HUMANISING` block** (`src/craft/brief.ts`) prints the graded lexicon
+   and graded constructions straight from `score.ts`'s own `BANNED` and
+   `BANNED_CONSTRUCTIONS` arrays, plus the numeric rules — dash allowance, participle
+   riders, stacked hedges, sentence-opener run, body-bold cap, heading-echo overlap —
+   from the same `THRESHOLDS` the scorer checks against. Nothing here is retyped: a
+   threshold that moves in `score.ts` moves in every brief the next time one is built,
+   because the brief interpolates the constant rather than restating a number.
+2. **The REVISION PASS**, a step *inside* the brief that runs before `score_draft` is
+   ever called. It groups tells into five kinds — staging instead of stating, rhythm
+   applied by rule, inflated language, formatting as decoration, leftover chatbot
+   residue — and states an asymmetric bar: one sighting of the first kind earns an edit,
+   the other four need two tells in the same passage. The full definitions, with worked
+   examples, live in `.claude/skills/humanizer/SKILL.md`; the brief only carries the
+   compressed version and points there by name, so the two cannot drift into disagreeing
+   descriptions of the same five groups.
+3. **`score_draft`** (`src/craft/score.ts`) then measures what actually shipped. Seven
+   of its checks — `em_dash_density`, `participle_riders`, `stacked_hedges`,
+   `sentence_openers`, `bold_decoration`, `heading_echo`, `closer_fragments` — exist
+   specifically to catch what the brief just asked the writer not to do; all are
+   advisory, and `revision_guidance` in the tool result gives one imperative sentence
+   per failing one, prefixed by "Keep every sourced claim; add no facts."
+
+**One rule, one definition applies to the brief's own English, not just to code.** The
+dash allowance and the "bold only in the summary block and callout label" rule are each
+stated exactly once as an operative rule (the GRADED intro line mentions them too, but
+only as a preview — the STRUCTURAL TELLS bullet is the one place with the actual "one
+per N words" / "nowhere else" wording). Before Task 6, the brief carried an "ALSO
+AVOID — NOT GRADED" section that told a writer to avoid words the scorer never checked;
+that section is gone, because every word in it is graded now.
+
+Every claim this makes is about prose quality, not about any AI-detection tool — see the
+credit comment above `HUMANISING` and the README's "How Byline keeps prose human"
+section. Nothing here was built or tested against a detector, and no claim about one
+should be inferred from using it.
+
 ---
 
 ## Config resolution

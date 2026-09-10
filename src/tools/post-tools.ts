@@ -6,8 +6,8 @@ import { articleLedgerPath, readArticleLedger, writeArticleLedger } from '../art
 import { getPersona } from '../config/personas.js';
 import { getSite } from '../config/sites.js';
 import type { Context } from '../context.js';
-import { buildArticleSchema } from '../craft/schema.js';
-import { hasInlineImage } from '../craft/score.js';
+import { buildArticleSchema, languageTag } from '../craft/schema.js';
+import { hasInlineImage, stripTags } from '../craft/score.js';
 import { ToolError, ok } from '../errors.js';
 import { getPlugin, makeAdapter } from '../plugins/registry.js';
 import { extractImgSrcs, promoteUsedMedia } from './media-tools.js';
@@ -84,7 +84,8 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
       description:
         'Publish an article. Defaults to status "published" — pass "draft" only when the user asked for a draft, or "scheduled" with publish_at to go live at a set time. The author accepts a persona slug and resolves to that site\'s author id. HTML must not still contain [[content_image]]. Every article gets a hero (feature_image) and an inline <img> by default when an image provider is configured — refused otherwise; pass images: "hero" | "inline" | "none" to opt out. ' +
         'On an export platform (Medium, Substack, LinkedIn Article) this writes a folder and returns its path as url — tell the user where it is and to open index.html. ' +
-        "On a LinkedIn site this publishes a feed post: pass the linkedin_post text as html (one <p> per paragraph), the article's live URL as canonical_url, the hashtags as tags, and the image URN from upload_image as feature_image_id.",
+        "On a LinkedIn site this publishes a feed post: pass the linkedin_post text as html (one <p> per paragraph), the article's live URL as canonical_url, the hashtags as tags, and the image URN from upload_image as feature_image_id. " +
+        'That feature_image_id alone satisfies the default hero-image requirement on LinkedIn — a feed post has a thumbnail, never an inline image, so the inline requirement does not apply there and images: "none" is not needed just to publish one.',
       inputSchema: {
         site: z.string(),
         title: z.string().min(1),
@@ -255,6 +256,17 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         // what that is.
         const timing = await resolveTimingFor(adapter, a.status, a.publish_at);
 
+        // Resolved once, before the image gate below decides what "has a
+        // hero" means on this platform — a `kind: 'social'` site (LinkedIn)
+        // has no inline image at all and takes its hero as `feature_image_id`
+        // rather than `feature_image`, so the gate cannot be written correctly
+        // without knowing which kind of profile this is. Reused for the
+        // ledger/share branch at the end of this handler, so the cost (a
+        // network round trip on WordPress, which checks capabilities) is paid
+        // once per request rather than twice.
+        const profile = await getPlugin(site.platform).htmlProfile(adapter);
+        const isSocialProfile = profile.kind === 'social';
+
         const requested = a.author ?? site.defaultAuthor;
         let authors: string[] | undefined;
         let persona: ReturnType<typeof getPersona> | undefined;
@@ -287,26 +299,36 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         // cannot comply, and refusing would make create_post unusable for
         // anyone without an image key — images are optional in this product,
         // the default is not.
+        //
+        // A `kind: 'social'` profile (LinkedIn) never has an inline image —
+        // the body is a plain-text feed post, not an article — so the inline
+        // requirement does not apply there, and its hero is the thumbnail
+        // carried by `feature_image_id` (LinkedIn ignores `feature_image`; see
+        // linkedin/index.ts), never `feature_image`. Without this branch every
+        // LinkedIn publish on an account with an image provider configured was
+        // refused outright, because it can never satisfy an inline-image
+        // requirement it has no way to meet.
         if (ctx.setup.imageProviders.length > 0) {
           const needsHero = a.images === 'both' || a.images === 'hero';
           const needsInline = a.images === 'both' || a.images === 'inline';
-          const missingHero = needsHero && !a.feature_image;
-          const missingInline = needsInline && !hasInlineImage(a.html);
-          const optOutHint =
-            'Call generate_image, then upload_image, then pass the result as feature_image (hero) and/or embed it as an <img src="..."> in html (inline). If this article genuinely needs no image, pass images: "none"; to keep just one, pass images: "hero" or images: "inline".';
+          const missingHero = needsHero && (isSocialProfile ? !a.feature_image_id : !a.feature_image);
+          const missingInline = !isSocialProfile && needsInline && !hasInlineImage(a.html);
+          const optOutHint = isSocialProfile
+            ? 'Call generate_image, then upload_image, then pass the result\'s id as feature_image_id. If this post genuinely needs no image, pass images: "none".'
+            : 'Call generate_image, then upload_image, then pass the result as feature_image (hero) and/or embed it as an <img src="..."> in html (inline). If this article genuinely needs no image, pass images: "none"; to keep just one, pass images: "hero" or images: "inline".';
+          const heroField = isSocialProfile ? 'feature_image_id' : 'feature_image';
           if (missingHero && missingInline) {
             throw new ToolError({
               api: 'create_post',
               code: 'IMAGES_REQUIRED',
-              message:
-                'Refusing to publish: no feature_image was set and html has no inline <img> — this article has neither a hero image nor an inline image.',
+              message: `Refusing to publish: no ${heroField} was set and html has no inline <img> — this article has neither a hero image nor an inline image.`,
               hint: optOutHint,
             });
           } else if (missingHero) {
             throw new ToolError({
               api: 'create_post',
               code: 'HERO_IMAGE_REQUIRED',
-              message: `Refusing to publish: no feature_image was set, and images: "${a.images}" requires a hero image.`,
+              message: `Refusing to publish: no ${heroField} was set, and images: "${a.images}" requires a hero image.`,
               hint: optOutHint,
             });
           } else if (missingInline) {
@@ -323,6 +345,24 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         const ogImage = a.og_image ?? a.feature_image;
         const twitterImage = a.twitter_image ?? a.feature_image;
 
+        // GEO signals (Task 6.4). `authorUrls` comes from the persona's own
+        // extras — `profile_url` (one canonical bio URL) plus `social_profiles`
+        // (comma-separated, since `Persona.extras` joins a YAML list with
+        // ', ' — see `splitExtras` in config/personas.ts). Absent entirely for
+        // a persona with neither, so `author.sameAs` is never fabricated.
+        const authorUrls = persona
+          ? [
+              persona.extras.profile_url,
+              ...(persona.extras.social_profiles ? persona.extras.social_profiles.split(', ') : []),
+            ].filter((u): u is string => Boolean(u && u.trim()))
+          : [];
+
+        // `language_written` is free text a persona author writes ("English",
+        // "Hindi", "en-GB") — languageTag() resolves it to an actual BCP 47
+        // tag, or nothing when it does not recognise the value, so
+        // `inLanguage` is never sent as a plain language name.
+        const inLanguage = persona?.language_written ? languageTag(persona.language_written) : undefined;
+
         const codeinjection = a.schema
           ? buildArticleSchema({
               title: a.title,
@@ -331,10 +371,23 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
               ...(a.feature_image ? { imageUrl: a.feature_image } : {}),
               authorName: persona?.name ?? 'Editorial team',
               ...(persona?.role ? { authorRole: persona.role } : {}),
+              ...(authorUrls.length ? { authorUrls } : {}),
               publisherName: new URL(site.url).hostname,
               publisherUrl: site.url,
               ...(a.faq?.length ? { faq: a.faq } : {}),
               ...(a.keywords?.length ? { keywords: a.keywords } : {}),
+              // `datePublished` is set from the SAME timing this request
+              // resolved for the actual publish — falling back to "now" for
+              // an ordinary immediate publish, which has no explicit
+              // `publish_at`. `update_post` must NOT do this: it never calls
+              // buildArticleSchema at all, so an edit can never overwrite the
+              // article's original publication date with the edit's own time.
+              datePublished: timing.publishAtIso ?? new Date().toISOString(),
+              ...(inLanguage ? { inLanguage } : {}),
+              wordCount: (() => {
+                const text = stripTags(a.html);
+                return text ? text.split(/\s+/).length : 0;
+              })(),
             })
           : undefined;
 
@@ -416,15 +469,15 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         // silently doing nothing — the caller asked this to be linked to an
         // article and it wasn't.
         //
-        // Either way, a failure here (a corrupt or unwritable ledger, or a
-        // network hiccup resolving the target's HtmlProfile) becomes a
-        // warning naming what broke rather than a failed publish: the post
+        // Either way, a failure here (a corrupt or unwritable ledger) becomes
+        // a warning naming what broke rather than a failed publish: the post
         // is already live, and losing this bookkeeping is recoverable in a
-        // way that pretending the publish failed would not be.
+        // way that pretending the publish failed would not be. `profile` was
+        // already resolved above, before the image gate — reused here so a
+        // transient failure re-resolving it cannot drop the article record
+        // entirely, and so a WordPress capability probe is not paid twice.
         try {
-          const isSocialShare =
-            a.canonical_url !== undefined &&
-            (await getPlugin(site.platform).htmlProfile(adapter)).kind === 'social';
+          const isSocialShare = a.canonical_url !== undefined && isSocialProfile;
 
           if (isSocialShare) {
             const share = {

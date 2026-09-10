@@ -24,7 +24,11 @@ What the plugin is designed to do:
   newsletter — a feed post is plain text plus, at most, a link preview.
 - **Upload an image and attach it as the article link's thumbnail** — not as an
   inline image in the post body; LinkedIn feed posts have no inline images through
-  this API.
+  this API. When an image provider is configured, `create_post`'s default
+  hero-image requirement is satisfied by `feature_image_id` alone (LinkedIn
+  ignores plain `feature_image` — see above); the inline-image requirement does
+  not apply here at all, so `images: "none"` is never needed just to publish a
+  feed post.
 
 ## How to connect
 

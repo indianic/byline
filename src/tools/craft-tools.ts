@@ -8,7 +8,7 @@ import { getSite, usableSites } from '../config/sites.js';
 import type { Context } from '../context.js';
 import { buildBrief, type BriefInput } from '../craft/brief.js';
 import type { HtmlProfile } from '../craft/html-profile.js';
-import { CHECK_NAMES, scoreDraft, type FeatureImageInput } from '../craft/score.js';
+import { CHECK_GUIDANCE, CHECK_NAMES, scoreDraft, type FeatureImageInput } from '../craft/score.js';
 import { planSeries } from '../craft/series.js';
 import { normaliseSamples, voiceFingerprint } from '../craft/voice.js';
 import { ToolError, ok } from '../errors.js';
@@ -31,41 +31,61 @@ import { handler } from './shared.js';
  * site, not just the first one declared — `requireSetup` only guarantees SOME
  * site works, and an unlucky ordering (the broken site declared first) must not
  * refuse scoring when a working site is right there.
+ *
+ * Refuses outright, with `NOT_AN_ARTICLE_PLATFORM`, when the resolved profile
+ * is `kind: 'social'` (LinkedIn) — `build_writing_brief`, `plan_series` and
+ * `score_draft` all call this, and none of them can honestly build or grade
+ * an ARTICLE brief for a feed-post platform: an article brief for LinkedIn
+ * would instruct headings, a summary block and an evidence count that a feed
+ * post has no room for, while LinkedIn's own feed post is already written
+ * inside the ARTICLE's brief (its LINKEDIN POST section) for whichever site
+ * the article is actually published to. One check here, in the one place all
+ * three tools already route through, replaces `score_draft`'s own separate
+ * `kind: 'social'` check in `src/craft/score.ts` for every TOOL caller; that
+ * check still exists for a direct caller of `scoreDraft()` that bypasses the
+ * tool layer entirely (see its own test), so it is not deleted.
  */
 async function profileFor(ctx: Context, slug?: string): Promise<{ profile: HtmlProfile; slug: string }> {
   requireSetup(ctx, 'sites');
   const target = slug ?? ctx.sites.defaultSite ?? usableSites(ctx.sites)[0]!;
   const site = getSite(ctx.sites, target);
   const profile = await getPlugin(site.platform).htmlProfile(makeAdapter(site));
+  if (profile.kind === 'social') {
+    throw new ToolError({
+      api: 'craft',
+      code: 'NOT_AN_ARTICLE_PLATFORM',
+      message: `${profile.label} is a feed-post platform; Byline writes articles for it from the article's own brief.`,
+      hint: 'Build the brief for the site the article is published to; its LINKEDIN POST section writes the feed post, and create_post on the LinkedIn site publishes it.',
+    });
+  }
   return { profile, slug: target };
 }
 
 /**
  * Other configured sites whose resolved `HtmlProfile` has `kind: 'social'` —
  * currently always LinkedIn — for the brief's LINKEDIN POST section
- * (`BriefInput.socialTargets`). Resolves EVERY usable site's profile except
- * the one the brief is being written for: `htmlProfile` costs a network round
- * trip for a non-constant profile (WordPress's capability check), and the
- * caller (`build_writing_brief`) has already paid that cost once, via
- * `profileFor`, for the target site — re-resolving it here would pay it
- * twice for no reason, so `targetSlug`/`targetProfile` are reused instead. A
- * failure resolving any OTHER site is caught into `warnings` rather than
- * failing the whole brief — an unreachable second blog must not block
- * writing the article for the first one.
+ * (`BriefInput.socialTargets`). Resolves every usable site's profile EXCEPT
+ * the one the brief is being written for, which is skipped outright rather
+ * than checked: the article's own target site is never a cross-post target
+ * for its own brief, whatever kind of profile it resolves to. (In practice
+ * `profileFor` already refuses a social target before this function is ever
+ * called, but the exclusion holds regardless of that.) A failure resolving
+ * any OTHER site is caught into `warnings` rather than failing the whole
+ * brief — an unreachable second blog must not block writing the article for
+ * the first one.
  */
 async function socialTargets(
   ctx: Context,
   targetSlug: string,
-  targetProfile: HtmlProfile,
 ): Promise<{ targets: Array<{ site: string; label: string }>; warnings: string[] }> {
   const targets: Array<{ site: string; label: string }> = [];
   const warnings: string[] = [];
   for (const slug of usableSites(ctx.sites)) {
+    if (slug === targetSlug) continue;
     try {
-      const profile =
-        slug === targetSlug
-          ? targetProfile
-          : await getPlugin(getSite(ctx.sites, slug).platform).htmlProfile(makeAdapter(getSite(ctx.sites, slug)));
+      const profile = await getPlugin(getSite(ctx.sites, slug).platform).htmlProfile(
+        makeAdapter(getSite(ctx.sites, slug)),
+      );
       if (profile.kind === 'social') {
         targets.push({ site: slug, label: profile.label });
       }
@@ -305,12 +325,11 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
         // that the memory itself is broken.
         const history = personaHistory(ctx, persona, a.series);
 
-        // Every other usable site whose resolved profile is a LinkedIn-style
+        // Every OTHER usable site whose resolved profile is a LinkedIn-style
         // feed-post target — a per-site failure here becomes a warning
-        // (merged into the result below), never a failed brief. Reuses the
-        // profile already resolved above for `targetSlug` rather than paying
-        // its network cost twice.
-        const social = await socialTargets(ctx, targetSlug, profile);
+        // (merged into the result below), never a failed brief. Never
+        // includes `targetSlug` itself; see `socialTargets`'s own comment.
+        const social = await socialTargets(ctx, targetSlug);
 
         // Three explicit call sites, NOT one call with a cast past the union.
         // `as Parameters<typeof buildBrief>[0]` would typecheck unconditionally
@@ -342,8 +361,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
             : buildBrief(base);
 
         // Echoed unchanged so a caller can pass it straight back into
-        // create_post's `series` input and record it against this article —
-        // Task 4.2 extends what series actually does beyond this.
+        // create_post's `series` input and record it against this article.
         return ok({
           ...brief,
           ...(social.warnings.length > 0 ? { warnings: [...brief.warnings, ...social.warnings] } : {}),
@@ -360,10 +378,11 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
       title: 'Score draft',
       description:
         'Mechanically score a draft for human-voice quality: burstiness, AI-tell phrasing, paragraph uniformity, evidence density, target-platform HTML validity, and — when `findings` is passed — whether every cited URL actually came from the research. Pass `mode` matching how the draft was written: blog is scored for first-hand experience and first person, news for third-person reporter voice and attribution density instead. No external API is called. ' +
-        `READ \`publishable\` AND \`summary\`, NOT the verdict alone. Only three of the ${CHECK_NAMES.length} checks can block. ` +
+        'READ `publishable` AND `summary`, NOT the verdict alone. Only three checks can block — platform_html, structure and ai_summary_block. ' +
         'verdict "blocked" (publishable: false) means fix and re-score. ' +
         'verdict "advisory" means the draft IS publishable and the listed items are optional improvements — apply the cheap ones as inline edits if you like, but DO NOT rewrite the article and DO NOT re-score in a loop chasing them. ' +
-        'verdict "pass" means everything passed.',
+        'verdict "pass" means everything passed. ' +
+        'revision_guidance lists one edit per failing advisory check. Make those edits inline; do not rewrite the article.',
       inputSchema: {
         html: z.string(),
         persona: z
@@ -438,7 +457,23 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
           a.mode,
           voiceSample ? { voiceSample } : undefined,
         );
-        if (a.verbose) return ok(card);
+
+        // One edit per failing ADVISORY check, in the order `checks` lists
+        // them (which follows CHECK_NAMES for a blog-mode draft, and the same
+        // relative order with mode-specific names swapped in for news). Absent
+        // entirely when nothing advisory failed — an empty array would still
+        // read as "here is your revision list" to a host model looking for a
+        // reason to keep editing.
+        const advisoryFailures = card.checks.filter((c) => !c.blocking && !c.ok);
+        const revisionGuidance =
+          advisoryFailures.length > 0
+            ? [
+                'Keep every sourced claim; add no facts.',
+                ...advisoryFailures.map((c) => CHECK_GUIDANCE[c.name] ?? `Address the ${c.name} finding.`),
+              ]
+            : undefined;
+
+        if (a.verbose) return ok({ ...card, ...(revisionGuidance ? { revision_guidance: revisionGuidance } : {}) });
         // Kept in full: every FAILING check, because it is the only actionable
         // part, and every UNEVALUATED one, because "nothing verified this" is
         // not a pass and must never vanish into a count. Everything genuinely
@@ -448,6 +483,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
           ...card,
           checks: kept,
           passed: card.checks.filter((c) => c.ok && c.evaluated !== false).map((c) => c.name),
+          ...(revisionGuidance ? { revision_guidance: revisionGuidance } : {}),
         });
       },
     ),

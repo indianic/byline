@@ -14,6 +14,8 @@ import { IMAGE_LOOKS } from '../../src/craft/image-style.js';
 import {
   BANNED,
   BANNED_CONSTRUCTIONS,
+  PARTICIPLE_RIDERS,
+  STACKED_HEDGES,
   THRESHOLDS,
   evidenceNeeded,
   newsAttributionsNeeded,
@@ -601,7 +603,7 @@ describe('humanising rules', () => {
       const b = buildBrief({ ...base, seed: s });
       expect(b.brief).toContain(HUMAN_TEXTURES[b.choices.humanTexture!]);
       expect(HUMAN_TEXTURES.filter((o) => b.brief.includes(o)), `seed ${s}`).toHaveLength(1);
-      expect(b.brief).toContain('=== NEVER USE THESE ===');
+      expect(b.brief).toContain('=== NEVER USE THESE — GRADED ===');
       expect(b.brief).toContain('=== STRUCTURAL TELLS');
     }
   });
@@ -638,11 +640,66 @@ describe('humanising rules', () => {
     expect(familiar).toContain('no reference to a specific earlier article');
   });
 
-  it('bans the tells that survived the old short list', () => {
+  // Task 6.1: these used to be listed as "not graded" in a second, separate
+  // section. They are now graded, in the same array score_draft matches
+  // against — printed once, from BANNED, with no separate ungraded copy.
+  it('bans the tells that used to be listed as not graded', () => {
     const b = buildBrief({ ...base, seed: 1 }).brief;
-    for (const word of ['myriad', 'pivotal', 'leverage (as a verb)', 'moreover', 'furthermore']) {
+    for (const word of ['myriad', 'pivotal', 'leverage', 'moreover', 'furthermore']) {
       expect(b, word).toContain(word);
     }
+  });
+
+  // Task 6.3: the "ALSO AVOID — NOT GRADED" section is gone — everything that
+  // used to live there is graded now, printed from BANNED and
+  // BANNED_CONSTRUCTIONS instead of a second hand-written list.
+  it('has no ungraded lexicon section left', () => {
+    const b = buildBrief({ ...base, seed: 3 }).brief;
+    expect(b).not.toContain('NOT GRADED');
+    expect(b).not.toContain('ALSO AVOID');
+  });
+
+  it('carries the REVISION PASS section, to run before score_draft', () => {
+    const b = buildBrief({ ...base, seed: 3 }).brief;
+    expect(b).toContain('=== REVISION PASS — DO THIS BEFORE score_draft ===');
+    expect(b).toContain('Staging instead of stating');
+    expect(b).toContain('Act on a single sighting of group 1');
+  });
+
+  // One rule, one definition applies to the brief's own prose, not just to
+  // code: the dash allowance and the bold-in-body-prose rule must each be
+  // stated exactly once, or a writer following the FIRST one they read could
+  // still fail score_draft against a second, silently different version.
+  // The dash rule is stated twice on purpose (once inside the GRADED intro,
+  // once as its own STRUCTURAL TELLS bullet) — both interpolate the SAME
+  // `THRESHOLDS.emDashPerWords`, so they cannot drift into two different
+  // numbers. What must not happen is a THIRD, independently-worded copy.
+  it('states the dash allowance exactly twice, both from the same threshold', () => {
+    const b = buildBrief({ ...base, seed: 3 }).brief;
+    const mentions = b.split(`per ${THRESHOLDS.emDashPerWords} words`).length - 1;
+    expect(mentions).toBe(2);
+    expect(b.split('Your article may not: one per').length - 1).toBe(1);
+  });
+
+  it('states the body-bold rule exactly once', () => {
+    const b = buildBrief({ ...base, seed: 3 }).brief;
+    const occurrences = b.split("Bold is for the summary block's labels").length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it('prints the exact participle riders and stacked hedges the scorer matches', () => {
+    const b = buildBrief({ ...base, seed: 3 }).brief;
+    for (const rider of PARTICIPLE_RIDERS) expect(b, rider).toContain(rider);
+    for (const hedge of STACKED_HEDGES) expect(b, hedge).toContain(hedge);
+  });
+
+  // Task 6.3: a one-sentence paragraph is only legitimate carrying a NEW
+  // claim, never as a restatement of the one before it — the same rule
+  // closer_fragments grades.
+  it('amends Asymmetry to forbid a one-sentence closer that just restates the paragraph above it', () => {
+    expect(HUMAN_TEXTURES[0]).toContain(
+      'one that carries a new claim, never a restatement of the paragraph before it',
+    );
   });
 });
 

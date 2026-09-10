@@ -95,6 +95,53 @@ function makeContext(): Context {
   };
 }
 
+/**
+ * `makeContext()`, but jane-doe's persona file carries extra YAML lines
+ * appended after the standing PERSONA fixture — for Task 6.4's
+ * `profile_url`/`social_profiles` GEO fields, which the shared PERSONA fixture
+ * intentionally does not carry (most tests must not see an author.sameAs).
+ */
+function makeContextWithPersonaExtras(extraYaml: string): Context {
+  const dir = mkdtempSync(join(tmpdir(), 'wb-ctx-extras-'));
+  const sitesFile = join(dir, 'sites.yaml');
+  writeFileSync(sitesFile, SITES);
+  const personasDir = mkdtempSync(join(tmpdir(), 'wb-p-extras-'));
+  writeFileSync(join(personasDir, 'jane-doe.yaml'), PERSONA + extraYaml);
+  const env = { PERSONAL_GHOST_KEY: FAKE_ADMIN_KEY };
+  const sites = loadSites(sitesFile, env);
+  const personas = loadPersonas(personasDir);
+  const runsDir = mkdtempSync(join(tmpdir(), 'wb-runs-extras-'));
+  const paths = {
+    home: dir,
+    source: 'env' as const,
+    configFile: sitesFile,
+    personasDir,
+    envFile: join(dir, '.env'),
+    runsDir,
+  };
+  return {
+    paths,
+    sitesFile,
+    personasDir,
+    sites,
+    personas,
+    media: { reuseScope: 'site', libraries: {}, problems: [] },
+    runsDir,
+    articlesDir: join(dir, 'articles'),
+    env,
+    setup: {
+      configured: usableSites(sites).length > 0,
+      paths,
+      siteCount: Object.keys(sites.sites).length,
+      usableSiteCount: usableSites(sites).length,
+      personaCount: personas.size,
+      imageProviders: ['gemini'],
+      problems: [],
+      siteProblems: [],
+    },
+  };
+}
+
 const WP_SITES = `
 default_site: wptest
 sites:
@@ -260,6 +307,68 @@ function makeLinkedInContext(): Context {
       usableSiteCount: usableSites(sites).length,
       personaCount: personas.size,
       imageProviders: ['gemini'],
+      problems: [],
+      siteProblems: [],
+    },
+  };
+}
+
+const MIXED_SITES = `
+default_site: personal
+sites:
+  personal:
+    platform: ghost
+    url: https://blog.example.com
+    admin_api_key: \${PERSONAL_GHOST_KEY}
+    default_author: jane-doe
+  li:
+    platform: linkedin
+    url: https://www.linkedin.com/in/janedoe
+    access_token: \${LI_ACCESS_TOKEN}
+    author_urn: urn:li:person:abc123
+`;
+
+/**
+ * One Ghost site (`personal`, the default) plus one LinkedIn site (`li`) —
+ * for `build_writing_brief`'s NOT_AN_ARTICLE_PLATFORM refusal (target `li`)
+ * and its LINKEDIN POST section (target `personal`, which must list `li` as
+ * a cross-post target and never list `personal` itself).
+ */
+function makeMixedContext(): Context {
+  const dir = mkdtempSync(join(tmpdir(), 'wb-mixed-ctx-'));
+  const sitesFile = join(dir, 'sites.yaml');
+  writeFileSync(sitesFile, MIXED_SITES);
+  const personasDir = mkdtempSync(join(tmpdir(), 'wb-mixed-p-'));
+  writeFileSync(join(personasDir, 'jane-doe.yaml'), PERSONA);
+  const env = { PERSONAL_GHOST_KEY: FAKE_ADMIN_KEY, LI_ACCESS_TOKEN: FAKE_KEY_SECRET };
+  const sites = loadSites(sitesFile, env);
+  const personas = loadPersonas(personasDir);
+  const runsDir = mkdtempSync(join(tmpdir(), 'wb-mixed-runs-'));
+  const paths = {
+    home: dir,
+    source: 'env' as const,
+    configFile: sitesFile,
+    personasDir,
+    envFile: join(dir, '.env'),
+    runsDir,
+  };
+  return {
+    paths,
+    sitesFile,
+    personasDir,
+    sites,
+    personas,
+    media: { reuseScope: 'site', libraries: {}, problems: [] },
+    runsDir,
+    articlesDir: join(dir, 'articles'),
+    env,
+    setup: {
+      configured: usableSites(sites).length > 0,
+      paths,
+      siteCount: Object.keys(sites.sites).length,
+      usableSiteCount: usableSites(sites).length,
+      personaCount: personas.size,
+      imageProviders: [],
       problems: [],
       siteProblems: [],
     },
@@ -926,8 +1035,28 @@ sites:
 
 describe('add_site / remove_site keep ctx.setup in sync', () => {
   const savedEnv = { ...process.env };
+  // Every env var a test in this block sets or deletes. Restored per key in
+  // afterEach, never by reassigning `process.env` wholesale — that detaches
+  // the object from the live process environment, so os.homedir() (and
+  // anything else that reads process.env directly) goes stale for every
+  // later test in this worker.
+  const ENV_KEYS_UNDER_TEST = [
+    'AAA_GHOST_KEY',
+    'BBB_GHOST_KEY',
+    'GOOD_GHOST_KEY',
+    'BAD_GHOST_KEY',
+    'BYLINE_SITES',
+    'BYLINE_PERSONAS',
+    'BYLINE_ENV',
+  ] as const;
   afterEach(() => {
-    process.env = { ...savedEnv };
+    for (const key of ENV_KEYS_UNDER_TEST) {
+      if (key in savedEnv) {
+        process.env[key] = savedEnv[key];
+      } else {
+        delete process.env[key];
+      }
+    }
   });
 
   it('add_site: usableSiteCount and configured reflect the newly usable site immediately', async () => {
@@ -1287,6 +1416,47 @@ describe('build_writing_brief', () => {
   });
 });
 
+// `profileFor` (src/tools/craft-tools.ts) refuses a `kind: 'social'` target
+// before build_writing_brief (or plan_series, or score_draft) ever builds or
+// grades an ARTICLE brief for a feed-post platform — that platform's feed
+// post is written inside the ARTICLE's own brief instead (see socialTargets
+// below), never as a standalone brief of its own.
+describe('build_writing_brief on a LinkedIn (social) site', () => {
+  it('refuses with NOT_AN_ARTICLE_PLATFORM rather than building an article brief for a feed post', async () => {
+    const ctx = makeMixedContext();
+    const r = await callWith(ctx, 'build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'AI',
+      mode: 'blog',
+      site: 'li',
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('NOT_AN_ARTICLE_PLATFORM');
+    expect(r.message).toContain('LinkedIn is a feed-post platform');
+  });
+});
+
+// socialTargets() (src/tools/craft-tools.ts) must never list the brief's own
+// target site as a LinkedIn cross-post target, whatever kind of profile it
+// resolves to — it lists every OTHER usable site whose profile is
+// `kind: 'social'` only.
+describe("build_writing_brief's LINKEDIN POST section", () => {
+  it('lists the other configured LinkedIn site, never the Ghost target itself', async () => {
+    const ctx = makeMixedContext();
+    const r = await callWith(ctx, 'build_writing_brief', {
+      persona: 'jane-doe',
+      topic: 'AI',
+      mode: 'blog',
+      site: 'personal',
+      seed: 5,
+    });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(r.brief).toContain('=== LINKEDIN POST — WRITE THIS TOO ===');
+    // Only "li" — never "personal", the brief's own target site.
+    expect(r.brief).toContain('A LinkedIn site is configured (li)');
+  });
+});
+
 describe('build_writing_brief research gate', () => {
   it('refuses news mode with no research', async () => {
     const r = await call('build_writing_brief', {
@@ -1489,6 +1659,37 @@ describe('create_post metadata', () => {
   });
 });
 
+// A draft satisfying every check in CHECK_NAMES at once, in blog mode against
+// the default (Ghost) profile — the same fixture as
+// tests/craft/score.test.ts's CLEAN_BLOG_HTML, duplicated here because this
+// file exercises the TOOL layer (revision_guidance is computed there, not in
+// scoreDraft) and a fixture this specific is worth keeping local to what
+// reads it.
+const CLEAN_BLOG_HTML = [
+  '<table style="border:1px solid #ddd;background:#fafafa;"><tr><td>In short: our deploy took 41 minutes, and the fix had nothing to do with the build step.</td></tr></table>',
+  '<h2>What actually slows a deployment down?</h2>',
+  '<p>Our pipeline took 41 minutes. I assumed the compiler was the problem.</p>',
+  "<p>It wasn't. When we finally measured the thing properly, instead of trading theories about it across a standup that had been having the same argument for a month, the wait turned out to be 78% queueing. According to <a href=\"https://dora.dev/research/\" rel=\"noopener noreferrer\">the 2024 DORA report</a>, that split is ordinary rather than exceptional.</p>",
+  '<p>I had spent three weeks tuning a build that was never the bottleneck.</p>',
+  '<h2>How do you find the real bottleneck?</h2>',
+  '<p>Instrument the queue before you touch the build.</p>',
+  '<p>We added timestamps at four points: job created, runner assigned, checkout complete, artifact pushed. The gap between the first two was 31 minutes on a bad afternoon and under 40 seconds at 7am, which told us more in one day than the previous month of profiling had.</p>',
+  '<p>The team pushed back hard on that, and they were right to — instrumentation is not free, and I had already cried wolf once.</p>',
+  '<p>[[content_image]]</p>',
+  '<p>Research from <a href="https://www.thoughtworks.com/radar" rel="noopener noreferrer">Thoughtworks</a> says much the same thing about concurrency limits. Data from our own runner logs put the ceiling at 12 concurrent jobs against 40 developers.</p>',
+  '<h2>Is more compute the answer?</h2>',
+  '<p>Usually not, and it is the expensive way to find out.</p>',
+  '<p>We doubled the runner pool. Deploy time fell from 41 minutes to 22, which looked like a win until the bill arrived and we realised we had paid a 90% infrastructure increase for a 46% improvement that a scheduling change delivered for nothing two months later.</p>',
+  '<p>I killed that experiment in week six.</p>',
+  '<table style="border-collapse:collapse;"><thead><tr><th style="border:1px solid #ccc;">Change</th><th style="border:1px solid #ccc;">Deploy time</th><th style="border:1px solid #ccc;">Monthly cost</th></tr></thead><tbody><tr><td style="border:1px solid #ccc;">Baseline</td><td style="border:1px solid #ccc;">41 min</td><td style="border:1px solid #ccc;">$1,200</td></tr><tr><td style="border:1px solid #ccc;">Doubled runners</td><td style="border:1px solid #ccc;">22 min</td><td style="border:1px solid #ccc;">$2,280</td></tr><tr><td style="border:1px solid #ccc;">Queue rewrite</td><td style="border:1px solid #ccc;">6 min</td><td style="border:1px solid #ccc;">$1,200</td></tr></tbody></table>',
+  '<p>The scheduling change won.</p>',
+  '<h2>Frequently asked questions</h2>',
+  '<h3>How long should a deploy take?</h3>',
+  '<p>Short enough that nobody batches changes to avoid it. For us that number was under ten minutes, and the study published by <a href="https://cloud.google.com/devops" rel="noopener noreferrer">Google Cloud</a> in 2024 reported similar thresholds across 3,000 teams.</p>',
+  '<h3>Does this apply to a small team?</h3>',
+  '<p>More so. We had 40 engineers and a ceiling of 12 concurrent jobs; a team of six on the same runner configuration hits the wall sooner per person, not later.</p>',
+].join('\n');
+
 describe('score_draft', () => {
   it('returns a scorecard', async () => {
     const r = await call('score_draft', { html: '<p class="x">a</p>' });
@@ -1514,6 +1715,38 @@ describe('score_draft', () => {
     expect(rhythm.ok).toBe(false);
     expect(rhythm.findings.join(' ')).toMatch(/Sentences average 8 words/);
     expect(rhythm.findings.join(' ')).toMatch(/author's samples average \d/);
+  });
+
+  // Task 6.2: `revision_guidance` is the tool layer's own field, computed from
+  // whichever advisory checks failed — a unit test on `scoreDraft` cannot see
+  // it, since it is added in the handler, not the scorer.
+  describe('revision_guidance', () => {
+    it('is absent when nothing advisory failed', async () => {
+      const r = await call('score_draft', { html: CLEAN_BLOG_HTML, verbose: true });
+      expect(r.verdict).toBe('pass');
+      expect(r.revision_guidance).toBeUndefined();
+    });
+
+    it('lists one imperative sentence per failing advisory check, prefixed by the no-new-facts rule', async () => {
+      // ai_lexicon and generic_opener both fail this draft.
+      const html = '<p>In today\'s world, a seamless and robust solution is what you need.</p>';
+      const r = await call('score_draft', { html, verbose: true });
+      expect(r.revision_guidance).toBeDefined();
+      expect(r.revision_guidance[0]).toBe('Keep every sourced claim; add no facts.');
+      expect(r.revision_guidance).toContain(
+        'Replace every flagged word or construction with a plain, specific one.',
+      );
+      const failingAdvisory = r.checks.filter((c: { blocking: boolean; ok: boolean }) => !c.blocking && !c.ok);
+      // The prefix plus exactly one guidance sentence per failing advisory check.
+      expect(r.revision_guidance).toHaveLength(failingAdvisory.length + 1);
+    });
+
+    it('is present in the trimmed (non-verbose) result too', async () => {
+      const html = '<p>In today\'s world, a seamless and robust solution is what you need.</p>';
+      const r = await call('score_draft', { html });
+      expect(r.revision_guidance).toBeDefined();
+      expect(r.revision_guidance[0]).toBe('Keep every sourced claim; add no facts.');
+    });
   });
 
   // Regression: `profileFor`'s bare fallback (no explicit `site`, no
@@ -1583,6 +1816,127 @@ sites:
     const r = await callWith(ctx, 'score_draft', { html: '<p>Clean draft with no issues at all.</p>' });
     expect(r.ok).toBe(true);
     expect(r.verdict).toBeDefined();
+  });
+});
+
+// Task 6.4: GEO schema fields — inLanguage, wordCount, and author.sameAs —
+// flow from create_post through the real tool layer, and update_post must
+// never set datePublished (it would overwrite the original date).
+describe('GEO schema fields (Task 6.4)', () => {
+  function stubCreate(capture: (body: any) => void) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: string, i: RequestInit = {}) => {
+        const body = JSON.parse(String(i.body));
+        capture(body);
+        return new Response(
+          JSON.stringify({ posts: [{ ...body.posts[0], id: 'p1', url: 'https://u', status: 'published' }] }),
+          { status: 201 },
+        );
+      }),
+    );
+  }
+
+  it("builds author.sameAs from the persona's profile_url and social_profiles extras", async () => {
+    const ctx = makeContextWithPersonaExtras(
+      '\nprofile_url: "https://example.com/authors/jane-doe"\nsocial_profiles: "https://linkedin.com/in/janedoe, https://x.com/janedoe"\n',
+    );
+    let body: any;
+    stubCreate((b) => {
+      body = b;
+    });
+    await callWith(ctx, 'create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>Body text for this article, several words long.</p>',
+      author: 'jane-doe',
+      images: 'none',
+    });
+    const head = body.posts[0].codeinjection_head as string;
+    expect(head).toContain('https://example.com/authors/jane-doe');
+    expect(head).toContain('https://linkedin.com/in/janedoe');
+    expect(head).toContain('https://x.com/janedoe');
+    expect(head).toContain('sameAs');
+  });
+
+  it('produces no sameAs key for a persona with neither extra', async () => {
+    let body: any;
+    stubCreate((b) => {
+      body = b;
+    });
+    await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>Body text for this article, several words long.</p>',
+      author: 'jane-doe',
+      images: 'none',
+    });
+    const head = body.posts[0].codeinjection_head as string;
+    expect(head).not.toContain('sameAs');
+  });
+
+  it("passes the persona's language_written as inLanguage and a computed wordCount", async () => {
+    let body: any;
+    stubCreate((b) => {
+      body = b;
+    });
+    await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>One two three four five six seven eight nine ten.</p>',
+      author: 'jane-doe',
+      images: 'none',
+    });
+    const head = body.posts[0].codeinjection_head as string;
+    // The persona's language_written ("English", from PERSONA's zod default)
+    // is resolved to its BCP 47 tag before it reaches inLanguage — "English"
+    // itself is not a valid tag.
+    expect(head).toContain('"inLanguage":"en"');
+    expect(head).toContain('"wordCount":10');
+  });
+
+  it('sets datePublished from the resolved publish timing, defaulting to now for an immediate publish', async () => {
+    let body: any;
+    stubCreate((b) => {
+      body = b;
+    });
+    const before = Date.now();
+    await call('create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>Body text.</p>',
+      author: 'jane-doe',
+      images: 'none',
+    });
+    const head = body.posts[0].codeinjection_head as string;
+    const match = /"datePublished":"([^"]+)"/.exec(head);
+    expect(match).not.toBeNull();
+    const parsed = Date.parse(match![1]!);
+    expect(parsed).toBeGreaterThanOrEqual(before - 5000);
+    expect(parsed).toBeLessThanOrEqual(Date.now() + 5000);
+  });
+
+  it('update_post never sets datePublished — it would overwrite the original date', async () => {
+    let updateBody: any;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (u: string, i: RequestInit = {}) => {
+        if (i.method === 'PUT') {
+          updateBody = JSON.parse(String(i.body));
+          return new Response(
+            JSON.stringify({ posts: [{ ...updateBody.posts[0], id: 'p1', url: 'https://u', status: 'published' }] }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({ posts: [{ id: 'p1', url: 'https://u', status: 'published', updated_at: '2026-01-01T00:00:00.000Z' }] }),
+          { status: 200 },
+        );
+      }),
+    );
+    await call('update_post', { site: 'personal', post_id: 'p1', title: 'New title' });
+    expect(updateBody).toBeDefined();
+    expect('codeinjection_head' in updateBody.posts[0]).toBe(false);
   });
 });
 
@@ -3265,8 +3619,8 @@ describe('a wall-clock publish_at is read in the blog’s timezone', () => {
   });
 });
 
-// Fix 3: `score_draft` returned all thirteen checks with their full prose on
-// every call, passing ones included, which is roughly a thousand tokens of
+// Fix 3: `score_draft` returned every check with its full prose on every
+// call, passing ones included, which is roughly a thousand tokens of
 // nothing actionable per score — and scores happen repeatedly per article.
 // These go through the real tool layer because the trimming lives there, not in
 // `scoreDraft`, and a unit test calling `scoreDraft` directly cannot see it.
@@ -3669,6 +4023,45 @@ describe('create_post on a LinkedIn site (Task 5.5)', () => {
     });
     expect(r.ok).toBe(false);
     expect(r.code).toBe('UNRESOLVED_PLACEHOLDER');
+  });
+
+  // The bug this guards: with an image provider configured, create_post's
+  // default image gate used to require BOTH a feature_image AND an inline
+  // <img> before it knew the target was a feed-post platform — so a LinkedIn
+  // publish with exactly the arguments the docs and write-series.md command
+  // tell a caller to pass (no `images` override at all) always failed. This
+  // is that exact documented call: one <p>, canonical_url, tags, and
+  // feature_image_id — no images override — and it must succeed.
+  it('succeeds with the documented arguments and no images override, feature_image_id satisfying the hero', async () => {
+    const ctx = makeLinkedInContext();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init: RequestInit = {}) => {
+        const u = String(url);
+        if (u.includes('/rest/posts/') && init.method === undefined) {
+          return new Response(JSON.stringify({ commentary: 'ignored' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({}), {
+          status: 201,
+          headers: { 'content-type': 'application/json', 'x-restli-id': 'urn:li:share:999' },
+        });
+      }),
+    );
+
+    const r = await callWith(ctx, 'create_post', {
+      site: 'li',
+      title: 'A LinkedIn post',
+      html: '<p>One idea worth sharing from the article.</p>',
+      status: 'published',
+      canonical_url: 'https://blog.example.com/the-article',
+      tags: ['machine learning'],
+      feature_image_id: 'urn:li:image:abc123',
+    });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    vi.unstubAllGlobals();
   });
 
   // Phase 3's recordShare hook, finally wired: publishing to a kind: 'social'

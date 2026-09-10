@@ -96,9 +96,10 @@ the chat. They can write you a blog post, but they cannot put it on your blog.
 
 MCP is the standard that fixes that. An **MCP server** is a small program that runs on
 your own machine and hands your AI tool a set of things it is allowed to do. byline
-hands it fourteen: look up your blogs, check they are reachable, build a writing brief,
-score a draft, generate and upload images, create and update posts, and — only if you
-configure a key for it — fetch dated, citable research on a topic.
+hands it a set of tools: look up your blogs, check they are reachable, build a writing
+brief, plan a series, score a draft, generate and upload images, create and update
+posts, list newsletters, and — only if you configure a key for it — fetch dated,
+citable research on a topic.
 
 Two consequences worth knowing:
 
@@ -788,10 +789,7 @@ piece; what varies is how much of it is said out loud.
 
 Alongside it, each article draws a prose texture — uneven rhythm, conceding the strongest
 counter-argument before answering it, visibly changing your mind mid-piece, refusing
-abstraction, writing sentences you could say aloud. Every article also carries a fixed
-standard aimed at what actually gives machine-written prose away: paragraphs of uniform
-length, relentlessly parallel lists, and an argument that never once commits to
-anything — plus a long list of words and constructions to avoid outright.
+abstraction, writing sentences you could say aloud.
 
 > It will not fake being human by breaking things. Introducing typos, padding for rhythm,
 > or inventing a statistic, a client, a date, or a prior article you never wrote are all
@@ -803,6 +801,48 @@ credentials interactively and validates each one against the live platform befor
 accepting it. You can skip every prompt and fill things in later — everything lives in
 two files it will tell you the path of, and `byline status` prints them any time.
 
+#### How Byline keeps prose human
+
+Three things work together, and they matter more the further down the list you go.
+
+The **brief** prints a graded lexicon and a set of graded constructions straight from the
+scorer's own arrays — the same list either side reads, so a writer who follows the brief
+exactly cannot then be marked down for something it never mentioned. It also states, as
+exact numbers computed for that article's length, the dash allowance, the participle-rider
+and stacked-hedge thresholds, and the paragraph and sentence-rhythm rules — model-written
+prose gives itself away far more through uniform paragraph length and relentlessly parallel
+structure than through any individual word.
+
+The **revision pass** is a step in the brief, run before `score_draft`, not after: read the
+whole draft once, then mark five kinds of tell — staging instead of stating, rhythm applied
+by rule instead of reason, inflated language, formatting used as decoration, and leftover
+chatbot residue — strongest first. A single sighting of the first kind is worth fixing on
+its own; the rest need two tells in the same passage before you touch it. The `humanizer`
+skill (`.claude/skills/humanizer/SKILL.md`) carries the full definitions and worked
+examples behind the brief's compressed version.
+
+The **scorer** (`score_draft`) then measures what actually shipped, mechanically:
+
+| Check | What it catches |
+|---|---|
+| `em_dash_density` | more than one dash per ~150 words |
+| `participle_riders` | ", highlighting…" tacked onto a sentence instead of standing on its own |
+| `stacked_hedges` | two hedges on one claim ("could potentially") |
+| `sentence_openers` | three sentences in a row starting with the same word |
+| `bold_decoration` | bold used in body prose instead of only the summary block and callout label |
+| `heading_echo` | a heading's first sentence just restating the heading |
+| `closer_fragments` | a one-line paragraph that restates the paragraph above it instead of adding a claim |
+
+Every one of these is advisory, alongside the AI-tell lexicon, burstiness, and paragraph
+uniformity checks from earlier releases — none of them blocks publication on its own, and
+`score_draft`'s `revision_guidance` lists one plain-English edit per failing check so you
+apply it inline rather than rewriting the article.
+
+**It makes no claim about any AI-detection tool; it is a craft standard.** Writing that
+follows it is better to read, which is the entire justification — that is a claim about
+prose quality, not about what any particular detector would say, and none should be
+inferred from using it.
+
 #### Byline remembers what you published
 
 Each persona has its own ledger — `~/.byline/articles/<persona>.json` — of what it has
@@ -812,6 +852,12 @@ used, lists those recent articles for the writer to link to where it genuinely h
 when you pass `series`, pulls in the earlier articles in that series to link to as well.
 It is what makes "don't repeat yourself" and real internal linking possible across a
 persona's whole back catalogue instead of one article at a time.
+
+Ask for a series instead of one article and `plan_series` plans all of it up front:
+N articles as one pillar and several spokes, each allocated a distinct hook, arc,
+texture and author presence so they don't read as the same article N times, and each
+one's brief links back to the pillar. It reads the same ledger, so a series never
+repeats what this persona already published either.
 
 ---
 

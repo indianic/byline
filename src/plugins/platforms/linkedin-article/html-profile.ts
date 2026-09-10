@@ -12,7 +12,7 @@ import type { HtmlProfile } from '../../../craft/html-profile.js';
  *
  * NOTE: this is `linkedin-article`, the paste-based export platform for
  * LinkedIn's long-form Article feature — distinct from the `linkedin` API
- * plugin (LinkedIn feed posts, `kind: 'social'`) that Phase 5b adds.
+ * plugin (LinkedIn feed posts, `kind: 'social'`).
  */
 export const LINKEDIN_ARTICLE_HTML_PROFILE: HtmlProfile = {
   platform: 'linkedin-article',

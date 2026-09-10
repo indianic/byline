@@ -9,6 +9,36 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The humanizer: graded lexicon, a revision pass, and seven new advisory checks.**
+  `BANNED` graduates the words the brief used to list as "not graded" (`realm`,
+  `myriad`, `pivotal`, `crucial`, `leverage`, `landscape`, and more), and
+  `BANNED_PATTERNS` now covers the full table of graded constructions —
+  "not X but Y" staging, sayings that sound deep, chatbot residue, a dressed-up
+  "is", and more. Seven new advisory `score_draft` checks catch what a word list
+  cannot: `em_dash_density`, `participle_riders`, `stacked_hedges`,
+  `sentence_openers`, `bold_decoration`, `heading_echo`, and `closer_fragments`.
+  `score_draft`'s result gains `revision_guidance`, one imperative sentence per
+  failing advisory check.
+
+  The brief's `HUMANISING` block now prints every graded list and threshold from
+  the scorer's own arrays — never a second, hand-written copy — and gains a
+  REVISION PASS step, run before `score_draft`, grouping tells into five kinds
+  with an asymmetric bar (one sighting of the strongest kind earns an edit; the
+  rest need two tells in the same passage). The full definitions live in the new
+  `.claude/skills/humanizer/SKILL.md`, credited to `blader/humanizer` (MIT) and
+  Wikipedia's "Signs of AI writing" — this makes no claim about any
+  AI-detection tool; it is a craft standard.
+
+  `create_post`'s injected schema also gains three GEO signals:
+  `inLanguage` (resolved from the persona's `language_written` to an actual
+  BCP 47 tag via the new `languageTag()` — "English" is not a valid tag
+  despite being the field's own default, so a name is mapped and an
+  unrecognised one omits `inLanguage` rather than sending it raw),
+  `wordCount` (from the published HTML), and `author.sameAs` (from the
+  persona's `profile_url` and `social_profiles` extras). `update_post` still
+  never sets `datePublished` — it would overwrite the article's original
+  publish date.
+
 - **Medium, Substack, and LinkedIn Article exports; LinkedIn feed posts.** Three
   platforms with no publishing API — Medium, Substack, and LinkedIn Article — now
   publish through a shared `ExportAdapter` (`src/plugins/platforms/export/`):
@@ -29,18 +59,26 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`DRAFTS_UNSUPPORTED`, `NO_SITE_TIMEZONE`). `author_urn` accepts the literal
   `urn:li:person:me`, resolved from `/v2/userinfo`'s `sub` at request time.
   `upload_image` returns the image's own urn, not a URL — LinkedIn exposes no
-  public one. Every request/response shape in this plugin is UNVERIFIED until its
-  integration test has run against a real access token — marked so in the code,
-  the plugin's `README.md`, and `docs/platforms/linkedin.md`.
+  public one. `create_post`'s default hero/inline-image requirement (see
+  above) is satisfied, on a `kind: 'social'` site, by `feature_image_id`
+  alone — a feed post has a thumbnail, never an inline image, so the inline
+  requirement does not apply there; this was refusing every LinkedIn publish
+  on an account with an image provider configured until fixed. Every
+  request/response shape in this plugin is UNVERIFIED until its integration
+  test has run against a real access token — marked so in the code, the
+  plugin's `README.md`, and `docs/platforms/linkedin.md`.
 
   `HtmlProfile` gains `kind: 'article' | 'social'` to describe this honestly:
-  `score_draft` refuses a `kind: 'social'` profile outright
-  (`NOT_AN_ARTICLE_PLATFORM`) rather than grading a feed post by article rules.
-  `build_writing_brief` computes `socialTargets` from every usable site whose
-  profile is `kind: 'social'` and, when non-empty, adds a LINKEDIN POST section
-  and a `linkedin_post` JSON field to the brief for whichever site the article
-  itself is being written for — the post text ends with the literal placeholder
-  `[[article_url]]`, swapped for the real URL by the caller before publishing.
+  `build_writing_brief`, `plan_series`, and `score_draft` all refuse a
+  `kind: 'social'` target outright (`NOT_AN_ARTICLE_PLATFORM`) rather than
+  building or grading an article brief for a feed post — one check, shared
+  by all three via `profileFor` in `craft-tools.ts`. `build_writing_brief`
+  computes `socialTargets` from every OTHER usable site whose profile is
+  `kind: 'social'` (never the brief's own target site) and, when non-empty,
+  adds a LINKEDIN POST section and a `linkedin_post` JSON field to the brief
+  for whichever site the article itself is being written for — the post text
+  ends with the literal placeholder `[[article_url]]`, swapped for the real
+  URL by the caller before publishing.
   `create_post`'s long-standing `recordShare` hook is finally wired: publishing to
   a `kind: 'social'` site with `canonical_url` set records a share against
   whichever persona's ledger has a matching article URL, instead of recording a

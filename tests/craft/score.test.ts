@@ -63,6 +63,55 @@ describe('AI-tell lexicon', () => {
   });
 });
 
+// Task 6.1: the words the brief used to list as "not graded" are now graded,
+// and BANNED_PATTERNS is the full table from the brief.
+describe('graded lexicon and patterns (Task 6.1)', () => {
+  it('flags "crucial" — previously listed as not graded', () => {
+    expect(find('<p>This is a crucial step.</p>', 'ai_lexicon').ok).toBe(false);
+  });
+
+  it.each([
+    ['<p>Not just a tool, but rather a whole platform.</p>', 'not just X but Y staging'],
+    ['<p>When it comes to pricing, we cut it in half.</p>', 'when it comes to'],
+    ["<p>It's worth noting the deadline moved.</p>", "it's worth noting"],
+    ['<p>At the end of the day, ship it.</p>', 'at the end of the day'],
+    ['<p>In conclusion, we shipped it.</p>', 'in conclusion'],
+    ['<p>One thing is clear: it broke.</p>', 'one thing is clear'],
+    ["<p>Let's dive in and look at the numbers.</p>", "let's dive in"],
+    ['<p>Buckle up, this gets technical.</p>', 'buckle up'],
+    ['<p>The bottom line is cost.</p>', 'the bottom line'],
+    ['<p>Moreover, the cost fell.</p>', 'moreover'],
+    ['<p>Furthermore, the cost fell.</p>', 'furthermore'],
+    ["<p>Here's the thing: it broke.</p>", 'sounds-deep saying'],
+    ['<p>At its core, this is about trust.</p>', 'sounds-deep saying'],
+    ['<p>The truth is, nobody checked.</p>', 'sounds-deep saying'],
+    ['<p>Make no mistake, this matters.</p>', 'sounds-deep saying'],
+    ['<p>Let that sink in for a moment.</p>', 'sounds-deep saying'],
+    ['<p>To be clear, we shipped it Tuesday.</p>', 'arguing with no one'],
+    ["<p>I'm not saying it was wrong.</p>", 'arguing with no one'],
+    ["<p>This isn't about blame.</p>", 'arguing with no one'],
+    ['<p>You might think this is obvious.</p>', 'arguing with no one'],
+    ['<p>I hope this helps with your decision.</p>', 'chatbot residue'],
+    ['<p>Great question, let me explain.</p>', 'chatbot residue'],
+    ['<p>Let me know if you need more detail.</p>', 'chatbot residue'],
+    ['<p>In this article, we will explore the options.</p>', 'chatbot residue'],
+    ['<p>The platform serves as a hub for teams.</p>', 'dressed-up is'],
+    ['<p>The tool boasts a new dashboard.</p>', 'dressed-up is'],
+  ])('flags %s (%s)', (html) => {
+    expect(find(html, 'ai_lexicon').ok).toBe(false);
+  });
+
+  it('does not flag a plain sentence containing none of the patterns', () => {
+    expect(find('<p>We shipped the feature on Tuesday and it held.</p>', 'ai_lexicon').ok).toBe(
+      true,
+    );
+  });
+
+  it('flags "in today\'s world" written with a typographic apostrophe', () => {
+    expect(find('<p>In today’s world, teams ship faster.</p>', 'ai_lexicon').ok).toBe(false);
+  });
+});
+
 describe('burstiness', () => {
   it('fails uniform sentence lengths', () => {
     const s =
@@ -210,7 +259,7 @@ describe('verdict', () => {
     expect(r.publishable).toBe(false);
     expect(r.summary).toContain('NOT publishable');
     // Naming the failing checks is what lets a caller fix them without
-    // re-reading all thirteen.
+    // re-reading every check in the scorecard.
     expect(r.summary).toContain('platform_html');
   });
 
@@ -827,9 +876,164 @@ describe('score_draft on a social profile', () => {
   });
 });
 
+// Task 6.2: seven new advisory checks.
+describe('em_dash_density', () => {
+  it('fails a draft with more dashes than its word count allows', () => {
+    const words = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ');
+    // 60 words: max is ceil(60/150) = 1. Four dashes fails it.
+    const html = `<p>${words} — one — two — three — four</p>`;
+    const c = find(html, 'em_dash_density');
+    expect(c.ok).toBe(false);
+    expect(c.findings.join(' ')).toMatch(/dashes in \d+ words \(max \d+\)/);
+  });
+
+  it('passes a draft within its dash allowance', () => {
+    expect(find('<p>We shipped it — a small win.</p>', 'em_dash_density').ok).toBe(true);
+  });
+});
+
+describe('participle_riders', () => {
+  it('fails two or more comma-participle riders', () => {
+    const html =
+      '<p>Revenue grew, highlighting the shift in demand. Costs fell, underscoring the efficiency gain.</p>';
+    const c = find(html, 'participle_riders');
+    expect(c.ok).toBe(false);
+    expect(c.findings.join(' ')).toContain('participle riders');
+  });
+
+  it('passes a single rider', () => {
+    expect(
+      find('<p>Revenue grew, highlighting the shift in demand.</p>', 'participle_riders').ok,
+    ).toBe(true);
+  });
+});
+
+describe('stacked_hedges', () => {
+  it('fails two or more stacked hedges', () => {
+    const html = '<p>This could potentially help. It might possibly also cut costs.</p>';
+    const c = find(html, 'stacked_hedges');
+    expect(c.ok).toBe(false);
+    expect(c.findings.join(' ')).toContain('stacked hedges');
+  });
+
+  it('passes a single hedge', () => {
+    expect(find('<p>This could potentially help.</p>', 'stacked_hedges').ok).toBe(true);
+  });
+
+  it('matches "it\'s possible that" written with a typographic apostrophe', () => {
+    const html = '<p>It’s possible that this helps. It might possibly also cut costs.</p>';
+    const c = find(html, 'stacked_hedges');
+    expect(c.score).toBe(2);
+    expect(c.ok).toBe(false);
+    expect(c.findings.join(' ')).toContain('stacked hedges');
+  });
+});
+
+describe('sentence_openers', () => {
+  it('fails three consecutive sentences opening with the same word', () => {
+    const html =
+      '<p>We shipped the feature on Tuesday. We broke it by Thursday. We fixed it by Friday.</p>';
+    const c = find(html, 'sentence_openers');
+    expect(c.ok).toBe(false);
+    expect(c.findings.join(' ')).toContain('open with "we"');
+  });
+
+  it('passes varied openers', () => {
+    const html =
+      '<p>We shipped the feature on Tuesday. It broke by Thursday. Nobody noticed until Friday.</p>';
+    expect(find(html, 'sentence_openers').ok).toBe(true);
+  });
+
+  it('skips fragments under three words when counting a run', () => {
+    const withFragment =
+      '<p>We shipped the feature on Tuesday. We win. We broke it by Thursday. We fixed it by Friday.</p>';
+    // "We win." is a two-word fragment, which `sentences()` drops before this
+    // check ever sees it. It sits between two real "We" sentences on either
+    // side, so if fragments were skipped correctly it does not break the run
+    // of three real sentences opening with "We" — that run still fails.
+    expect(find(withFragment, 'sentence_openers').ok).toBe(false);
+
+    const withoutThirdSentence =
+      '<p>We shipped the feature on Tuesday. We win. We broke it by Thursday.</p>';
+    // Drop the third real "We" sentence: only two real sentences remain, so
+    // the run is two and the check passes — proving the fragment was never
+    // counted as part of the run in either fixture.
+    expect(find(withoutThirdSentence, 'sentence_openers').ok).toBe(true);
+  });
+});
+
+describe('bold_decoration', () => {
+  it('fails more than three bolded phrases in body prose', () => {
+    const html =
+      '<h2>A</h2><p><strong>One.</strong> Text.</p><p><strong>Two.</strong> Text.</p><p><strong>Three.</strong> Text.</p><p><strong>Four.</strong> Text.</p>';
+    const c = find(html, 'bold_decoration');
+    expect(c.ok).toBe(false);
+    expect(c.findings.join(' ')).toContain('bolded phrases in body prose');
+  });
+
+  it('does not count <strong> in the preamble summary block before the first H2', () => {
+    const summary =
+      '<table style="width:100%;"><tr><td><strong>Answer.</strong></td></tr><tr><td><strong>Point one.</strong></td></tr><tr><td><strong>Point two.</strong></td></tr><tr><td><strong>Point three.</strong></td></tr><tr><td><strong>Point four.</strong></td></tr></table>';
+    const html = `${summary}<h2>A</h2><p>Plain body text with no bold at all.</p>`;
+    expect(find(html, 'bold_decoration').ok).toBe(true);
+  });
+
+  it('does not count <strong> inside a table or blockquote in the body', () => {
+    const html =
+      '<h2>A</h2><p>Plain paragraph.</p>' +
+      '<table><tr><td><strong>One.</strong></td></tr><tr><td><strong>Two.</strong></td></tr><tr><td><strong>Three.</strong></td></tr><tr><td><strong>Four.</strong></td></tr></table>' +
+      '<blockquote><strong>Five.</strong></blockquote>';
+    expect(find(html, 'bold_decoration').ok).toBe(true);
+  });
+
+  it('passes body prose with three or fewer bolded phrases', () => {
+    const html =
+      '<h2>A</h2><p><strong>One.</strong> Text.</p><p><strong>Two.</strong> Text.</p><p><strong>Three.</strong> Text.</p>';
+    expect(find(html, 'bold_decoration').ok).toBe(true);
+  });
+});
+
+describe('heading_echo', () => {
+  it('fails when the first sentence after a heading restates it', () => {
+    const html =
+      '<h2>How Do You Reduce Deployment Time?</h2><p>You reduce deployment time by measuring the queue first.</p>';
+    const c = find(html, 'heading_echo');
+    expect(c.ok).toBe(false);
+    expect(c.findings.join(' ')).toContain('restates it');
+  });
+
+  it('passes when the first sentence answers without restating the heading', () => {
+    const html =
+      '<h2>How Do You Reduce Deployment Time?</h2><p>Measure the queue before touching the build step.</p>';
+    expect(find(html, 'heading_echo').ok).toBe(true);
+  });
+});
+
+describe('closer_fragments', () => {
+  it('fails a one-line closer that restates the paragraph above it', () => {
+    const html =
+      '<p>We doubled the runner pool. Deploy time fell from 41 minutes to 22. The bill arrived a month later.</p>' +
+      '<p>The runner pool cost too much.</p>';
+    const c = find(html, 'closer_fragments');
+    expect(c.ok).toBe(false);
+    expect(c.findings.join(' ')).toContain('restates the paragraph above it');
+  });
+
+  it('passes a one-line paragraph that carries a new claim', () => {
+    const html =
+      '<p>We doubled the runner pool. Deploy time fell from 41 minutes to 22. The bill arrived a month later.</p>' +
+      '<p>A scheduling change fixed it for nothing two months later.</p>';
+    expect(find(html, 'closer_fragments').ok).toBe(true);
+  });
+});
+
 describe('CHECK_NAMES', () => {
-  it('lists every check name in the order scoreDraft pushes them, ending with voice_rhythm', () => {
-    expect(CHECK_NAMES[CHECK_NAMES.length - 1]).toBe('voice_rhythm');
+  it('lists every check name in the order scoreDraft pushes them, ending with closer_fragments', () => {
+    expect(CHECK_NAMES[CHECK_NAMES.length - 1]).toBe('closer_fragments');
+    // voice_rhythm is still the last of the checks that existed before Task
+    // 6.2 — the seven new advisory checks are appended after it, in the
+    // brief's table order, never inserted earlier.
+    expect(CHECK_NAMES[CHECK_NAMES.indexOf('voice_rhythm') + 1]).toBe('em_dash_density');
   });
 
   it('matches exactly what scoreDraft returns for a blog-mode draft', () => {

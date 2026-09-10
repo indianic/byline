@@ -5,7 +5,7 @@ role: ""
 country: ""
 state: ""
 years_of_experience: 0
-language_written: English
+language_written: English  # a name ("English", "Hindi") or a BCP 47 tag ("en", "en-GB") — either works
 
 writing_style: ""
 tone_of_voice: ""
@@ -50,6 +50,13 @@ persona_specific_instructions_for_ai: ""
 #   voice_samples             two or three passages of your own writing; the
 #                             brief carries them and score_draft compares
 #                             rhythm against them
+#   profile_url, social_profiles
+#                             your own bio page and social profile URLs
+#                             (social_profiles is a comma-separated list);
+#                             create_post adds them to the published
+#                             article's schema as author.sameAs, so a
+#                             generative engine can resolve which "Jane
+#                             Doe" wrote it
 #
 # Do NOT pin the article's opening, ending or overall shape here. Byline draws
 # a fresh hook, arc and closing for every article on purpose, so a weekly blog
@@ -78,6 +85,8 @@ persona_specific_instructions_for_ai: ""
 # opinion_style: "Balanced, evidence-based, forward-looking"
 # technology_writing_style: "Explain simply, remove hype, discuss limitations"
 # leadership_style: "Lead by example, long-term thinking, ownership mindset"
+# profile_url: "https://example.com/authors/jane-doe"
+# social_profiles: "https://linkedin.com/in/janedoe, https://x.com/janedoe"
 
 # voice_samples:
 #   - |

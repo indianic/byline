@@ -99,7 +99,7 @@ validate live — every answer below is the exact prompt text `init` shows:
 
 ```
 ? Set up a blog to publish to now? › Yes
-[or, with a blog already configured: Which blog? › Add a new blog]
+[or, with a blog already configured: Add or change a blog now? › Yes, then Which blog? › Add a new blog]
 ? Which kind of blog? › Medium
 ? Short name for this blog, used when you say "publish to …" (Enter nothing to skip) › medium
 ? Your blog address (Enter nothing to skip) › https://medium.com/@jordan
