@@ -2584,13 +2584,16 @@ describe('create_post scheduling, through the real tool layer', () => {
 });
 
 describe('update_post scheduling', () => {
+  const future = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
+  const ymd = future.toISOString().slice(0, 10);
+
   it('refuses publish_at with no status, since what it means depends on the post’s current state', async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
     const r = await call('update_post', {
       site: 'personal',
       post_id: 'p1',
-      publish_at: '2026-09-04T09:00:00Z',
+      publish_at: `${ymd}T09:00:00Z`,
     });
     expect(r.ok).toBe(false);
     expect(r.code).toBe('PUBLISH_AT_NEEDS_STATUS');
@@ -2634,6 +2637,13 @@ describe('update_post scheduling', () => {
 // The rule the user asked for, proven through the real tool layer: "10am
 // tomorrow" is 10am ON THE BLOG. Nothing about this machine may enter into it.
 describe('a wall-clock publish_at is read in the blog’s timezone', () => {
+  const future = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
+  const ymd = future.toISOString().slice(0, 10);
+  const wall = `${ymd}T10:00`;
+  const ymdTomorrow = new Date(future.getTime() + 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+
   beforeEach(() => clearTimezoneCache());
 
   /** Ghost, answering /settings/ with a timezone and echoing the post back. */
@@ -2683,12 +2693,12 @@ describe('a wall-clock publish_at is read in the blog’s timezone', () => {
 
   it('converts 10am on an Asia/Kolkata blog to 04:30Z', async () => {
     const g = ghostInZone('Asia/Kolkata');
-    const r = await call('create_post', post('2026-09-04T10:00'));
+    const r = await call('create_post', post(wall));
     expect(r.ok).toBe(true);
-    expect(g.sent().posts[0].published_at).toBe('2026-09-04T04:30:00.000Z');
-    expect(r.publish_at).toBe('2026-09-04T04:30:00.000Z');
+    expect(g.sent().posts[0].published_at).toBe(`${ymd}T04:30:00.000Z`);
+    expect(r.publish_at).toBe(`${ymd}T04:30:00.000Z`);
     // What the user actually asked for, echoed back in their own terms.
-    expect(r.publish_at_local).toBe('2026-09-04 10:00:00 (Asia/Kolkata)');
+    expect(r.publish_at_local).toBe(`${ymd} 10:00:00 (Asia/Kolkata)`);
   });
 
   // Same string, different blog timezone, different instant. This is the pair
@@ -2696,15 +2706,15 @@ describe('a wall-clock publish_at is read in the blog’s timezone', () => {
   // naive host-timezone implementation.
   it('converts the SAME 10am to 06:00Z on an Asia/Dubai blog', async () => {
     const g = ghostInZone('Asia/Dubai');
-    const r = await call('create_post', post('2026-09-04T10:00'));
-    expect(g.sent().posts[0].published_at).toBe('2026-09-04T06:00:00.000Z');
-    expect(r.publish_at_local).toBe('2026-09-04 10:00:00 (Asia/Dubai)');
+    const r = await call('create_post', post(wall));
+    expect(g.sent().posts[0].published_at).toBe(`${ymd}T06:00:00.000Z`);
+    expect(r.publish_at_local).toBe(`${ymd} 10:00:00 (Asia/Dubai)`);
   });
 
   it('takes an explicit offset at face value and does not consult the blog', async () => {
     const g = ghostInZone('Asia/Kolkata');
-    const r = await call('create_post', post('2026-09-04T10:00:00Z'));
-    expect(g.sent().posts[0].published_at).toBe('2026-09-04T10:00:00.000Z');
+    const r = await call('create_post', post(`${ymd}T10:00:00Z`));
+    expect(g.sent().posts[0].published_at).toBe(`${ymd}T10:00:00.000Z`);
     expect(g.calls.some((u) => u.includes('settings/'))).toBe(false);
   });
 
@@ -2712,8 +2722,8 @@ describe('a wall-clock publish_at is read in the blog’s timezone', () => {
   // every publish would add a round trip to every post.
   it('fetches the blog timezone once, not once per post', async () => {
     const g = ghostInZone('Asia/Kolkata');
-    await call('create_post', post('2026-09-04T10:00'));
-    await call('create_post', post('2026-09-05T10:00'));
+    await call('create_post', post(wall));
+    await call('create_post', post(`${ymdTomorrow}T10:00`));
     expect(g.calls.filter((u) => u.includes('settings/'))).toHaveLength(1);
   });
 
@@ -2730,7 +2740,7 @@ describe('a wall-clock publish_at is read in the blog’s timezone', () => {
             }),
       ),
     );
-    const r = await call('create_post', post('2026-09-04T10:00'));
+    const r = await call('create_post', post(wall));
     expect(r.ok).toBe(false);
     expect(r.code).toBe('NO_SITE_TIMEZONE');
   });
