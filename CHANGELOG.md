@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-09-10
+
 ### Added
 
 - **The humanizer: graded lexicon, a revision pass, and seven new advisory checks.**

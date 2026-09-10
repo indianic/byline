@@ -66,7 +66,7 @@ src/
     media.ts               `byline media` — add, list, scan, status, release, remove
     status.ts doctor.ts migrate.ts reset.ts register.ts update.ts
     tree.ts                the shared output vocabulary (◆ ◇ ▲ ■ ●)
-  tools/                   the 20 MCP tools — schemas and handlers
+  tools/                   the MCP tools — schemas and handlers, registered in tools/index.ts
   media/                   the local media library: a user's own folder of photographs
     types.ts               Asset, MediaIndex, UsageLedger, LibraryConfig — the shapes
     library.ts             the `media:` config block, and where the index and ledger live
