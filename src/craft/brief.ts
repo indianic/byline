@@ -908,6 +908,7 @@ differently on purpose.
     {"question": "exact question a reader would type", "answer": "40-60 word self-contained answer"}
   ],
 ${imageJsonFields}  "tags": ["tag1", "tag2"],
+  "categories": ["one or two broad categories — used where the platform has them, ignored elsewhere"],
   "primary_keyword": "main keyword",
   "secondary_keywords": ["k1", "k2", "k3"]
 }

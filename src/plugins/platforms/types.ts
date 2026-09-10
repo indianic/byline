@@ -103,6 +103,12 @@ export interface PostInput {
 
   tags?: string[];
   authors?: string[];
+  /** Category names. WordPress resolves them to term ids; platforms without categories warn and drop. */
+  categories?: string[];
+  /** Ghost newsletter slug. When set on a publish or schedule, Ghost EMAILS the post. Never set by default. */
+  newsletter?: string;
+  /** Ghost segment filter: 'all' | 'status:free' | 'status:-free' | a label filter. Requires `newsletter`. */
+  email_segment?: string;
 
   /**
    * When the post should carry as its publish time, as whole-second UTC ISO.
@@ -204,6 +210,14 @@ export interface PlatformAdapter {
   updatePost(id: string, patch: Partial<PostInput>): Promise<PostResult>;
   listTags(): Promise<Array<{ id: string; name: string; slug: string }>>;
   listAuthors(): Promise<Array<{ id: string; name: string; email?: string }>>;
+  /**
+   * Newsletters this platform can email a post to on publish (Ghost's
+   * `newsletter` field). Platforms with no such concept — WordPress core —
+   * simply do not implement this; `list_newsletters` (`src/tools/site-tools.ts`)
+   * turns its absence into a `ToolError` naming the platform rather than a
+   * silent empty list.
+   */
+  listNewsletters?(): Promise<Array<{ id: string; name: string; slug: string; status: string }>>;
 }
 
 /**

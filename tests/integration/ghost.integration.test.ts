@@ -62,6 +62,52 @@ if (skipReason) {
       expect((await adapter.listAuthors()).length).toBeGreaterThan(0);
     });
 
+    it('lists at least one newsletter on the configured blog', async () => {
+      const newsletters = await adapter.listNewsletters!();
+      expect(newsletters.length).toBeGreaterThan(0);
+      expect(newsletters[0]).toHaveProperty('slug');
+    });
+
+    // Deliberately a DRAFT, never a publish: sending `newsletter` on a
+    // publish/schedule write really does queue an email to real subscribers,
+    // so this only exercises the draft path, where `GhostAdapter.newsletterParams`
+    // withholds the query params and warns instead of emailing anyone.
+    it('creates a draft with newsletter set and confirms no email was queued', async () => {
+      let created: Awaited<ReturnType<typeof adapter.createPost>> | undefined;
+      try {
+        const newsletters = await adapter.listNewsletters!();
+        const slug = newsletters[0]!.slug;
+        created = await adapter.createPost({
+          title: 'ZZ newsletter probe — safe to delete',
+          html: '<p>Newsletter probe, draft only.</p>',
+          status: 'draft',
+          newsletter: slug,
+        });
+        expect(created.status).toBe('draft');
+        expect(created.warnings?.join(' ')).toContain('newsletter: ignored on a draft');
+
+        const res = await fetch(`${usableSite.apiUrl}/posts/${created.id}/?formats=html`, {
+          headers: {
+            Authorization: `Ghost ${ghostToken(usableSite.credentials.admin_api_key ?? '', usableSite.slug)}`,
+            'Accept-Version': 'v6.0',
+          },
+        });
+        const body = (await res.json()) as { posts?: Array<{ email?: unknown }> };
+        expect(body.posts?.[0]?.email ?? null).toBeNull();
+      } finally {
+        if (created?.id) {
+          const del = await fetch(`${usableSite.apiUrl}/posts/${created.id}/`, {
+            method: 'DELETE',
+            headers: {
+              Authorization: `Ghost ${ghostToken(usableSite.credentials.admin_api_key ?? '', usableSite.slug)}`,
+              'Accept-Version': 'v6.0',
+            },
+          });
+          expect(del.status).toBe(204);
+        }
+      }
+    });
+
     it('creates a draft, round-trips the HTML, then deletes it', async () => {
       const html =
         '<p>Integration probe paragraph.</p><h2>Probe section</h2><p>With <a href="https://ghost.org" rel="noopener noreferrer">a link</a>.</p>';

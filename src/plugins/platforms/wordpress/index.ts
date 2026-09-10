@@ -85,6 +85,8 @@ const UNSUPPORTED_FIELD_REASONS: Record<string, string> = {
     'WordPress does not accept alt text on the post endpoint; it must be set on the media object with a follow-up request, so it was not sent here.',
   feature_image_caption:
     'WordPress does not accept a caption on the post endpoint; it belongs to the media/attachment object, so it was not sent.',
+  newsletter: 'WordPress core has no newsletter; nothing was sent.',
+  email_segment: 'WordPress core has no newsletter; nothing was sent.',
   // `publish_at` used to be listed here, warning that scheduling and
   // backdating were not wired up. Both now are — it maps to `date_gmt` in
   // `buildBaseBody`, verified live on 2026-08-03 — so listing it would warn
@@ -458,20 +460,28 @@ export class WordPressAdapter implements PlatformAdapter {
   }
 
   /**
-   * Resolves tag names (Ghost-shaped, from `PostInput.tags`) to WordPress term ids,
-   * creating any tag that does not already exist.
+   * Resolves names (Ghost-shaped tags from `PostInput.tags`, or WordPress
+   * categories from `PostInput.categories`) to WordPress term ids in the given
+   * taxonomy, creating any term that does not already exist.
    *
-   * `GET /wp/v2/tags?search=` is a SUBSTRING match — confirmed by live probe on
-   * 2026-07-29: searching "ProbeAI" returned both "ProbeAI" and "ProbeAI Ethics" —
-   * so taking the first result would silently tag the post with the wrong term.
-   * The match must be exact, case-insensitively, before it is trusted; only when
-   * no exact match exists is a new tag created.
+   * `GET /wp/v2/{taxonomy}?search=` is a SUBSTRING match — confirmed by live
+   * probe on 2026-07-29 for `tags`: searching "ProbeAI" returned both
+   * "ProbeAI" and "ProbeAI Ethics" — so taking the first result would
+   * silently tag the post with the wrong term. The match must be exact,
+   * case-insensitively, before it is trusted; only when no exact match exists
+   * is a new term created. `categories` is assumed to share this
+   * substring-match behaviour (both taxonomies are built on the same
+   * `WP_REST_Terms_Controller`) but that assumption is UNVERIFIED — see
+   * `docs/WORDPRESS-NOTES.md`.
    */
-  private async resolveTagIds(names: string[]): Promise<{ ids: number[]; warnings: string[] }> {
+  private async resolveTermIds(
+    taxonomy: 'tags' | 'categories',
+    names: string[],
+  ): Promise<{ ids: number[]; warnings: string[] }> {
     const ids: number[] = [];
     const warnings: string[] = [];
     for (const name of names) {
-      const matches = (await this.request(`wp/v2/tags?search=${encodeURIComponent(name)}`)) as Array<{
+      const matches = (await this.request(`wp/v2/${taxonomy}?search=${encodeURIComponent(name)}`)) as Array<{
         id: number;
         name: string;
       }>;
@@ -480,17 +490,22 @@ export class WordPressAdapter implements PlatformAdapter {
         ids.push(exact.id);
         continue;
       }
-      const created = (await this.request('wp/v2/tags', {
+      const created = (await this.request(`wp/v2/${taxonomy}`, {
         method: 'POST',
         body: JSON.stringify({ name }),
       })) as { id?: number };
       if (created.id !== undefined) {
         ids.push(created.id);
       } else {
-        warnings.push(`tags: could not resolve or create the tag "${name}"`);
+        warnings.push(`${taxonomy}: could not resolve or create "${name}"`);
       }
     }
     return { ids, warnings };
+  }
+
+  /** Kept so existing call sites and tests naming `resolveTagIds` compile unchanged. */
+  private resolveTagIds(names: string[]): Promise<{ ids: number[]; warnings: string[] }> {
+    return this.resolveTermIds('tags', names);
   }
 
   /**
@@ -619,9 +634,14 @@ export class WordPressAdapter implements PlatformAdapter {
     this.applyAuthors(body, post.authors, warnings);
     this.applyFeatureImage(body, post.feature_image, post.feature_image_id, warnings);
     if (post.tags !== undefined && post.tags.length > 0) {
-      const { ids, warnings: tagWarnings } = await this.resolveTagIds(post.tags);
+      const { ids, warnings: tagWarnings } = await this.resolveTermIds('tags', post.tags);
       if (ids.length > 0) body.tags = ids;
       warnings.push(...tagWarnings);
+    }
+    if (post.categories !== undefined && post.categories.length > 0) {
+      const { ids, warnings: categoryWarnings } = await this.resolveTermIds('categories', post.categories);
+      if (ids.length > 0) body.categories = ids;
+      warnings.push(...categoryWarnings);
     }
 
     const { body: rawCreated, serverDate } = await this.requestFull('wp/v2/posts', {
@@ -668,9 +688,14 @@ export class WordPressAdapter implements PlatformAdapter {
     this.applyAuthors(body, patch.authors, warnings);
     this.applyFeatureImage(body, patch.feature_image, patch.feature_image_id, warnings);
     if (patch.tags !== undefined && patch.tags.length > 0) {
-      const { ids, warnings: tagWarnings } = await this.resolveTagIds(patch.tags);
+      const { ids, warnings: tagWarnings } = await this.resolveTermIds('tags', patch.tags);
       if (ids.length > 0) body.tags = ids;
       warnings.push(...tagWarnings);
+    }
+    if (patch.categories !== undefined && patch.categories.length > 0) {
+      const { ids, warnings: categoryWarnings } = await this.resolveTermIds('categories', patch.categories);
+      if (ids.length > 0) body.categories = ids;
+      warnings.push(...categoryWarnings);
     }
 
     // PUT is accepted for updates — confirmed by the self-cleaning update step

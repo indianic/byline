@@ -142,6 +142,22 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
           .describe('Inject Article (+FAQPage) JSON-LD into the page head for AEO/GEO'),
 
         tags: z.array(z.string()).optional(),
+        categories: z
+          .array(z.string())
+          .optional()
+          .describe('Category names, for platforms that have categories (WordPress). Others warn and ignore.'),
+        newsletter: z
+          .string()
+          .optional()
+          .describe(
+            'Ghost only. The slug of the newsletter to EMAIL this post to when it publishes. OFF unless set — never set it unless the user asked for the post to be emailed. Run list_newsletters to see slugs.',
+          ),
+        email_segment: z
+          .string()
+          .optional()
+          .describe(
+            "Ghost only, with newsletter. 'all', 'status:free', 'status:-free' (paid), or a label filter. Defaults to Ghost's own default when omitted.",
+          ),
         author: z
           .string()
           .optional()
@@ -178,6 +194,9 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         keywords?: string[];
         schema: boolean;
         tags?: string[];
+        categories?: string[];
+        newsletter?: string;
+        email_segment?: string;
         author?: string;
       }) => {
         requireSetup(ctx, 'sites');
@@ -304,6 +323,9 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
           ...(twitterImage !== undefined ? { twitter_image: twitterImage } : {}),
           ...(codeinjection ? { codeinjection_head: codeinjection } : {}),
           ...(a.tags !== undefined ? { tags: a.tags } : {}),
+          ...(a.categories !== undefined ? { categories: a.categories } : {}),
+          ...(a.newsletter !== undefined ? { newsletter: a.newsletter } : {}),
+          ...(a.email_segment !== undefined ? { email_segment: a.email_segment } : {}),
           ...(authors ? { authors } : {}),
         });
 
@@ -399,6 +421,22 @@ export function registerPostTools(server: McpServer, ctx: Context): void {
         twitter_image: z.string().optional(),
         codeinjection_head: z.string().optional(),
         tags: z.array(z.string()).optional(),
+        categories: z
+          .array(z.string())
+          .optional()
+          .describe('Category names, for platforms that have categories (WordPress). Others warn and ignore.'),
+        newsletter: z
+          .string()
+          .optional()
+          .describe(
+            'Ghost only. The slug of the newsletter to EMAIL this post to when it publishes. OFF unless set — never set it unless the user asked for the post to be emailed. Run list_newsletters to see slugs.',
+          ),
+        email_segment: z
+          .string()
+          .optional()
+          .describe(
+            "Ghost only, with newsletter. 'all', 'status:free', 'status:-free' (paid), or a label filter. Defaults to Ghost's own default when omitted.",
+          ),
       },
     },
     handler(

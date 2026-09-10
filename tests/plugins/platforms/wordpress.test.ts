@@ -478,6 +478,124 @@ describe('WordPressAdapter tag resolution (via createPost)', () => {
   });
 });
 
+describe('WordPressAdapter categories', () => {
+  it('resolves a category name to its id via /wp/v2/categories?search= and sends categories:[id]', async () => {
+    const calls = stub((url) => {
+      if (url.includes('/wp/v2/categories?search=')) {
+        return new Response(JSON.stringify([{ id: 5, name: 'Engineering' }]), { status: 200 });
+      }
+      if (url.includes('context=edit')) {
+        return new Response(JSON.stringify({ title: { raw: 'T' }, content: { raw: '<p>x</p>' } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ id: 1, link: 'https://wp.example.com/x/', status: 'draft' }), {
+        status: 201,
+      });
+    });
+
+    await new WordPressAdapter(site).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'draft',
+      categories: ['Engineering'],
+    });
+
+    const searchCall = calls.find((c) => c.url.includes('/wp/v2/categories?search='));
+    expect(searchCall).toBeDefined();
+    expect(decodeURIComponent(searchCall!.url)).toContain('search=Engineering');
+
+    const createCall = calls.find((c) => c.init?.method === 'POST' && c.url.includes('/wp/v2/posts'));
+    const body = JSON.parse(String(createCall!.init!.body));
+    expect(body.categories).toEqual([5]);
+  });
+
+  it('does not resolve tags as categories or vice versa', async () => {
+    const calls = stub((url) => {
+      if (url.includes('/wp/v2/tags?search=')) {
+        return new Response(JSON.stringify([{ id: 7, name: 'AI' }]), { status: 200 });
+      }
+      if (url.includes('/wp/v2/categories?search=')) {
+        return new Response(JSON.stringify([{ id: 5, name: 'Engineering' }]), { status: 200 });
+      }
+      if (url.includes('context=edit')) {
+        return new Response(JSON.stringify({ title: { raw: 'T' }, content: { raw: '<p>x</p>' } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ id: 1, link: 'u', status: 'draft' }), { status: 201 });
+    });
+
+    await new WordPressAdapter(site).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'draft',
+      tags: ['AI'],
+      categories: ['Engineering'],
+    });
+
+    const createCall = calls.find((c) => c.init?.method === 'POST' && c.url.includes('/wp/v2/posts'));
+    const body = JSON.parse(String(createCall!.init!.body));
+    expect(body.tags).toEqual([7]);
+    expect(body.categories).toEqual([5]);
+  });
+
+  it('does not resolve or send empty categories array', async () => {
+    const calls = stub((url) => {
+      if (url.includes('/wp/v2/categories?search=')) {
+        throw new Error('Should not search for categories when array is empty');
+      }
+      if (url.includes('context=edit')) {
+        return new Response(JSON.stringify({ title: { raw: 'T' }, content: { raw: '<p>x</p>' } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ id: 1, link: 'https://wp.example.com/x/', status: 'publish' }), {
+        status: 201,
+      });
+    });
+    await new WordPressAdapter(site).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'publish',
+      categories: [],
+    });
+    // No request to /wp/v2/categories should be made.
+    const categoryCall = calls.find((c) => c.url.includes('/wp/v2/categories?search='));
+    expect(categoryCall).toBeUndefined();
+    const createCall = calls.find((c) => c.init?.method === 'POST' && c.url.includes('/wp/v2/posts'));
+    const body = JSON.parse(String(createCall!.init!.body));
+    expect('categories' in body).toBe(false);
+  });
+});
+
+describe('WordPressAdapter newsletter/email_segment are unsupported', () => {
+  it('warns naming newsletter, and never sends it', async () => {
+    stub(wpResponses({ readBack: { title: { raw: 'T' }, content: { raw: '<p>x</p>' } } }));
+    const r = await new WordPressAdapter(site).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'draft',
+      newsletter: 'weekly',
+    });
+    expect(r.warnings?.some((w) => w.startsWith('newsletter:') && w.includes('WordPress core has no newsletter'))).toBe(
+      true,
+    );
+  });
+
+  it('warns naming email_segment', async () => {
+    stub(wpResponses({ readBack: { title: { raw: 'T' }, content: { raw: '<p>x</p>' } } }));
+    const r = await new WordPressAdapter(site).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'draft',
+      newsletter: 'weekly',
+      email_segment: 'all',
+    });
+    expect(r.warnings?.some((w) => w.startsWith('email_segment:') && w.includes('WordPress core has no newsletter'))).toBe(
+      true,
+    );
+  });
+
+  it('has no listNewsletters implementation', () => {
+    expect(new WordPressAdapter(site).listNewsletters).toBeUndefined();
+  });
+});
+
 describe('WordPressAdapter.listAuthors', () => {
   it('reads /wp/v2/users?per_page=100&context=edit and returns string ids', async () => {
     const calls = stub(() =>

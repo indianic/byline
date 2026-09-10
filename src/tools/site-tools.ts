@@ -5,7 +5,7 @@ import { dirname } from 'node:path';
 import { parse, stringify } from 'yaml';
 import { z } from 'zod';
 import { buildSiteBlock } from '../config/site-block.js';
-import { SLUG_PATTERN, SLUG_RULE, loadSites, usableSites } from '../config/sites.js';
+import { SLUG_PATTERN, SLUG_RULE, getSite, loadSites, usableSites } from '../config/sites.js';
 import { buildSetupState, type Context } from '../context.js';
 import { ToolError, ok } from '../errors.js';
 import { imageHealth } from '../plugins/images/index.js';
@@ -301,6 +301,29 @@ export function registerSiteTools(server: McpServer, ctx: Context): void {
         return ok({ added: a.slug, health: await adapterFor(ctx, a.slug).healthCheck() });
       },
     ),
+  );
+
+  // ---- list_newsletters ----
+  server.registerTool(
+    'list_newsletters',
+    {
+      title: 'List newsletters',
+      description:
+        'List the newsletters a site can email a post to (Ghost only). Use the returned slug as create_post/update_post\'s newsletter argument. Platforms with no newsletter concept (WordPress core) refuse with UNSUPPORTED.',
+      inputSchema: { site: z.string() },
+    },
+    handler('list_newsletters', async (a: { site: string }) => {
+      const site = getSite(ctx.sites, a.site);
+      const adapter = makeAdapter(site);
+      if (!adapter.listNewsletters) {
+        throw new ToolError({
+          api: 'list_newsletters',
+          code: 'UNSUPPORTED',
+          message: `${getPlugin(site.platform).label} has no newsletters.`,
+        });
+      }
+      return ok({ newsletters: await adapter.listNewsletters() });
+    }),
   );
 
   // ---- remove_site ----

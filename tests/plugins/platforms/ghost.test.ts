@@ -547,6 +547,191 @@ describe('GhostAdapter.siteTimezone', () => {
   });
 });
 
+describe('GhostAdapter newsletter', () => {
+  it('adds newsletter and email_segment to the create path when publishing', async () => {
+    let url = '';
+    vi.stubGlobal(
+      'fetch',
+      stub(201, { posts: [{ id: 'p1', url: 'u', status: 'published' }] }, (u) => {
+        url = u;
+      }),
+    );
+    await new GhostAdapter(SITE).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'published',
+      newsletter: 'weekly',
+      email_segment: 'status:free',
+    });
+    expect(url).toContain('newsletter=weekly');
+    expect(url).toContain('email_segment=status%3Afree');
+  });
+
+  it('adds newsletter to the path on a scheduled post', async () => {
+    let url = '';
+    vi.stubGlobal(
+      'fetch',
+      stub(201, { posts: [{ id: 'p1', url: 'u', status: 'scheduled', published_at: '2026-08-04T09:00:00.000Z' }] }, (u) => {
+        url = u;
+      }),
+    );
+    await new GhostAdapter(SITE).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'scheduled',
+      publish_at: '2026-08-04T09:00:00.000Z',
+      newsletter: 'weekly',
+    });
+    expect(url).toContain('newsletter=weekly');
+  });
+
+  it('does NOT add newsletter to the path on a draft, and warns instead', async () => {
+    let url = '';
+    vi.stubGlobal(
+      'fetch',
+      stub(201, { posts: [{ id: 'p1', url: 'u', status: 'draft' }] }, (u) => {
+        url = u;
+      }),
+    );
+    const r = await new GhostAdapter(SITE).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'draft',
+      newsletter: 'weekly',
+    });
+    expect(url).not.toContain('newsletter=');
+    expect(r.warnings?.join(' ')).toContain(
+      'newsletter: ignored on a draft — Ghost emails only when a post is published or scheduled. Pass newsletter again on the update_post that publishes it.',
+    );
+  });
+
+  it('treats empty newsletter string as undefined on a published post', async () => {
+    let url = '';
+    vi.stubGlobal(
+      'fetch',
+      stub(201, { posts: [{ id: 'p1', url: 'u', status: 'published' }] }, (u) => {
+        url = u;
+      }),
+    );
+    const r = await new GhostAdapter(SITE).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'published',
+      newsletter: '',
+    });
+    expect(url).not.toContain('newsletter=');
+    expect(r.warnings?.join(' ')).not.toContain('newsletter');
+  });
+
+  it('throws NEWSLETTER_REQUIRED when email_segment is set without newsletter', async () => {
+    vi.stubGlobal('fetch', stub(201, { posts: [{ id: 'p1', url: 'u', status: 'published' }] }));
+    await expect(
+      new GhostAdapter(SITE).createPost({
+        title: 'T',
+        html: '<p>x</p>',
+        status: 'published',
+        email_segment: 'all',
+      }),
+    ).rejects.toMatchObject({ code: 'NEWSLETTER_REQUIRED' });
+  });
+
+  it('warns when Ghost echoes no newsletter on the create response after publishing with one', async () => {
+    vi.stubGlobal(
+      'fetch',
+      stub(201, { posts: [{ id: 'p1', url: 'u', status: 'published' }] }),
+    );
+    const r = await new GhostAdapter(SITE).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'published',
+      newsletter: 'weekly',
+    });
+    expect(r.warnings?.join(' ')).toContain(
+      'newsletter: Ghost returned no newsletter on the post; the email may not have been queued. Check Ghost Admin → Posts → this post → Email.',
+    );
+  });
+
+  it('does not warn about newsletter when Ghost echoes it back', async () => {
+    vi.stubGlobal(
+      'fetch',
+      stub(201, { posts: [{ id: 'p1', url: 'u', status: 'published', newsletter: { id: 'n1', slug: 'weekly' } }] }),
+    );
+    const r = await new GhostAdapter(SITE).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'published',
+      newsletter: 'weekly',
+    });
+    expect(JSON.stringify(r.warnings ?? [])).not.toContain('newsletter');
+  });
+
+  it('drops categories, newsletter and email_segment from the request body', async () => {
+    let body: any;
+    vi.stubGlobal(
+      'fetch',
+      stub(201, { posts: [{ id: 'p1', url: 'u', status: 'published' }] }, (_u, i) => {
+        body = JSON.parse(String(i.body));
+      }),
+    );
+    await new GhostAdapter(SITE).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'published',
+      categories: ['Engineering'],
+      newsletter: 'weekly',
+    });
+    expect('categories' in body.posts[0]).toBe(false);
+    expect('newsletter' in body.posts[0]).toBe(false);
+    expect('email_segment' in body.posts[0]).toBe(false);
+  });
+
+  it('warns that Ghost has no categories, naming the field', async () => {
+    vi.stubGlobal('fetch', stub(201, { posts: [{ id: 'p1', url: 'u', status: 'draft' }] }));
+    const r = await new GhostAdapter(SITE).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'draft',
+      categories: ['Engineering'],
+    });
+    expect(r.warnings?.some((w) => w.includes('categories') && w.includes('Ghost has no categories'))).toBe(true);
+  });
+
+  it('does not warn about empty categories array, and does not send categories key', async () => {
+    let body: any;
+    vi.stubGlobal(
+      'fetch',
+      stub(201, { posts: [{ id: 'p1', url: 'u', status: 'published' }] }, (_u, i) => {
+        body = JSON.parse(String(i.body));
+      }),
+    );
+    const r = await new GhostAdapter(SITE).createPost({
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'published',
+      categories: [],
+    });
+    expect('categories' in body.posts[0]).toBe(false);
+    expect(r.warnings?.some((w) => w.includes('categories'))).toBe(false);
+  });
+
+  it('lists newsletters from newsletters/?limit=all', async () => {
+    let url = '';
+    vi.stubGlobal(
+      'fetch',
+      stub(
+        200,
+        { newsletters: [{ id: 'n1', name: 'Weekly', slug: 'weekly', status: 'active' }] },
+        (u) => {
+          url = u;
+        },
+      ),
+    );
+    const r = await new GhostAdapter(SITE).listNewsletters!();
+    expect(url).toContain('newsletters/?limit=all');
+    expect(r).toEqual([{ id: 'n1', name: 'Weekly', slug: 'weekly', status: 'active' }]);
+  });
+});
+
 describe('GhostAdapter keeps the social card pointing at the hero', () => {
   /** GET returns `before`; PUT captures what was actually sent. */
   function stubUpdate(before: Record<string, unknown>) {

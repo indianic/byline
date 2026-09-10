@@ -9,6 +9,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **WordPress categories; Ghost newsletter email, off by default.** `create_post`/
+  `update_post` gain `categories` (resolved to WordPress term ids the same way tags
+  are, creating any that don't exist yet; Ghost has no categories and warns instead
+  of sending anything) and, Ghost-only, `newsletter` + `email_segment` to email a post
+  to a newsletter's subscribers on publish or schedule — **never on by default**, and
+  withheld (with a warning) on a draft, since Ghost only sends mail on a write that
+  publishes or schedules. `email_segment` with no `newsletter` is refused
+  (`NEWSLETTER_REQUIRED`). New `list_newsletters` tool returns a site's newsletters,
+  or `UNSUPPORTED` naming the platform when it has none (WordPress core). The
+  create-response echo of `newsletter` is UNVERIFIED — see `docs/GHOST-NOTES.md` —
+  and never probed with a real publish, since that sends real email.
 - **Persona `voice_samples`** — two or three passages of your own writing, carried into
   the writing brief verbatim (a new VOICE SAMPLES block, with a measured line of sentence
   count, mean length, spread, contraction rate and first-person rate) and compared against

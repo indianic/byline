@@ -182,7 +182,7 @@ async function callWith(ctx: Context, name: string, args: Record<string, unknown
 }
 
 describe('tool registration', () => {
-  it('exposes all twenty tools', async () => {
+  it('exposes all twenty-one tools', async () => {
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'add_site',
@@ -196,6 +196,7 @@ describe('tool registration', () => {
       'health_check',
       'list_authors',
       'list_media_libraries',
+      'list_newsletters',
       'list_personas',
       'list_sites',
       'remove_site',
@@ -1798,6 +1799,122 @@ describe('create_post — feature_image_id reaches WordPress (C3)', () => {
     expect(updateCall).toBeDefined();
     const body = JSON.parse(String(updateCall!.init!.body));
     expect(body.featured_media).toBe(88);
+  });
+});
+
+// Regression class (same shape as C3 above): the MCP SDK's zod parsing strips
+// any key the tool schema does not declare, so `categories` and `newsletter`
+// have to be proven through the real tool layer (`callWith`), not against the
+// adapter directly — an adapter unit test would pass even if the schema never
+// declared the field.
+describe('create_post — categories reaches the WordPress request body', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('resolves categories to term ids and sends them on a WordPress post created through the MCP tool layer', async () => {
+    const ctx = makeWordPressContext();
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (u: string, init?: RequestInit) => {
+        const url = String(u);
+        calls.push({ url, init });
+        if (url.includes('/wp/v2/categories?search=')) {
+          return new Response(JSON.stringify([{ id: 12, name: 'Engineering' }]), { status: 200 });
+        }
+        if (url.includes('context=edit')) {
+          return new Response(
+            JSON.stringify({
+              id: 60,
+              link: 'https://wp.example.com/cat-test/',
+              status: 'draft',
+              title: { raw: 'Cat test' },
+              content: { raw: '<p>Body</p>' },
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({ id: 60, link: 'https://wp.example.com/cat-test/', status: 'draft' }),
+          { status: 201 },
+        );
+      }),
+    );
+
+    const r = await callWith(ctx, 'create_post', {
+      site: 'wptest',
+      title: 'Cat test',
+      html: '<p>Body</p>',
+      status: 'draft',
+      schema: false,
+      images: 'none',
+      categories: ['Engineering'],
+    });
+
+    expect(r.ok).toBe(true);
+    const createCall = calls.find((c) => c.init?.method === 'POST' && c.url.includes('/wp/v2/posts'));
+    expect(createCall).toBeDefined();
+    const body = JSON.parse(String(createCall!.init!.body));
+    expect(body.categories).toEqual([12]);
+  });
+});
+
+describe('create_post — newsletter reaches the Ghost request URL', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('publishes with a newsletter slug that ends up in the query string Ghost received', async () => {
+    const ctx = makeContext();
+    let capturedUrl = '';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (u: string | URL, init: RequestInit = {}) => {
+        capturedUrl = String(u);
+        return new Response(
+          JSON.stringify({ posts: [{ id: 'p1', url: 'https://blog.example.com/x/', status: 'published' }] }),
+          { status: 201 },
+        );
+      }),
+    );
+
+    const r = await callWith(ctx, 'create_post', {
+      site: 'personal',
+      title: 'T',
+      html: '<p>x</p>',
+      status: 'published',
+      schema: false,
+      images: 'none',
+      newsletter: 'weekly',
+    });
+
+    expect(r.ok).toBe(true);
+    expect(capturedUrl).toContain('newsletter=weekly');
+  });
+});
+
+describe('list_newsletters', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('returns UNSUPPORTED for a platform with no listNewsletters, naming the platform label', async () => {
+    const ctx = makeWordPressContext();
+    const r = await callWith(ctx, 'list_newsletters', { site: 'wptest' });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('UNSUPPORTED');
+    expect(r.message).toContain('WordPress has no newsletters.');
+  });
+
+  it('lists newsletters for a platform that supports them', async () => {
+    const ctx = makeContext();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ newsletters: [{ id: 'n1', name: 'Weekly', slug: 'weekly', status: 'active' }] }),
+          { status: 200 },
+        ),
+      ),
+    );
+    const r = await callWith(ctx, 'list_newsletters', { site: 'personal' });
+    expect(r.ok).toBe(true);
+    expect(r.newsletters).toEqual([{ id: 'n1', name: 'Weekly', slug: 'weekly', status: 'active' }]);
   });
 });
 

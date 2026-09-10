@@ -818,6 +818,13 @@ that touches the outside world:
    **reads the response back** and compares it to what was sent, and reports any field
    the platform quietly dropped.
 
+   Pass `categories` on a WordPress site and it resolves them to that site's terms,
+   creating any that don't already exist; Ghost has no categories, so it warns and
+   sends nothing instead of pretending to. **Byline never emails your subscribers
+   unless you say so** — pass `newsletter` (a Ghost-only slug from `list_newsletters`)
+   only when you actually want this post emailed — it does nothing (and warns why)
+   on a draft, since Ghost only sends mail on a publish or a schedule.
+
 That last point is the design rule everywhere in this project: **nothing fails
 silently.** Every tool returns a result or an error naming the API and its HTTP status.
 

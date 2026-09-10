@@ -14,6 +14,19 @@ interface GhostErrorBody {
   errors?: Array<{ message?: string; context?: string }>;
 }
 
+/**
+ * Fields `PostInput` carries that Ghost core has no place to store.
+ *
+ * Mirrors WordPress's `UNSUPPORTED_FIELD_REASONS` mechanism exactly — one
+ * warning per field naming the reason, never a silent drop. Ghost has no
+ * categories concept (it has tags, which serve a different purpose and are
+ * already forwarded); `categories` is dropped in `toGhostPost` and warned
+ * about here.
+ */
+const GHOST_UNSUPPORTED_FIELDS: Record<string, string> = {
+  categories: 'Ghost has no categories — use tags. Nothing was sent for this field.',
+};
+
 const IMAGE_MIME: Record<string, string> = {
   png: 'image/png',
   jpg: 'image/jpeg',
@@ -240,7 +253,18 @@ export class GhostAdapter implements PlatformAdapter {
   private toGhostPost(post: Partial<PostInput>): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(post)) {
-      if (v === undefined || k === 'feature_image_id') continue;
+      if (
+        v === undefined ||
+        k === 'feature_image_id' ||
+        // Not body fields: `categories` has nowhere to go on Ghost (see
+        // GHOST_UNSUPPORTED_FIELDS); `newsletter`/`email_segment` are sent
+        // as query parameters on the write request, not in the post object
+        // itself (see createPost/updatePost).
+        k === 'categories' ||
+        k === 'newsletter' ||
+        k === 'email_segment'
+      )
+        continue;
       if (k === 'tags') out.tags = (v as string[]).map((name) => ({ name }));
       else if (k === 'authors') out.authors = (v as string[]).map((id) => ({ id }));
       // Ghost's status vocabulary already contains `scheduled`, so
@@ -249,6 +273,66 @@ export class GhostAdapter implements PlatformAdapter {
       else out[k] = v;
     }
     return out;
+  }
+
+  /** One warning per field the caller set that Ghost core cannot store — mirrors WordPress's mechanism. */
+  private unsupportedFieldWarnings(input: Partial<PostInput>): string[] {
+    const warnings: string[] = [];
+    for (const [field, reason] of Object.entries(GHOST_UNSUPPORTED_FIELDS)) {
+      const value = (input as Record<string, unknown>)[field];
+      // Skip fields that are not set, or arrays with no elements (nothing was lost).
+      if (value !== undefined && !(Array.isArray(value) && value.length === 0)) {
+        warnings.push(`${field}: ${reason}`);
+      }
+    }
+    return warnings;
+  }
+
+  /**
+   * The `newsletter`/`email_segment` query-string fragment for a write
+   * request, plus validation of the combination.
+   *
+   * Ghost only emails a post — and only accepts these two params at all — on
+   * a request that writes `status: published` or `status: scheduled`; a
+   * draft write is not what triggers the send, so sending them on a draft
+   * would look identical to a request that worked while doing nothing. Rather
+   * than send them anyway and rely on Ghost to ignore them, they are withheld
+   * on a draft and the caller is told explicitly, since silently doing
+   * nothing here is exactly the "post published, nobody emailed" failure this
+   * field exists to prevent.
+   *
+   * `email_segment` filters WHICH subscribers of a newsletter receive it, so
+   * it is meaningless without one — refused outright rather than silently
+   * ignored.
+   *
+   * Empty strings are treated as undefined — a value that is empty after
+   * `.trim()` is not considered set.
+   */
+  private newsletterParams(post: Partial<PostInput>, warnings: string[]): string {
+    // Treat empty strings (after trim) as undefined.
+    const newsletter = typeof post.newsletter === 'string' ? post.newsletter.trim() || undefined : post.newsletter;
+    const email_segment = typeof post.email_segment === 'string' ? post.email_segment.trim() || undefined : post.email_segment;
+
+    if (email_segment !== undefined && newsletter === undefined) {
+      throw new ToolError({
+        api: `ghost:${this.slug}`,
+        code: 'NEWSLETTER_REQUIRED',
+        message: 'email_segment was set without newsletter — a segment only has meaning alongside a newsletter to send.',
+        hint: 'Pass newsletter (a newsletter slug from list_newsletters) alongside email_segment, or drop email_segment.',
+      });
+    }
+    if (newsletter === undefined) return '';
+    if (post.status !== 'published' && post.status !== 'scheduled') {
+      warnings.push(
+        'newsletter: ignored on a draft — Ghost emails only when a post is published or scheduled. Pass newsletter again on the update_post that publishes it.',
+      );
+      return '';
+    }
+    let params = `&newsletter=${encodeURIComponent(newsletter)}`;
+    if (email_segment !== undefined) {
+      params += `&email_segment=${encodeURIComponent(email_segment)}`;
+    }
+    return params;
   }
 
   /**
@@ -297,6 +381,26 @@ export class GhostAdapter implements PlatformAdapter {
         'Ghost',
       );
       if (timeWarning) warnings.push(timeWarning);
+    }
+
+    // Only checked when the params were actually sent (status published or
+    // scheduled) — a draft already warns separately, via `newsletterParams`,
+    // that nothing was sent at all.
+    //
+    // UNVERIFIED that Ghost echoes `newsletter` on the create response —
+    // confirm with a live draft probe and record the row in
+    // docs/GHOST-NOTES.md. Until then this treats a missing echo as
+    // inconclusive rather than a confirmed failure, which is why it warns
+    // rather than throws.
+    // Empty strings (after trim) are treated as not set, same as undefined.
+    const newsletter = typeof sent.newsletter === 'string' ? sent.newsletter.trim() || undefined : sent.newsletter;
+    if (newsletter !== undefined && (sent.status === 'published' || sent.status === 'scheduled')) {
+      const returnedNewsletter = returned.newsletter;
+      if (returnedNewsletter === null || returnedNewsletter === undefined) {
+        warnings.push(
+          'newsletter: Ghost returned no newsletter on the post; the email may not have been queued. Check Ghost Admin → Posts → this post → Email.',
+        );
+      }
     }
     return warnings;
   }
@@ -360,7 +464,15 @@ export class GhostAdapter implements PlatformAdapter {
         key === 'tags' ||
         key === 'authors' ||
         key === 'feature_image_id' ||
-        key === 'publish_at'
+        key === 'publish_at' ||
+        // Never sent to Ghost at all (see toGhostPost) — checking them here
+        // would always find them "missing" from the response and misreport
+        // fields Ghost was never asked to store. `categories` is reported
+        // instead via `unsupportedFieldWarnings`; `newsletter`/`email_segment`
+        // are query parameters, verified separately in `verifyWrite`.
+        key === 'categories' ||
+        key === 'newsletter' ||
+        key === 'email_segment'
       )
         continue;
       const back = returned[key];
@@ -418,7 +530,9 @@ export class GhostAdapter implements PlatformAdapter {
 
   async createPost(post: PostInput): Promise<PostResult> {
     this.assertResolved(post.html);
-    const { body: raw, serverDate } = await this.requestFull('posts/?source=html', {
+    const localWarnings = this.unsupportedFieldWarnings(post);
+    const newsletterQuery = this.newsletterParams(post, localWarnings);
+    const { body: raw, serverDate } = await this.requestFull(`posts/?source=html${newsletterQuery}`, {
       method: 'POST',
       body: JSON.stringify({ posts: [this.toGhostPost(post)] }),
     });
@@ -431,7 +545,7 @@ export class GhostAdapter implements PlatformAdapter {
         message: 'Ghost returned no post object',
       });
     }
-    const warnings = this.verifyWrite(post, created, serverDate);
+    const warnings = [...localWarnings, ...this.verifyWrite(post, created, serverDate)];
     return {
       id: String(created.id),
       url: String(created.url),
@@ -467,8 +581,10 @@ export class GhostAdapter implements PlatformAdapter {
     }
 
     const socialWarnings = this.carrySocialImages(patch, before ?? {});
+    const unsupportedWarnings = this.unsupportedFieldWarnings(patch);
+    const newsletterQuery = this.newsletterParams(patch, unsupportedWarnings);
 
-    const { body: raw, serverDate } = await this.requestFull(`posts/${id}/?source=html`, {
+    const { body: raw, serverDate } = await this.requestFull(`posts/${id}/?source=html${newsletterQuery}`, {
       method: 'PUT',
       body: JSON.stringify({ posts: [{ ...this.toGhostPost(patch), updated_at: updatedAt }] }),
     });
@@ -481,7 +597,11 @@ export class GhostAdapter implements PlatformAdapter {
         message: 'Ghost returned no post object after update',
       });
     }
-    const warnings = [...socialWarnings, ...this.verifyWrite(patch, updated, serverDate)];
+    const warnings = [
+      ...socialWarnings,
+      ...unsupportedWarnings,
+      ...this.verifyWrite(patch, updated, serverDate),
+    ];
     return {
       id: String(updated.id),
       url: String(updated.url),
@@ -508,5 +628,13 @@ export class GhostAdapter implements PlatformAdapter {
       name: u.name,
       ...(u.email ? { email: u.email } : {}),
     }));
+  }
+
+  /** The newsletters this Ghost site can email a post to — slugs for `PostInput.newsletter`. */
+  async listNewsletters(): Promise<Array<{ id: string; name: string; slug: string; status: string }>> {
+    const body = (await this.request('newsletters/?limit=all')) as {
+      newsletters?: Array<{ id: string; name: string; slug: string; status: string }>;
+    };
+    return (body.newsletters ?? []).map((n) => ({ id: n.id, name: n.name, slug: n.slug, status: n.status }));
   }
 }
