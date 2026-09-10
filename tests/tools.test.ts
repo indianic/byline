@@ -184,7 +184,7 @@ async function callWith(ctx: Context, name: string, args: Record<string, unknown
 }
 
 describe('tool registration', () => {
-  it('exposes all twenty-one tools', async () => {
+  it('exposes all twenty-two tools', async () => {
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'add_site',
@@ -201,6 +201,7 @@ describe('tool registration', () => {
       'list_newsletters',
       'list_personas',
       'list_sites',
+      'plan_series',
       'remove_site',
       'research_topic',
       'score_draft',
@@ -209,6 +210,15 @@ describe('tool registration', () => {
       'upload_images',
       'use_media',
     ]);
+  });
+
+  // Registration order is what the host model sees in its tool list —
+  // plan_series is the first step of a multi-article series, so it must be
+  // offered before build_writing_brief, not discovered after it.
+  it('registers plan_series before build_writing_brief', async () => {
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names.indexOf('plan_series')).toBeLessThan(names.indexOf('build_writing_brief'));
+    expect(names.indexOf('plan_series')).toBeGreaterThanOrEqual(0);
   });
 
   // Regression (LEAK 3): tool descriptions register once at startup, so a
@@ -1074,6 +1084,72 @@ platform_authors: {}
     expect(brief.series).toBe('gulf-modernisation');
     expect(brief.brief).toContain('THIS SERIES SO FAR');
     expect(brief.brief).toContain('Pillar article');
+  });
+});
+
+describe('plan_series', () => {
+  it('plans a series and each slot seed reproduces its choices through build_writing_brief', async () => {
+    const ctx = makeContext();
+
+    const plan = await callWith(ctx, 'plan_series', {
+      persona: 'jane-doe',
+      theme: 'migrating a legacy fleet to Kubernetes',
+      count: 4,
+      mode: 'blog',
+      seed: 100,
+    });
+    expect(plan.ok).toBe(true);
+    expect(plan.slots).toHaveLength(4);
+    expect(plan.series_id).toBe('srs-' + (100).toString(36));
+
+    for (const slot of plan.slots) {
+      const brief = await callWith(ctx, 'build_writing_brief', {
+        persona: 'jane-doe',
+        topic: 'migrating a legacy fleet to Kubernetes',
+        mode: 'blog',
+        seed: slot.seed,
+        series: plan.series_id,
+      });
+      expect(brief.ok).toBe(true);
+      expect(brief.choices).toEqual(slot.choices);
+      expect(brief.series).toBe(plan.series_id);
+    }
+  });
+
+  it("lists this author's recently published articles in the plan brief", async () => {
+    const ctx = makeContext();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: string, i: RequestInit = {}) => {
+        const body = JSON.parse(String(i.body));
+        return new Response(
+          JSON.stringify({
+            posts: [{ ...body.posts[0], id: 'p1', url: 'https://blog.example.com/t/', status: 'draft' }],
+          }),
+          { status: 201 },
+        );
+      }),
+    );
+
+    await callWith(ctx, 'create_post', {
+      site: 'personal',
+      title: 'An earlier article',
+      html: '<p>x</p>',
+      status: 'draft',
+      images: 'none',
+      author: 'jane-doe',
+    });
+
+    const plan = await callWith(ctx, 'plan_series', {
+      persona: 'jane-doe',
+      theme: 'a new theme',
+      count: 3,
+      mode: 'blog',
+      seed: 100,
+    });
+    expect(plan.ok).toBe(true);
+    expect(plan.brief).toContain('ALREADY PUBLISHED BY THIS AUTHOR');
+    expect(plan.brief).toContain('An earlier article');
   });
 });
 

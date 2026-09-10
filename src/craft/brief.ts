@@ -191,6 +191,62 @@ function rng(seed: number): () => number {
   };
 }
 
+/**
+ * The cheap half of `buildBrief`: one RNG draw per dimension in
+ * `dimensionsFor(inlineStyles)`'s insertion order, with the anti-repeat walk
+ * for `ANTI_REPEAT_DIMENSIONS` applied against `avoid`. Extracted so
+ * `planSeries` can score thousands of candidate seeds per slot without paying
+ * for the full brief text (research block, HTML rules, scorecard maths) on
+ * every one of them — `buildBrief` still calls this, and the two must never
+ * diverge, so this is the ONLY place the draw is written.
+ *
+ * Byte-for-byte the same draw `buildBrief` used to do inline: every existing
+ * seed-pinning test in `tests/craft/brief.test.ts` is the guard that this
+ * extraction changed nothing.
+ */
+export function drawChoices(
+  seed: number,
+  inlineStyles: boolean,
+  avoid: Record<string, number[]> | undefined,
+): { choices: Record<DimensionName, number>; avoided: Record<string, number[]> } {
+  const next = rng(seed);
+  const dimensions = dimensionsFor(inlineStyles);
+  const choices = {} as Record<DimensionName, number>;
+  const avoided: Record<string, number[]> = {};
+
+  for (const name of Object.keys(dimensions) as DimensionName[]) {
+    const options = dimensions[name];
+    // One draw per dimension, always — an existing seed with no `history`
+    // must resolve identically to before, and `avoid` defaulting to `[]`
+    // below makes the `while` loop a no-op rather than a second draw.
+    let idx = Math.floor(next() * options.length);
+    if (ANTI_REPEAT_SET.has(name)) {
+      // A stale index from a ledger recorded against a longer-lived version
+      // of this dimension (or simply corrupt input) must not count toward
+      // "every option is being avoided" below — an out-of-range index can
+      // never match a real draw, so keeping it in `avoid` only inflates the
+      // length and can block the walk for a dimension that still has real
+      // room to move.
+      const avoidList = (avoid?.[name] ?? []).filter((i) => i >= 0 && i < options.length);
+      // Every option being avoided means there is nothing left to move to —
+      // leave the natural draw untouched rather than spin forever or land on
+      // an arbitrary index that is "avoided" just the same as the one drawn.
+      if (avoidList.length < options.length) {
+        const skipped: number[] = [];
+        let guard = 0;
+        while (avoidList.includes(idx) && guard++ < options.length) {
+          skipped.push(idx);
+          idx = (idx + 1) % options.length;
+        }
+        if (skipped.length > 0) avoided[name] = skipped;
+      }
+    }
+    choices[name] = idx;
+  }
+
+  return { choices, avoided };
+}
+
 const or = (v: string, fallback: string): string => (v.trim() ? v : fallback);
 
 /** `ANTI_REPEAT_DIMENSIONS` as a Set, for a cheap membership check per dimension drawn. */
@@ -517,46 +573,15 @@ ${rows.map(([k, v]) => `- ${k.replace(/_/g, ' ')}: ${v}`).join('\n')}
 
 export function buildBrief(input: BriefInput): Brief {
   const seed = input.seed ?? Math.floor(Math.random() * 2 ** 31);
-  const next = rng(seed);
   const p = input.persona;
   const words = input.wordCount ?? personaWordCount(p) ?? 800;
   const language = input.language ?? p.language_written;
 
   const dimensions = dimensionsFor(input.profile.inlineStyles);
-  const choices: Partial<Record<DimensionName, number>> = {};
-  const avoided: Record<string, number[]> = {};
+  const { choices, avoided } = drawChoices(seed, input.profile.inlineStyles, input.history?.avoid);
   const picked = {} as Record<DimensionName, string>;
   for (const name of Object.keys(dimensions) as DimensionName[]) {
-    const options = dimensions[name];
-    // One draw per dimension, always — an existing seed with no `history`
-    // must resolve identically to before, and `avoid` defaulting to `[]`
-    // below makes the `while` loop a no-op rather than a second draw.
-    let idx = Math.floor(next() * options.length);
-    if (ANTI_REPEAT_SET.has(name)) {
-      // A stale index from a ledger recorded against a longer-lived version
-      // of this dimension (or simply corrupt input) must not count toward
-      // "every option is being avoided" below — an out-of-range index can
-      // never match a real draw, so keeping it in `avoid` only inflates the
-      // length and can block the walk for a dimension that still has real
-      // room to move.
-      const avoid = (input.history?.avoid[name] ?? []).filter(
-        (i) => i >= 0 && i < options.length,
-      );
-      // Every option being avoided means there is nothing left to move to —
-      // leave the natural draw untouched rather than spin forever or land on
-      // an arbitrary index that is "avoided" just the same as the one drawn.
-      if (avoid.length < options.length) {
-        const skipped: number[] = [];
-        let guard = 0;
-        while (avoid.includes(idx) && guard++ < options.length) {
-          skipped.push(idx);
-          idx = (idx + 1) % options.length;
-        }
-        if (skipped.length > 0) avoided[name] = skipped;
-      }
-    }
-    choices[name] = idx;
-    picked[name] = options[idx]!;
+    picked[name] = dimensions[name][choices[name]]!;
   }
 
   // The blog craft sections, suppressed entirely in news mode.

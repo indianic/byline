@@ -39,6 +39,24 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the draft by a new `score_draft` check, `voice_rhythm`. Advisory, and honest about its
   limits: it checks sentence length and contraction use only, and reports "not evaluated"
   rather than a silent pass when no persona (or no `voice_samples`) is supplied.
+- **`plan_series`** — plan a pillar-and-spokes series of 2-12 articles in one call.
+  Allocates one seed per slot (`src/craft/series.ts`'s `planSeries`) so no two articles
+  in the series share a hook, arc, human texture or author presence, scoring 5000
+  candidate seeds per slot against the cheap RNG-only draw (`drawChoices`, extracted
+  from `buildBrief`) and keeping the one with the fewest dimensions already used by an
+  earlier slot. Never fails: once a series runs longer than a dimension's option count,
+  the forced repeats are named per slot in that slot's `repeats` array instead of the
+  plan throwing `SERIES_UNPLANNABLE` — measured, the 200-candidate/no-repeats-reported
+  version failed on 13 of 299 seeds at count 4 and 136 of 299 at count 12. Reads the
+  persona's article ledger the same way `build_writing_brief` does — via a helper now
+  shared between them — so a plan also lists what this author already published, to
+  avoid repeating those angles.
+  Returns a SERIES PLAN brief instructing the host model to propose titles from it and
+  wait for the user's approval before writing anything; Byline never invents the titles
+  itself. Registered ahead of `build_writing_brief` in the tool list. `/write-series`
+  gains a `--count N` form that calls `plan_series` first, then runs the existing
+  six-tool-call-per-article flow once per slot, threading each slot's `seed` and the
+  series id through to `build_writing_brief` and `create_post`.
 
 ## [1.10.0] - 2026-08-12
 

@@ -3,12 +3,13 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { recentArticles, recentChoices, siblings } from '../articles/ledger.js';
 import { articleLedgerPath, readArticleLedger } from '../articles/store.js';
-import { getPersona } from '../config/personas.js';
+import { getPersona, type Persona } from '../config/personas.js';
 import { getSite, usableSites } from '../config/sites.js';
 import type { Context } from '../context.js';
-import { buildBrief } from '../craft/brief.js';
+import { buildBrief, type BriefInput } from '../craft/brief.js';
 import type { HtmlProfile } from '../craft/html-profile.js';
 import { CHECK_NAMES, scoreDraft, type FeatureImageInput } from '../craft/score.js';
+import { planSeries } from '../craft/series.js';
 import { normaliseSamples, voiceFingerprint } from '../craft/voice.js';
 import { ToolError, ok } from '../errors.js';
 import { getPlugin, makeAdapter } from '../plugins/registry.js';
@@ -38,7 +39,75 @@ async function profileFor(ctx: Context, slug?: string): Promise<HtmlProfile> {
   return getPlugin(site.platform).htmlProfile(makeAdapter(site));
 }
 
+/**
+ * A persona's ledger-derived anti-repeat history, exactly as `build_writing_brief`
+ * reads it — shared with `plan_series` so both tools steer away from the same
+ * recorded hooks, arcs and keywords rather than maintaining two copies of this
+ * read. `series` is only meaningful for a single-article brief (surfacing
+ * siblings already published under that series name); `plan_series` plans a
+ * series before any of its articles exist, so it never passes one.
+ */
+function personaHistory(ctx: Context, persona: Persona, series?: string): NonNullable<BriefInput['history']> {
+  const ledger = readArticleLedger(articleLedgerPath(ctx.paths.home, persona.slug), persona.slug);
+  return {
+    recent: recentArticles(ledger, 5),
+    avoid: recentChoices(ledger, 3),
+    ...(series ? { siblings: siblings(ledger, series) } : {}),
+  };
+}
+
 export function registerCraftTools(server: McpServer, ctx: Context): void {
+  // ---- plan_series ----
+  server.registerTool(
+    'plan_series',
+    {
+      title: 'Plan series',
+      description:
+        'Plan a series of N articles as pillar and spokes. Allocates one seed per article so no two share a hook, arc, texture or author presence, and lists what this author already published so the plan does not repeat it. Never fails to plan: when a series is longer than a dimension\'s option count, the repeats are listed per slot in `repeats`. Returns slot seeds; pass each to build_writing_brief with the series id. Byline does not invent the titles — you do, from the returned brief, and you show them to the user first.',
+      inputSchema: {
+        persona: z.string(),
+        theme: z.string(),
+        count: z.number().int().min(2).max(12),
+        mode: z.enum(['blog', 'news']).default('blog'),
+        site: z
+          .string()
+          .optional()
+          .describe(
+            'Which site this is written for — its platform decides which craft dimensions are available. Defaults to the default site.',
+          ),
+        seed: z.number().int().optional(),
+      },
+    },
+    handler(
+      'plan_series',
+      async (a: {
+        persona: string;
+        theme: string;
+        count: number;
+        mode: 'blog' | 'news';
+        site?: string;
+        seed?: number;
+      }) => {
+        requireSetup(ctx, 'personas');
+        const profile = await profileFor(ctx, a.site);
+        const persona = getPersona(ctx.personas, a.persona);
+        const history = personaHistory(ctx, persona);
+
+        const plan = planSeries({
+          persona,
+          theme: a.theme,
+          count: a.count,
+          mode: a.mode,
+          profile,
+          history,
+          ...(a.seed !== undefined ? { seed: a.seed } : {}),
+        });
+
+        return ok(plan);
+      },
+    ),
+  );
+
   // ---- build_writing_brief ----
   server.registerTool(
     'build_writing_brief',
@@ -195,12 +264,7 @@ export function registerCraftTools(server: McpServer, ctx: Context): void {
         // memory of what it already published, letting a brief repeat a hook,
         // an example, or a keyword it should be avoiding without any signal
         // that the memory itself is broken.
-        const ledger = readArticleLedger(articleLedgerPath(ctx.paths.home, persona.slug), persona.slug);
-        const history = {
-          recent: recentArticles(ledger, 5),
-          avoid: recentChoices(ledger, 3),
-          ...(a.series ? { siblings: siblings(ledger, a.series) } : {}),
-        };
+        const history = personaHistory(ctx, persona, a.series);
 
         // Three explicit call sites, NOT one call with a cast past the union.
         // `as Parameters<typeof buildBrief>[0]` would typecheck unconditionally
